@@ -218,3 +218,203 @@ export interface UpdateRepoConfig {
   has_wiki?: boolean;
   has_projects?: boolean;
 }
+
+// ============================================
+// PR Review Types
+// ============================================
+
+export interface PRFileDiff {
+  filename: string;
+  status:
+    | "added"
+    | "removed"
+    | "modified"
+    | "renamed"
+    | "copied"
+    | "changed"
+    | "unchanged";
+  additions: number;
+  deletions: number;
+  changes: number;
+  patch?: string;
+  blob_url: string;
+  raw_url: string;
+  contents_url: string;
+  previous_filename?: string;
+}
+
+export interface PRReviewComment {
+  id: number;
+  body: string;
+  path: string;
+  line?: number;
+  side?: "LEFT" | "RIGHT";
+  commit_id: string;
+  user: {
+    login: string;
+  };
+  created_at: string;
+  updated_at: string;
+  in_reply_to_id?: number;
+}
+
+export interface PRReview {
+  id: number;
+  user: {
+    login: string;
+  };
+  body: string;
+  state:
+    | "APPROVED"
+    | "CHANGES_REQUESTED"
+    | "COMMENTED"
+    | "PENDING"
+    | "DISMISSED";
+  submitted_at: string;
+  commit_id: string | null;
+}
+
+export interface SubmitReviewConfig {
+  repo: GitHubRepo;
+  pullNumber: number;
+  body: string;
+  event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+  comments?: Array<{
+    path: string;
+    line: number;
+    body: string;
+    side?: "LEFT" | "RIGHT";
+  }>;
+}
+
+export interface CodeConcern {
+  file: string;
+  line: number;
+  severity: "low" | "medium" | "high" | "critical";
+  type: "security" | "performance" | "bug" | "style" | "complexity" | "other";
+  message: string;
+  suggestion?: string;
+}
+
+// ============================================
+// JIRA Types
+// ============================================
+
+export interface JiraConfig {
+  host: string;
+  email: string;
+  apiToken: string;
+}
+
+export interface JiraTicket {
+  id: string;
+  key: string;
+  summary: string;
+  description: string | null;
+  status: {
+    id: string;
+    name: string;
+    category: string;
+  };
+  assignee: {
+    accountId: string;
+    displayName: string;
+    emailAddress?: string;
+  } | null;
+  reporter: {
+    accountId: string;
+    displayName: string;
+  } | null;
+  priority: {
+    id: string;
+    name: string;
+  } | null;
+  issueType: {
+    id: string;
+    name: string;
+    subtask: boolean;
+  };
+  project: {
+    id: string;
+    key: string;
+    name: string;
+  };
+  parent?: {
+    id: string;
+    key: string;
+    summary: string;
+  };
+  subtasks: Array<{
+    id: string;
+    key: string;
+    summary: string;
+    status: string;
+  }>;
+  created: string;
+  updated: string;
+  labels: string[];
+  components: Array<{
+    id: string;
+    name: string;
+  }>;
+  customFields?: Record<string, unknown>;
+}
+
+export interface JiraTransition {
+  id: string;
+  name: string;
+  to: {
+    id: string;
+    name: string;
+    category: string;
+  };
+  hasScreen: boolean;
+  isGlobal: boolean;
+  isInitial: boolean;
+  isConditional: boolean;
+}
+
+export interface JiraSubtask {
+  id: string;
+  key: string;
+  summary: string;
+  status: string;
+  assignee: string | null;
+  parent: {
+    key: string;
+    summary: string;
+  };
+}
+
+export interface JiraWorkflow {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface JiraComment {
+  id: string;
+  body: string;
+  author: {
+    accountId: string;
+    displayName: string;
+  };
+  created: string;
+  updated: string;
+}
+
+export interface CreateJiraSubtaskConfig {
+  parentKey: string;
+  summary: string;
+  description?: string;
+  assigneeAccountId?: string;
+}
+
+export interface UpdateJiraTicketConfig {
+  ticketKey: string;
+  summary?: string;
+  description?: string;
+  appendDescription?: string;
+  labels?: string[];
+  assigneeAccountId?: string;
+}

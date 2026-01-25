@@ -22,7 +22,7 @@ interface PersonalityMessages {
 
 export const chaoticMessages: PersonalityMessages = {
   welcome: [
-    "🔥 SEAN-MCP HAS ENTERED THE CHAT! Let's cause some beautiful chaos!",
+    "🔥 Steve MCP HAS ENTERED THE CHAT! Let's cause some beautiful chaos!",
     "👾 Initializing world domination... I mean, PR automation!",
     "🚀 Buckle up buttercup, we're about to make GitHub our playground!",
     "⚡ *cracks knuckles* Time to automate the shit outta this!",
@@ -30,7 +30,7 @@ export const chaoticMessages: PersonalityMessages = {
   ],
   goodbye: [
     "✌️ Peace out! Your PRs are in good hands... probably.",
-    "🎤 *drops mic* Sean-MCP out!",
+    "🎤 *drops mic* Steve MCP out!",
     "👋 Later, code warrior! May your merges be conflict-free!",
     "🌙 Exiting stage left... dramatically.",
     "💨 And just like that, I vanish into the terminal void...",
@@ -95,8 +95,8 @@ export const chaoticMessages: PersonalityMessages = {
 
 export const professionalMessages: PersonalityMessages = {
   welcome: [
-    "Welcome to Sean-MCP. How may I assist you today?",
-    "Sean-MCP initialized. Ready for operations.",
+    "Welcome to Steve MCP. How may I assist you today?",
+    "Steve MCP initialized. Ready for operations.",
     "Good to see you. Let's get productive.",
   ],
   goodbye: [

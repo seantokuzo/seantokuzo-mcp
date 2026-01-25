@@ -19,6 +19,16 @@ import {
   checkIssuesInteractive,
   listReposInteractive,
 } from "./commands/repo.js";
+import { openPRInteractive } from "./commands/review.js";
+import {
+  myTicketsInteractive,
+  myReviewsInteractive,
+  moveTicketInteractive,
+  subtasksInteractive,
+  workflowInteractive,
+  addCommentInteractive,
+  searchTicketsInteractive,
+} from "./commands/jira.js";
 import { showBanner, showGoodbye, showError } from "./ui/display.js";
 import { isConfigured } from "../utils/config.js";
 
@@ -174,6 +184,88 @@ repoCmd
   });
 
 // ============================================
+// Review Commands (PR Code Review)
+// ============================================
+const reviewCmd = program.command("review").description("🔍 PR code review");
+
+reviewCmd
+  .command("open")
+  .alias("find")
+  .description("Open a PR by repo name and branch")
+  .action(async () => {
+    await openPRInteractive();
+    showGoodbye();
+  });
+
+// ============================================
+// JIRA Commands
+// ============================================
+const jiraCmd = program.command("jira").description("🎫 JIRA integration");
+
+jiraCmd
+  .command("mine")
+  .alias("tickets")
+  .description("View your assigned tickets")
+  .action(async () => {
+    await myTicketsInteractive();
+    showGoodbye();
+  });
+
+jiraCmd
+  .command("reviews")
+  .alias("cr")
+  .description("View your code review subtasks")
+  .action(async () => {
+    await myReviewsInteractive();
+    showGoodbye();
+  });
+
+jiraCmd
+  .command("move")
+  .description("Move a ticket to different status")
+  .option("-t, --ticket <key>", "Ticket key (e.g., PROJ-123)")
+  .action(async (options: { ticket?: string }) => {
+    await moveTicketInteractive(options.ticket);
+    showGoodbye();
+  });
+
+jiraCmd
+  .command("subtasks")
+  .alias("sub")
+  .description("View and manage subtasks")
+  .action(async () => {
+    await subtasksInteractive();
+    showGoodbye();
+  });
+
+jiraCmd
+  .command("workflow")
+  .alias("wf")
+  .description("Create workflow subtasks (DEV, QA, etc.)")
+  .action(async () => {
+    await workflowInteractive();
+    showGoodbye();
+  });
+
+jiraCmd
+  .command("comment")
+  .alias("c")
+  .description("Add comment to a ticket")
+  .action(async () => {
+    await addCommentInteractive();
+    showGoodbye();
+  });
+
+jiraCmd
+  .command("search")
+  .alias("s")
+  .description("Search tickets")
+  .action(async () => {
+    await searchTicketsInteractive();
+    showGoodbye();
+  });
+
+// ============================================
 // Interactive Mode (default)
 // ============================================
 program
@@ -210,6 +302,16 @@ program
         name: "action",
         message: "What would you like to do?",
         choices: [
+          new inquirer.default.Separator("─── Code Review ───"),
+          { name: "🔍 Open PR for Review", value: "review-open" },
+          new inquirer.default.Separator("─── JIRA ───"),
+          { name: "🎫 My Tickets", value: "jira-mine" },
+          { name: "📝 My Code Reviews", value: "jira-reviews" },
+          { name: "📍 Move Ticket", value: "jira-move" },
+          { name: "📋 Manage Subtasks", value: "jira-subtasks" },
+          { name: "⚡ Create Workflow Subtasks", value: "jira-workflow" },
+          { name: "💬 Add Comment", value: "jira-comment" },
+          { name: "🔎 Search Tickets", value: "jira-search" },
           new inquirer.default.Separator("─── Pull Requests ───"),
           { name: "🆕 Create a PR", value: "pr-create" },
           { name: "✏️  Update a PR", value: "pr-update" },
@@ -230,6 +332,33 @@ program
     ]);
 
     switch (action) {
+      // Review commands
+      case "review-open":
+        await openPRInteractive();
+        break;
+      // JIRA commands
+      case "jira-mine":
+        await myTicketsInteractive();
+        break;
+      case "jira-reviews":
+        await myReviewsInteractive();
+        break;
+      case "jira-move":
+        await moveTicketInteractive();
+        break;
+      case "jira-subtasks":
+        await subtasksInteractive();
+        break;
+      case "jira-workflow":
+        await workflowInteractive();
+        break;
+      case "jira-comment":
+        await addCommentInteractive();
+        break;
+      case "jira-search":
+        await searchTicketsInteractive();
+        break;
+      // PR commands
       case "pr-create":
         await createPRInteractive();
         break;
@@ -239,6 +368,7 @@ program
       case "pr-list":
         await listPRsInteractive();
         break;
+      // Repo commands
       case "repo-create":
         await createRepoInteractive();
         break;
@@ -254,6 +384,7 @@ program
       case "repo-list":
         await listReposInteractive();
         break;
+      // Config commands
       case "config":
         await showStatus();
         break;

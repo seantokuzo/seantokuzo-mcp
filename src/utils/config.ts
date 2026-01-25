@@ -25,6 +25,12 @@ export interface Config {
   github: {
     token: string;
     username: string;
+    org: string;
+  };
+  jira: {
+    host: string;
+    email: string;
+    apiToken: string;
   };
   webhook: {
     port: number;
@@ -47,6 +53,12 @@ export function getConfig(): Config {
     github: {
       token: process.env["GITHUB_TOKEN"] || "",
       username: process.env["GITHUB_USERNAME"] || "",
+      org: process.env["GITHUB_ORG"] || "",
+    },
+    jira: {
+      host: process.env["JIRA_HOST"] || "",
+      email: process.env["JIRA_EMAIL"] || "",
+      apiToken: process.env["JIRA_API_TOKEN"] || "",
     },
     webhook: {
       port: parseInt(process.env["WEBHOOK_PORT"] || "3847", 10),
@@ -88,7 +100,38 @@ export function validateConfig(config: Config): {
   };
 }
 
+export function validateJiraConfig(config: Config): {
+  valid: boolean;
+  errors: string[];
+} {
+  const errors: string[] = [];
+
+  if (!config.jira.host) {
+    errors.push("JIRA_HOST is required (e.g., mycompany.atlassian.net)");
+  }
+
+  if (!config.jira.email) {
+    errors.push("JIRA_EMAIL is required for authentication");
+  }
+
+  if (!config.jira.apiToken) {
+    errors.push(
+      "JIRA_API_TOKEN is required. Get one at https://id.atlassian.com/manage-profile/security/api-tokens",
+    );
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  };
+}
+
 export function isConfigured(): boolean {
   const config = getConfig();
   return !!config.github.token && !!config.github.username;
+}
+
+export function isJiraConfigured(): boolean {
+  const config = getConfig();
+  return !!config.jira.host && !!config.jira.email && !!config.jira.apiToken;
 }

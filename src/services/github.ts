@@ -16,6 +16,10 @@ import type {
   RepoInfo,
   CreateRepoConfig,
   UpdateRepoConfig,
+  PRFileDiff,
+  PRReview,
+  PRReviewComment,
+  SubmitReviewConfig,
 } from "../types/index.js";
 
 export class GitHubService {
@@ -523,6 +527,247 @@ export class GitHubService {
     });
 
     return data.map((repo) => this.mapRepoResponse(repo));
+  }
+
+  // ============================================
+  // PR Review Methods
+  // ============================================
+
+  /**
+   * Get PR files with full diff/patch content
+   */
+  async getPRFilesWithPatch(
+    repo: GitHubRepo,
+    pullNumber: number,
+  ): Promise<PRFileDiff[]> {
+    logger.debug(`Fetching PR files with patches for PR #${pullNumber}`);
+
+    const { data } = await this.octokit.pulls.listFiles({
+      owner: repo.owner,
+      repo: repo.repo,
+      pull_number: pullNumber,
+      per_page: 100,
+    });
+
+    return data.map((file) => ({
+      filename: file.filename,
+      status: file.status as PRFileDiff["status"],
+      additions: file.additions,
+      deletions: file.deletions,
+      changes: file.changes,
+      patch: file.patch,
+      blob_url: file.blob_url,
+      raw_url: file.raw_url,
+      contents_url: file.contents_url,
+      previous_filename: file.previous_filename,
+    }));
+  }
+
+  /**
+   * Get reviews for a PR
+   */
+  async getPRReviews(
+    repo: GitHubRepo,
+    pullNumber: number,
+  ): Promise<PRReview[]> {
+    logger.debug(`Fetching reviews for PR #${pullNumber}`);
+
+    const { data } = await this.octokit.pulls.listReviews({
+      owner: repo.owner,
+      repo: repo.repo,
+      pull_number: pullNumber,
+    });
+
+    return data.map((review) => ({
+      id: review.id,
+      user: {
+        login: review.user?.login || "Unknown",
+      },
+      body: review.body || "",
+      state: review.state as PRReview["state"],
+      submitted_at: review.submitted_at || "",
+      commit_id: review.commit_id,
+    }));
+  }
+
+  /**
+   * Get review comments for a PR
+   */
+  async getPRReviewComments(
+    repo: GitHubRepo,
+    pullNumber: number,
+  ): Promise<PRReviewComment[]> {
+    logger.debug(`Fetching review comments for PR #${pullNumber}`);
+
+    const { data } = await this.octokit.pulls.listReviewComments({
+      owner: repo.owner,
+      repo: repo.repo,
+      pull_number: pullNumber,
+      per_page: 100,
+    });
+
+    return data.map((comment) => ({
+      id: comment.id,
+      body: comment.body,
+      path: comment.path,
+      line: comment.line || undefined,
+      side: comment.side as "LEFT" | "RIGHT" | undefined,
+      commit_id: comment.commit_id,
+      user: {
+        login: comment.user?.login || "Unknown",
+      },
+      created_at: comment.created_at,
+      updated_at: comment.updated_at,
+      in_reply_to_id: comment.in_reply_to_id || undefined,
+    }));
+  }
+
+  /**
+   * Submit a review for a PR
+   */
+  async submitReview(config: SubmitReviewConfig): Promise<PRReview> {
+    logger.debug(
+      `Submitting review for PR #${config.pullNumber}: ${config.event}`,
+    );
+
+    const { data } = await this.octokit.pulls.createReview({
+      owner: config.repo.owner,
+      repo: config.repo.repo,
+      pull_number: config.pullNumber,
+      body: config.body,
+      event: config.event,
+      comments: config.comments?.map((c) => ({
+        path: c.path,
+        line: c.line,
+        body: c.body,
+        side: c.side,
+      })),
+    });
+
+    return {
+      id: data.id,
+      user: {
+        login: data.user?.login || "Unknown",
+      },
+      body: data.body || "",
+      state: data.state as PRReview["state"],
+      submitted_at: data.submitted_at || "",
+      commit_id: data.commit_id,
+    };
+  }
+
+  /**
+   * Add a single review comment to a PR
+   */
+  async addReviewComment(
+    repo: GitHubRepo,
+    pullNumber: number,
+    body: string,
+    path: string,
+    line: number,
+    commitId: string,
+    side: "LEFT" | "RIGHT" = "RIGHT",
+  ): Promise<PRReviewComment> {
+    logger.debug(
+      `Adding review comment to PR #${pullNumber} at ${path}:${line}`,
+    );
+
+    const { data } = await this.octokit.pulls.createReviewComment({
+      owner: repo.owner,
+      repo: repo.repo,
+      pull_number: pullNumber,
+      body,
+      path,
+      line,
+      commit_id: commitId,
+      side,
+    });
+
+    return {
+      id: data.id,
+      body: data.body,
+      path: data.path,
+      line: data.line || undefined,
+      side: data.side as "LEFT" | "RIGHT" | undefined,
+      commit_id: data.commit_id,
+      user: {
+        login: data.user?.login || "Unknown",
+      },
+      created_at: data.created_at,
+      updated_at: data.updated_at,
+    };
+  }
+
+  /**
+   * Find PR by branch name (searches all open PRs in the org)
+   * Useful when you just know "platform" repo and "feature-branch"
+   */
+  async findPRByBranchInOrg(
+    org: string,
+    repoName: string,
+    branchName: string,
+  ): Promise<PullRequestInfo | null> {
+    logger.debug(
+      `Searching for PR in ${org}/${repoName} for branch ${branchName}`,
+    );
+
+    try {
+      const { data } = await this.octokit.pulls.list({
+        owner: org,
+        repo: repoName,
+        state: "open",
+        head: `${org}:${branchName}`,
+        per_page: 10,
+      });
+
+      if (data.length === 0) {
+        // Try without the org prefix (some repos work differently)
+        const { data: data2 } = await this.octokit.pulls.list({
+          owner: org,
+          repo: repoName,
+          state: "open",
+          per_page: 100,
+        });
+
+        const found = data2.find(
+          (pr) => pr.head.ref.toLowerCase() === branchName.toLowerCase(),
+        );
+
+        if (!found) return null;
+        return this.mapPullRequestResponse(found);
+      }
+
+      return this.mapPullRequestResponse(data[0]!);
+    } catch (error) {
+      logger.warn(`Could not find PR: ${error}`);
+      return null;
+    }
+  }
+
+  /**
+   * Get file content at a specific commit
+   */
+  async getFileContent(
+    repo: GitHubRepo,
+    path: string,
+    ref: string,
+  ): Promise<string | null> {
+    try {
+      const { data } = await this.octokit.repos.getContent({
+        owner: repo.owner,
+        repo: repo.repo,
+        path,
+        ref,
+      });
+
+      if ("content" in data && data.content) {
+        return Buffer.from(data.content, "base64").toString("utf-8");
+      }
+      return null;
+    } catch (error) {
+      logger.debug(`Could not get file content: ${error}`);
+      return null;
+    }
   }
 
   // Helper to map repo response
