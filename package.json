@@ -1,11 +1,11 @@
 {
   "name": "seantokuzo-mcp",
   "version": "1.0.0",
-  "description": "🔥 Sean's MCP Server - Making PRs great again, one commit at a time",
+  "description": "🔥 Kuzo MCP - PR automation, code reviews & JIRA integration",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "sean-mcp": "./dist/cli/index.js"
+    "kuzo": "./dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc",

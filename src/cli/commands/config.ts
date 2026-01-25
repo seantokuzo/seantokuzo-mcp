@@ -33,7 +33,7 @@ export async function setupInteractive(): Promise<void> {
 
   showBox(
     [
-      chalk.bold("Welcome to the Sean-MCP Setup Wizard! 🧙‍♂️"),
+      chalk.bold("Welcome to the Kuzo MCP Setup Wizard! 🧙‍♂️"),
       "",
       "Let's get you configured and ready to automate some PRs.",
       "",
