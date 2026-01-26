@@ -79,16 +79,28 @@ This tells you:
     description: `Create a new GitHub pull request. Use this when the user wants to open a PR.
     
 💡 TIP: Call get_git_context first to auto-detect repo and branch if user didn't specify.
-    
-You can provide context about the changes to generate a better description.
-The tool will analyze commits and file changes automatically.`,
+
+IMPORTANT - AI-Enhanced Descriptions:
+When the user provides brief notes or context about their changes, YOU (Claude) should expand 
+those notes into a comprehensive PR description BEFORE calling this tool. Include:
+- A clear summary of what the PR does
+- Why the changes were made
+- Key implementation details
+- Any breaking changes or migration notes
+- Testing considerations
+
+The 'description' parameter should contain the FULL, well-written description you generate,
+not just the user's raw notes. The tool will format it with headers and stats.
+
+Repository format: You can provide just the repo name (e.g., "bartling-bachelor") if 
+GITHUB_USERNAME is set, or use full "owner/repo" format.`,
     inputSchema: {
       type: "object",
       properties: {
         repository: {
           type: "string",
           description:
-            "Repository in format owner/repo. If not provided, uses current git context.",
+            "Repository name or owner/repo format. If just repo name, uses GITHUB_USERNAME as owner. If omitted, uses current git context.",
         },
         source_branch: {
           type: "string",
@@ -108,7 +120,7 @@ The tool will analyze commits and file changes automatically.`,
         description: {
           type: "string",
           description:
-            "Additional context about the changes to include in the PR description. Ask the user for this!",
+            "The FULL PR description that Claude has expanded from user's notes. Should be comprehensive and well-formatted.",
         },
         draft: {
           type: "boolean",

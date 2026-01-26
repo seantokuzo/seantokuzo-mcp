@@ -286,6 +286,42 @@ is_jira_configured() {
     [[ -n "${JIRA_HOST:-}" && -n "${JIRA_EMAIL:-}" && -n "${JIRA_API_TOKEN:-}" ]]
 }
 
+# Resolve repository - adds GITHUB_USERNAME as owner if only repo name provided
+resolve_repo() {
+    local input="$1"
+    
+    # If already has a slash, it's owner/repo format
+    if [[ "$input" == *"/"* ]]; then
+        echo "$input"
+        return
+    fi
+    
+    # If GITHUB_USERNAME is set, use it as the owner
+    if [[ -n "${GITHUB_USERNAME:-}" ]]; then
+        echo "${GITHUB_USERNAME}/${input}"
+        return
+    fi
+    
+    # Otherwise return as-is (will likely fail)
+    echo "$input"
+}
+
+# Read repo input with smart prompt
+read_repo_input() {
+    local prompt_text="Repository"
+    if [[ -n "${GITHUB_USERNAME:-}" ]]; then
+        prompt_text="Repository (repo name or owner/repo)"
+    else
+        prompt_text="Repository (owner/repo)"
+    fi
+    
+    local input
+    input=$(read_input "$prompt_text")
+    [[ -z "$input" ]] && { echo ""; return; }
+    
+    resolve_repo "$input"
+}
+
 # GitHub API request
 gh_api() {
     local method="$1"
@@ -398,7 +434,7 @@ cmd_pr_list() {
     show_info "Listing Pull Requests"
     
     local repo
-    repo=$(read_input "Repository (owner/repo)")
+    repo=$(read_repo_input)
     [[ -z "$repo" ]] && { show_error "Repository required"; return 1; }
     
     local state
@@ -451,7 +487,7 @@ cmd_pr_create() {
     show_info "Create Pull Request"
     
     local repo
-    repo=$(read_input "Repository (owner/repo)")
+    repo=$(read_repo_input)
     [[ -z "$repo" ]] && { show_error "Repository required"; return 1; }
     
     # Get branches
@@ -534,7 +570,7 @@ cmd_pr_update() {
     show_info "Update Pull Request"
     
     local repo
-    repo=$(read_input "Repository (owner/repo)")
+    repo=$(read_repo_input)
     [[ -z "$repo" ]] && { show_error "Repository required"; return 1; }
     
     local pr_number

@@ -388,6 +388,11 @@ export class JiraService {
       body: JSON.stringify({ jql, maxResults: 50 }),
     });
 
+    if (!data.issues || !Array.isArray(data.issues)) {
+      logger.warn("No issues returned from JIRA search");
+      return [];
+    }
+
     return data.issues.map((issue) => this.mapTicketResponse(issue));
   }
 
@@ -404,6 +409,11 @@ export class JiraService {
       method: "POST",
       body: JSON.stringify({ jql, maxResults }),
     });
+
+    if (!data.issues || !Array.isArray(data.issues)) {
+      logger.warn("No issues returned from JIRA search");
+      return [];
+    }
 
     return data.issues.map((issue) => this.mapTicketResponse(issue));
   }
@@ -424,6 +434,11 @@ export class JiraService {
       method: "POST",
       body: JSON.stringify({ jql, maxResults: 50 }),
     });
+
+    if (!data.issues || !Array.isArray(data.issues)) {
+      logger.warn("No code review issues returned from JIRA search");
+      return [];
+    }
 
     return data.issues.map((issue) => ({
       id: issue.id,

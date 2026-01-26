@@ -40,6 +40,7 @@ export class GitHubService {
 
   /**
    * Parse a GitHub URL or owner/repo string into components
+   * If only repo name is provided and GITHUB_USERNAME is set, uses that as owner
    */
   parseRepoIdentifier(input: string): GitHubRepo {
     // Handle full URLs: https://github.com/owner/repo or git@github.com:owner/repo.git
@@ -54,8 +55,19 @@ export class GitHubService {
       return { owner: parts[0], repo: parts[1] };
     }
 
+    // Handle just repo name - use GITHUB_USERNAME as default owner
+    if (parts.length === 1 && parts[0]) {
+      const config = getConfig();
+      if (config.github.username) {
+        logger.debug(
+          `Using GITHUB_USERNAME (${config.github.username}) as default owner for repo: ${input}`,
+        );
+        return { owner: config.github.username, repo: parts[0] };
+      }
+    }
+
     throw new Error(
-      `Invalid repository identifier: ${input}. Use owner/repo or a GitHub URL.`,
+      `Invalid repository identifier: ${input}. Use owner/repo, a GitHub URL, or just repo name if GITHUB_USERNAME is set.`,
     );
   }
 
