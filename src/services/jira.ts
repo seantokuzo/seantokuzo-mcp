@@ -383,9 +383,10 @@ export class JiraService {
       jql = `project = ${projectKey} AND ${jql}`;
     }
 
-    const data = await this.request<{ issues: any[] }>(
-      `/search?jql=${encodeURIComponent(jql)}&maxResults=50`,
-    );
+    const data = await this.request<{ issues: any[] }>(`/search/jql`, {
+      method: "POST",
+      body: JSON.stringify({ jql, maxResults: 50 }),
+    });
 
     return data.issues.map((issue) => this.mapTicketResponse(issue));
   }
@@ -399,9 +400,10 @@ export class JiraService {
   ): Promise<JiraTicket[]> {
     logger.debug(`Searching tickets with JQL: ${jql}`);
 
-    const data = await this.request<{ issues: any[] }>(
-      `/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`,
-    );
+    const data = await this.request<{ issues: any[] }>(`/search/jql`, {
+      method: "POST",
+      body: JSON.stringify({ jql, maxResults }),
+    });
 
     return data.issues.map((issue) => this.mapTicketResponse(issue));
   }
@@ -418,9 +420,10 @@ export class JiraService {
       jql = `project = ${projectKey} AND ${jql}`;
     }
 
-    const data = await this.request<{ issues: any[] }>(
-      `/search?jql=${encodeURIComponent(jql)}&maxResults=50`,
-    );
+    const data = await this.request<{ issues: any[] }>(`/search/jql`, {
+      method: "POST",
+      body: JSON.stringify({ jql, maxResults: 50 }),
+    });
 
     return data.issues.map((issue) => ({
       id: issue.id,

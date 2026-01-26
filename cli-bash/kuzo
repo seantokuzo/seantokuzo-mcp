@@ -706,11 +706,13 @@ cmd_jira_mine() {
     echo -e "${CYAN}Fetching tickets...${NC}"
     
     local jql="assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC"
-    local encoded_jql
-    encoded_jql=$(url_encode "$jql")
+    local escaped_jql
+    escaped_jql=$(json_escape "$jql")
+    
+    local payload="{\"jql\":\"$escaped_jql\",\"maxResults\":20}"
     
     local result
-    result=$(jira_api GET "/search?jql=$encoded_jql&maxResults=20")
+    result=$(jira_api POST "/search/jql" "$payload")
     
     # Check for issues in response
     if ! echo "$result" | grep -q '"issues"'; then
@@ -851,11 +853,13 @@ cmd_jira_search() {
     echo -e "${CYAN}Searching...${NC}"
     
     local jql="text ~ \"$query\" ORDER BY updated DESC"
-    local encoded_jql
-    encoded_jql=$(url_encode "$jql")
+    local escaped_jql
+    escaped_jql=$(json_escape "$jql")
+    
+    local payload="{\"jql\":\"$escaped_jql\",\"maxResults\":15}"
     
     local result
-    result=$(jira_api GET "/search?jql=$encoded_jql&maxResults=15")
+    result=$(jira_api POST "/search/jql" "$payload")
     
     if ! echo "$result" | grep -q '"key"'; then
         show_info "No tickets found matching: $query"
