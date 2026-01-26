@@ -464,13 +464,13 @@ cmd_pr_create() {
     local branches=()
     local i=1
     
-    # Extract branch names
+    # Extract branch names (handle optional whitespace in JSON)
     while read -r branch_name; do
         [[ -z "$branch_name" ]] && continue
         branches+=("$branch_name")
         echo "  $i) $branch_name"
         ((i++))
-    done < <(echo "$branches_response" | grep -o '"name":"[^"]*"' | sed 's/"name":"//g' | sed 's/"//g')
+    done < <(echo "$branches_response" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/"name"[[:space:]]*:[[:space:]]*"//g' | sed 's/"//g')
     
     echo ""
     echo -ne "${CYAN}Source branch number${NC}: "
