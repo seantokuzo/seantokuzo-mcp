@@ -1,5 +1,5 @@
 /**
- * 🎯 Core Types for Sean's MCP Server
+ * 🎯 Core Types for Kuzo MCP
  * Because TypeScript is the way
  */
 

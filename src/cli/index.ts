@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 🚀 Sean-MCP CLI
+ * 🚀 Kuzo MCP CLI
  * The most glorious PR automation tool ever created
  */
 
@@ -35,7 +35,7 @@ import { isConfigured } from "../utils/config.js";
 const program = new Command();
 
 program
-  .name("sean-mcp")
+  .name("kuzo")
   .description("🚀 PR Automation & GitHub Integration Tool")
   .version("1.0.0", "-v, --version", "Display version")
   .hook("preAction", (thisCommand) => {
@@ -48,8 +48,8 @@ program
     ) {
       if (!isConfigured()) {
         showError(
-          "Sean-MCP is not configured yet!",
-          `Run ${chalk.cyan("sean-mcp setup")} to get started.`,
+          "Kuzo MCP is not configured yet!",
+          `Run ${chalk.cyan("kuzo setup")} to get started.`,
         );
         process.exit(1);
       }
@@ -283,7 +283,7 @@ program
           {
             type: "confirm",
             name: "runSetup",
-            message: "Sean-MCP isn't configured yet. Run setup wizard?",
+            message: "Kuzo MCP isn't configured yet. Run setup wizard?",
             default: true,
           },
         ],

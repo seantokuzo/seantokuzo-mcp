@@ -1,5 +1,5 @@
 /**
- * 🚀 Sean-MCP Main Entry Point
+ * 🚀 Kuzo MCP Main Entry Point
  *
  * This file is the main entry for the package.
  * It exports everything for programmatic usage.
@@ -21,13 +21,13 @@ export * from "./cli/ui/index.js";
 // Info
 console.log(`
 ╔═══════════════════════════════════════════╗
-║           Sean-MCP v1.0.0                 ║
+║           Kuzo MCP v1.0.0                 ║
 ║                                           ║
 ║  Usage:                                   ║
-║    CLI:     npx sean-mcp                  ║
+║    CLI:     npx kuzo                      ║
 ║    MCP:     node dist/mcp/server.js       ║
 ║    Webhook: node dist/server.js           ║
 ║                                           ║
-║  Run 'sean-mcp --help' for commands       ║
+║  Run 'kuzo --help' for commands           ║
 ╚═══════════════════════════════════════════╝
 `);

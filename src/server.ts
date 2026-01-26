@@ -46,7 +46,7 @@ function verifySignature(
 app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
-    service: "sean-mcp-webhook",
+    service: "kuzo-mcp-webhook",
     timestamp: new Date().toISOString(),
   });
 });

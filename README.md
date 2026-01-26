@@ -1,4 +1,4 @@
-# 🚀 Sean-MCP
+# 🚀 Kuzo MCP
 
 > PR Automation & GitHub Integration Tool with personality!
 
@@ -9,9 +9,11 @@ A Model Context Protocol (MCP) server and CLI tool for automating GitHub pull re
 - **🔀 PR Creation** - Create pull requests with auto-generated descriptions
 - **✏️ PR Updates** - Update PR descriptions (auto-updates on push!)
 - **📋 PR Listing** - List and browse PRs for any repo
+- **🎫 JIRA Integration** - View tickets, manage workflow, link to PRs
 - **🧠 MCP Server** - Let Claude manage your PRs for you
 - **🌐 Webhook Server** - Auto-update PRs when you push
 - **🎨 Sleek CLI** - Beautiful terminal UI with multiple personalities
+- **🐚 Bash CLI** - Lightweight bash alternative for systems without Node
 
 ## 🚀 Quick Start
 

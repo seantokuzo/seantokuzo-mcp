@@ -13,7 +13,7 @@ import { getRandomMessage, type MessageType } from "./messages.js";
 import type { PullRequestInfo, RepoInfo } from "../../types/index.js";
 
 // Custom gradients
-const seanGradient = gradient(["#FF6B6B", "#4ECDC4", "#45B7D1"]);
+const kuzoGradient = gradient(["#FF6B6B", "#4ECDC4", "#45B7D1"]);
 const successGradient = gradient(["#56ab2f", "#a8e063"]);
 const errorGradient = gradient(["#ED213A", "#93291E"]);
 const infoGradient = gradient(["#2193b0", "#6dd5ed"]);
@@ -26,8 +26,8 @@ export function showBanner(): void {
 
   console.log();
   console.log(
-    seanGradient(
-      figlet.textSync("SEAN-MCP", {
+    kuzoGradient(
+      figlet.textSync("KUZO MCP", {
         font: "ANSI Shadow",
         horizontalLayout: "fitted",
       }),
@@ -214,7 +214,7 @@ export function showGoodbye(): void {
   console.log();
   console.log(chalk.gray("─────────────────────────────────────────"));
   console.log(
-    seanGradient(getRandomMessage("goodbye", config.cli.personality)),
+    kuzoGradient(getRandomMessage("goodbye", config.cli.personality)),
   );
   console.log(chalk.gray("─────────────────────────────────────────"));
   console.log();

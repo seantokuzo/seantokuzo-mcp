@@ -1,0 +1,1155 @@
+#!/usr/bin/env bash
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║                    🚀 KUZO MCP - Bash CLI                          ║
+# ║         PR Automation & GitHub/JIRA Integration Tool               ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+#
+# A pure bash implementation of the Kuzo MCP CLI.
+# NO DEPENDENCIES - just bash and curl!
+#
+# Usage: ./kuzo [command] [subcommand] [options]
+#        ./kuzo                  # Interactive mode
+#        ./kuzo pr create        # Create a PR
+#        ./kuzo jira mine        # View my tickets
+#
+# Requirements: bash 3.2+, curl (that's it!)
+
+# Don't use set -e - it causes issues with interactive menus
+
+# ============================================
+# 📍 Configuration
+# ============================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Load .env file from project root
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Skip comments and empty lines
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$line" ]] && continue
+        # Skip lines without =
+        [[ ! "$line" =~ = ]] && continue
+        # Only process valid variable assignments
+        if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            # Extract key and value
+            _key="${line%%=*}"
+            _value="${line#*=}"
+            # Remove surrounding quotes if present
+            _value="${_value%\"}"
+            _value="${_value#\"}"
+            _value="${_value%\'}"
+            _value="${_value#\'}"
+            # Export the variable
+            export "$_key=$_value"
+        fi
+    done < "$PROJECT_ROOT/.env"
+fi
+
+# ============================================
+# 🎨 Colors & Styling
+# ============================================
+
+# Check if terminal supports colors
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
+    COLORS_SUPPORTED=true
+else
+    COLORS_SUPPORTED=false
+fi
+
+# ANSI color codes
+if $COLORS_SUPPORTED; then
+    NC='\033[0m'
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'
+    MAGENTA='\033[0;35m'
+    CYAN='\033[0;36m'
+    BOLD='\033[1m'
+    BOLD_RED='\033[1;31m'
+    BOLD_CYAN='\033[1;36m'
+    BOLD_MAGENTA='\033[1;35m'
+    DIM='\033[2m'
+    GRAD1='\033[38;5;204m'
+    GRAD2='\033[38;5;43m'
+    GRAD3='\033[38;5;39m'
+else
+    NC='' RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' CYAN=''
+    BOLD='' BOLD_RED='' BOLD_CYAN='' BOLD_MAGENTA='' DIM=''
+    GRAD1='' GRAD2='' GRAD3=''
+fi
+
+# ============================================
+# 🔧 Pure Bash JSON Parser
+# ============================================
+
+# Extract a simple string value from JSON: json_get '{"key":"value"}' 'key' -> value
+json_get() {
+    local json="$1"
+    local key="$2"
+    # Handle both "key": "value" and "key": value (for numbers/bools)
+    echo "$json" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/' || \
+    echo "$json" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*[^,}\]]*" | head -1 | sed 's/.*: *//' | tr -d ' '
+}
+
+# Extract a number value from JSON
+json_get_num() {
+    local json="$1"
+    local key="$2"
+    echo "$json" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*[0-9]*" | head -1 | sed 's/.*: *//'
+}
+
+# Extract boolean value
+json_get_bool() {
+    local json="$1"
+    local key="$2"
+    echo "$json" | grep -o "\"$key\"[[:space:]]*:[[:space:]]*\(true\|false\)" | head -1 | sed 's/.*: *//'
+}
+
+# Extract nested object value: json_get_nested '{"a":{"b":"c"}}' 'a' 'b' -> c
+json_get_nested() {
+    local json="$1"
+    local key1="$2"
+    local key2="$3"
+    # First extract the nested object, then get the key from it
+    local nested
+    nested=$(echo "$json" | grep -o "\"$key1\"[[:space:]]*:[[:space:]]*{[^}]*}" | head -1 | sed "s/\"$key1\"[[:space:]]*:[[:space:]]*//")
+    json_get "$nested" "$key2"
+}
+
+# Count array items (rough estimate based on pattern)
+json_array_length() {
+    local json="$1"
+    # Count opening braces for objects in array, or count specific patterns
+    echo "$json" | grep -o '"number"' | wc -l | tr -d ' '
+}
+
+# Check if JSON response is an error
+json_is_error() {
+    local json="$1"
+    echo "$json" | grep -q '"message"' && ! echo "$json" | grep -q '"number"'
+}
+
+# Extract array items - outputs one item per line with key fields separated by |
+# Usage: json_array_extract "$json" "number" "state" "title"
+json_array_extract() {
+    local json="$1"
+    shift
+    local keys=("$@")
+    
+    # Remove newlines and split by },{ to get individual objects
+    local cleaned
+    cleaned=$(echo "$json" | tr '\n' ' ' | sed 's/\[//g' | sed 's/\]//g')
+    
+    # Split into objects and process each
+    echo "$cleaned" | grep -o '{[^{]*}' | while read -r obj; do
+        local line=""
+        for key in "${keys[@]}"; do
+            local val
+            if [[ "$key" == *"."* ]]; then
+                # Nested key like "user.login"
+                local k1="${key%%.*}"
+                local k2="${key#*.}"
+                val=$(json_get_nested "$obj" "$k1" "$k2")
+            else
+                val=$(json_get "$obj" "$key")
+            fi
+            [[ -n "$line" ]] && line="$line|"
+            line="$line$val"
+        done
+        echo "$line"
+    done
+}
+
+# URL encode a string
+url_encode() {
+    local string="$1"
+    local strlen=${#string}
+    local encoded=""
+    local pos c o
+    
+    for (( pos=0 ; pos<strlen ; pos++ )); do
+        c=${string:$pos:1}
+        case "$c" in
+            [-_.~a-zA-Z0-9] ) o="$c" ;;
+            * ) printf -v o '%%%02X' "'$c" ;;
+        esac
+        encoded+="$o"
+    done
+    echo "$encoded"
+}
+
+# Create JSON payload (escapes strings properly)
+json_escape() {
+    local str="$1"
+    str="${str//\\/\\\\}"
+    str="${str//\"/\\\"}"
+    str="${str//$'\n'/\\n}"
+    str="${str//$'\r'/\\r}"
+    str="${str//$'\t'/\\t}"
+    echo "$str"
+}
+
+# ============================================
+# 🖼️  Display Functions
+# ============================================
+
+show_banner() {
+    echo ""
+    echo -e "${GRAD1}██╗  ██╗${GRAD2}██╗   ██╗${GRAD3}███████╗${GRAD1} ██████╗ ${NC}"
+    echo -e "${GRAD1}██║ ██╔╝${GRAD2}██║   ██║${GRAD3}╚══███╔╝${GRAD1}██╔═══██╗${NC}"
+    echo -e "${GRAD1}█████╔╝ ${GRAD2}██║   ██║${GRAD3}  ███╔╝ ${GRAD1}██║   ██║${NC}"
+    echo -e "${GRAD1}██╔═██╗ ${GRAD2}██║   ██║${GRAD3} ███╔╝  ${GRAD1}██║   ██║${NC}"
+    echo -e "${GRAD1}██║  ██╗${GRAD2}╚██████╔╝${GRAD3}███████╗${GRAD1}╚██████╔╝${NC}"
+    echo -e "${GRAD1}╚═╝  ╚═╝${GRAD2} ╚═════╝ ${GRAD3}╚══════╝${GRAD1} ╚═════╝ ${NC}"
+    echo -e "${DIM}        M C P   •   B A S H   C L I${NC}"
+    echo ""
+}
+
+show_box() {
+    local title="$1"
+    local content="$2"
+    local color="${3:-$CYAN}"
+    
+    echo -e "${color}╔════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${color}║${NC} ${BOLD}${title}${NC}"
+    echo -e "${color}╟────────────────────────────────────────────────────────╢${NC}"
+    while IFS= read -r line; do
+        printf "${color}║${NC} %-54s ${color}║${NC}\n" "$line"
+    done <<< "$content"
+    echo -e "${color}╚════════════════════════════════════════════════════════╝${NC}"
+}
+
+show_success() {
+    echo -e "${GREEN}✓${NC} ${BOLD}$1${NC}"
+    [[ -n "${2:-}" ]] && echo -e "  ${DIM}$2${NC}"
+}
+
+show_error() {
+    echo -e "${RED}✗${NC} ${BOLD_RED}$1${NC}" >&2
+    [[ -n "${2:-}" ]] && echo -e "  ${DIM}$2${NC}" >&2
+}
+
+show_warning() {
+    echo -e "${YELLOW}⚠${NC} ${BOLD}$1${NC}"
+    [[ -n "${2:-}" ]] && echo -e "  ${DIM}$2${NC}"
+}
+
+show_info() {
+    echo -e "${BLUE}ℹ${NC} ${BOLD}$1${NC}"
+    [[ -n "${2:-}" ]] && echo -e "  ${DIM}$2${NC}"
+}
+
+show_goodbye() {
+    local messages=(
+        "May your PRs be merged swiftly! 🚀"
+        "Keep shipping! 📦"
+        "Code on, friend! 💻"
+        "See you in the next commit! 👋"
+        "Happy coding! ✨"
+        "PR you later! 🔀"
+        "Git outta here! (in a good way) 😄"
+    )
+    # Use RANDOM with modulo for bash 3 compatibility
+    local idx=$((RANDOM % ${#messages[@]}))
+    local random_msg="${messages[$idx]}"
+    
+    echo ""
+    echo -e "${DIM}─────────────────────────────────────────${NC}"
+    echo -e "${GRAD2}$random_msg${NC}"
+    echo -e "${DIM}─────────────────────────────────────────${NC}"
+    echo ""
+}
+
+# ============================================
+# 🔧 Utility Functions
+# ============================================
+
+check_requirements() {
+    if ! command -v curl >/dev/null 2>&1; then
+        show_error "curl is required but not found"
+        exit 1
+    fi
+}
+
+check_config() {
+    if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+        show_error "GITHUB_TOKEN not set!"
+        echo "Run: ./kuzo setup"
+        exit 1
+    fi
+}
+
+is_jira_configured() {
+    [[ -n "${JIRA_HOST:-}" && -n "${JIRA_EMAIL:-}" && -n "${JIRA_API_TOKEN:-}" ]]
+}
+
+# GitHub API request
+gh_api() {
+    local method="$1"
+    local endpoint="$2"
+    local data="${3:-}"
+    
+    local url="https://api.github.com${endpoint}"
+    local args=(-s -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3+json")
+    
+    if [[ "$method" != "GET" ]]; then
+        args+=(-X "$method")
+    fi
+    
+    if [[ -n "$data" ]]; then
+        args+=(-H "Content-Type: application/json" -d "$data")
+    fi
+    
+    curl "${args[@]}" "$url"
+}
+
+# JIRA API request
+jira_api() {
+    local method="$1"
+    local endpoint="$2"
+    local data="${3:-}"
+    
+    local url="https://${JIRA_HOST}/rest/api/3${endpoint}"
+    # Base64 encode credentials - use printf for compatibility
+    local auth
+    auth=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 | tr -d '\n')
+    local args=(-s -H "Authorization: Basic $auth" -H "Accept: application/json")
+    
+    if [[ "$method" != "GET" ]]; then
+        args+=(-X "$method")
+    fi
+    
+    if [[ -n "$data" ]]; then
+        args+=(-H "Content-Type: application/json" -d "$data")
+    fi
+    
+    curl "${args[@]}" "$url"
+}
+
+# Read user input with prompt
+read_input() {
+    local prompt="$1"
+    local default="${2:-}"
+    local input
+    
+    if [[ -n "$default" ]]; then
+        echo -ne "${CYAN}$prompt${NC} ${DIM}[$default]${NC}: " >&2
+    else
+        echo -ne "${CYAN}$prompt${NC}: " >&2
+    fi
+    
+    read -r input
+    echo "${input:-$default}"
+}
+
+# Read password (hidden input)
+read_password() {
+    local prompt="$1"
+    local input
+    echo -ne "${CYAN}$prompt${NC}: " >&2
+    read -rs input
+    echo "" >&2
+    echo "$input"
+}
+
+# Confirm action
+confirm() {
+    local prompt="${1:-Are you sure?}"
+    local answer
+    echo -ne "${YELLOW}$prompt${NC} [y/N]: " >&2
+    read -r answer
+    [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+# Simple selection menu (no fzf needed)
+select_menu() {
+    local prompt="$1"
+    shift
+    local options=("$@")
+    
+    # Output prompt to stderr so it doesn't get captured
+    echo -e "${CYAN}$prompt${NC}" >&2
+    local i=1
+    for opt in "${options[@]}"; do
+        echo "  $i) $opt" >&2
+        ((i++))
+    done
+    echo -n "> " >&2
+    read -r choice
+    
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#options[@]} ]]; then
+        echo "${options[$((choice-1))]}"
+    else
+        echo ""
+    fi
+}
+
+# ============================================
+# 📋 PR Commands
+# ============================================
+
+cmd_pr_list() {
+    check_config
+    
+    show_banner
+    show_info "Listing Pull Requests"
+    
+    local repo
+    repo=$(read_input "Repository (owner/repo)")
+    [[ -z "$repo" ]] && { show_error "Repository required"; return 1; }
+    
+    local state
+    state=$(select_menu "Select state:" "open" "closed" "all")
+    state="${state:-open}"
+    
+    echo ""
+    echo -e "${CYAN}Fetching PRs...${NC}"
+    
+    local response
+    response=$(gh_api GET "/repos/$repo/pulls?state=$state&per_page=20")
+    
+    if json_is_error "$response"; then
+        local err_msg
+        err_msg=$(json_get "$response" "message")
+        show_error "API Error" "$err_msg"
+        return 1
+    fi
+    
+    # Check if empty array
+    if [[ "$response" == "[]" ]] || [[ -z "$(echo "$response" | grep '"number"')" ]]; then
+        show_info "No pull requests found"
+        return 0
+    fi
+    
+    echo ""
+    echo -e "${BOLD}Pull Requests for $repo${NC}"
+    echo -e "${DIM}──────────────────────────────────────────${NC}"
+    
+    # Parse and display PRs
+    json_array_extract "$response" "number" "state" "title" "user.login" "head.ref" | while IFS='|' read -r number state title author branch; do
+        [[ -z "$number" ]] && continue
+        local state_icon
+        case "$state" in
+            open) state_icon="${GREEN}●${NC}" ;;
+            closed) state_icon="${RED}●${NC}" ;;
+            *) state_icon="${YELLOW}●${NC}" ;;
+        esac
+        echo -e "  ${state_icon} ${BOLD}#$number${NC} $title"
+        echo -e "    ${DIM}by $author • $branch${NC}"
+    done
+    
+    echo ""
+}
+
+cmd_pr_create() {
+    check_config
+    
+    show_banner
+    show_info "Create Pull Request"
+    
+    local repo
+    repo=$(read_input "Repository (owner/repo)")
+    [[ -z "$repo" ]] && { show_error "Repository required"; return 1; }
+    
+    # Get branches
+    echo -e "${CYAN}Fetching branches...${NC}"
+    local branches_response
+    branches_response=$(gh_api GET "/repos/$repo/branches?per_page=50")
+    
+    echo ""
+    echo -e "${BOLD}Available branches:${NC}"
+    local branches=()
+    local i=1
+    
+    # Extract branch names (handle optional whitespace in JSON)
+    while read -r branch_name; do
+        [[ -z "$branch_name" ]] && continue
+        branches+=("$branch_name")
+        echo "  $i) $branch_name"
+        ((i++))
+    done < <(echo "$branches_response" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/"name"[[:space:]]*:[[:space:]]*"//g' | sed 's/"//g')
+    
+    echo ""
+    echo -ne "${CYAN}Source branch number${NC}: "
+    read -r src_choice
+    local head_branch=""
+    if [[ "$src_choice" =~ ^[0-9]+$ ]] && [[ "$src_choice" -ge 1 ]] && [[ "$src_choice" -le ${#branches[@]} ]]; then
+        head_branch="${branches[$((src_choice-1))]}"
+    fi
+    [[ -z "$head_branch" ]] && head_branch=$(read_input "Source branch name")
+    [[ -z "$head_branch" ]] && { show_error "Source branch required"; return 1; }
+    
+    echo -ne "${CYAN}Target branch number${NC} ${DIM}[default: main]${NC}: "
+    read -r tgt_choice
+    local base_branch="main"
+    if [[ "$tgt_choice" =~ ^[0-9]+$ ]] && [[ "$tgt_choice" -ge 1 ]] && [[ "$tgt_choice" -le ${#branches[@]} ]]; then
+        base_branch="${branches[$((tgt_choice-1))]}"
+    elif [[ -n "$tgt_choice" ]]; then
+        base_branch="$tgt_choice"
+    fi
+    
+    local title
+    title=$(read_input "PR Title")
+    [[ -z "$title" ]] && { show_error "Title required"; return 1; }
+    
+    local body
+    body=$(read_input "Description (optional)")
+    
+    local draft="false"
+    confirm "Create as draft?" && draft="true"
+    
+    echo ""
+    echo -e "${CYAN}Creating PR...${NC}"
+    
+    # Build JSON manually
+    local escaped_title escaped_body
+    escaped_title=$(json_escape "$title")
+    escaped_body=$(json_escape "$body")
+    local payload="{\"title\":\"$escaped_title\",\"head\":\"$head_branch\",\"base\":\"$base_branch\",\"body\":\"$escaped_body\",\"draft\":$draft}"
+    
+    local result
+    result=$(gh_api POST "/repos/$repo/pulls" "$payload")
+    
+    local pr_number
+    pr_number=$(json_get_num "$result" "number")
+    
+    if [[ -n "$pr_number" ]] && [[ "$pr_number" != "null" ]]; then
+        local pr_url
+        pr_url=$(json_get "$result" "html_url")
+        show_success "PR #$pr_number created!" "$pr_url"
+    else
+        local error_msg
+        error_msg=$(json_get "$result" "message")
+        show_error "Failed to create PR" "${error_msg:-Unknown error}"
+    fi
+}
+
+cmd_pr_update() {
+    check_config
+    
+    show_banner
+    show_info "Update Pull Request"
+    
+    local repo
+    repo=$(read_input "Repository (owner/repo)")
+    [[ -z "$repo" ]] && { show_error "Repository required"; return 1; }
+    
+    local pr_number
+    pr_number=$(read_input "PR Number")
+    [[ -z "$pr_number" ]] && { show_error "PR number required"; return 1; }
+    
+    # Get current PR
+    echo -e "${CYAN}Fetching PR...${NC}"
+    local pr
+    pr=$(gh_api GET "/repos/$repo/pulls/$pr_number")
+    
+    local current_title current_body
+    current_title=$(json_get "$pr" "title")
+    current_body=$(json_get "$pr" "body")
+    
+    echo -e "${DIM}Current title: $current_title${NC}"
+    
+    local new_title
+    new_title=$(read_input "New title (enter to keep)")
+    new_title="${new_title:-$current_title}"
+    
+    echo "New body (enter to keep, 'edit' to open editor):"
+    read -r body_input
+    
+    local new_body
+    if [[ "$body_input" == "edit" ]]; then
+        local tmp_file
+        tmp_file=$(mktemp)
+        echo "$current_body" > "$tmp_file"
+        ${EDITOR:-vi} "$tmp_file"
+        new_body=$(cat "$tmp_file")
+        rm -f "$tmp_file"
+    elif [[ -n "$body_input" ]]; then
+        new_body="$body_input"
+    else
+        new_body="$current_body"
+    fi
+    
+    echo ""
+    echo -e "${CYAN}Updating PR...${NC}"
+    
+    local escaped_title escaped_body
+    escaped_title=$(json_escape "$new_title")
+    escaped_body=$(json_escape "$new_body")
+    local payload="{\"title\":\"$escaped_title\",\"body\":\"$escaped_body\"}"
+    
+    local result
+    result=$(gh_api PATCH "/repos/$repo/pulls/$pr_number" "$payload")
+    
+    local updated_number
+    updated_number=$(json_get_num "$result" "number")
+    
+    if [[ -n "$updated_number" ]]; then
+        show_success "PR #$pr_number updated!"
+    else
+        show_error "Failed to update PR"
+    fi
+}
+
+# ============================================
+# 📦 Repo Commands
+# ============================================
+
+cmd_repo_list() {
+    check_config
+    
+    show_banner
+    show_info "Listing Repositories"
+    
+    local type
+    type=$(select_menu "Select type:" "all" "owner" "public" "private")
+    type="${type:-all}"
+    
+    echo ""
+    echo -e "${CYAN}Fetching repos...${NC}"
+    
+    local response
+    response=$(gh_api GET "/user/repos?type=$type&sort=updated&per_page=30")
+    
+    echo ""
+    echo -e "${BOLD}Your Repositories${NC}"
+    echo -e "${DIM}──────────────────────────────────────────${NC}"
+    
+    # Extract repo info using grep for each field
+    # Get all full_name values (handle optional whitespace after colon)
+    local names
+    names=$(echo "$response" | grep -o '"full_name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/"full_name"[[:space:]]*:[[:space:]]*"//g' | sed 's/"//g')
+    
+    # Get private status (appears after full_name in response)
+    local privates
+    privates=$(echo "$response" | grep -o '"private"[[:space:]]*:[[:space:]]*[^,]*' | sed 's/"private"[[:space:]]*:[[:space:]]*//')
+    
+    # Display each repo
+    local i=0
+    while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        local is_private
+        is_private=$(echo "$privates" | sed -n "$((i+1))p")
+        local vis_icon
+        [[ "$is_private" == "true" ]] && vis_icon="${YELLOW}🔒${NC}" || vis_icon="${GREEN}🌐${NC}"
+        echo -e "  ${vis_icon} ${BOLD}$name${NC}"
+        ((i++))
+    done <<< "$names"
+    
+    echo ""
+}
+
+cmd_repo_create() {
+    check_config
+    
+    show_banner
+    show_info "Create Repository"
+    
+    local name
+    name=$(read_input "Repository name")
+    [[ -z "$name" ]] && { show_error "Name required"; return 1; }
+    
+    local description
+    description=$(read_input "Description (optional)")
+    
+    local private="false"
+    confirm "Make private?" && private="true"
+    
+    local init="false"
+    confirm "Initialize with README?" && init="true"
+    
+    echo ""
+    echo -e "${CYAN}Creating repository...${NC}"
+    
+    local escaped_name escaped_desc
+    escaped_name=$(json_escape "$name")
+    escaped_desc=$(json_escape "$description")
+    local payload="{\"name\":\"$escaped_name\",\"description\":\"$escaped_desc\",\"private\":$private,\"auto_init\":$init}"
+    
+    local result
+    result=$(gh_api POST "/user/repos" "$payload")
+    
+    local repo_id
+    repo_id=$(json_get_num "$result" "id")
+    
+    if [[ -n "$repo_id" ]]; then
+        local repo_url clone_url
+        repo_url=$(json_get "$result" "html_url")
+        clone_url=$(json_get "$result" "clone_url")
+        
+        show_success "Repository created!" "$repo_url"
+        echo ""
+        echo -e "${DIM}Clone with: git clone $clone_url${NC}"
+    else
+        local error_msg
+        error_msg=$(json_get "$result" "message")
+        show_error "Failed to create repo" "${error_msg:-Unknown error}"
+    fi
+}
+
+# ============================================
+# 🎫 JIRA Commands
+# ============================================
+
+cmd_jira_mine() {
+    if ! is_jira_configured; then
+        show_error "JIRA not configured" "Set JIRA_HOST, JIRA_EMAIL, and JIRA_API_TOKEN in .env"
+        return 1
+    fi
+    
+    show_banner
+    show_info "My JIRA Tickets"
+    
+    echo -e "${CYAN}Fetching tickets...${NC}"
+    
+    local jql="assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC"
+    local encoded_jql
+    encoded_jql=$(url_encode "$jql")
+    
+    local result
+    result=$(jira_api GET "/search?jql=$encoded_jql&maxResults=20")
+    
+    # Check for issues in response
+    if ! echo "$result" | grep -q '"issues"'; then
+        show_error "Failed to fetch tickets"
+        return 1
+    fi
+    
+    if ! echo "$result" | grep -q '"key"'; then
+        show_info "No tickets assigned to you"
+        return 0
+    fi
+    
+    echo ""
+    echo -e "${BOLD}Your Tickets${NC}"
+    echo -e "${DIM}──────────────────────────────────────────${NC}"
+    
+    # Parse tickets - JIRA has nested structure
+    echo "$result" | grep -o '"key":"[^"]*"' | sed 's/"key":"//g' | sed 's/"//g' | while read -r key; do
+        [[ -z "$key" ]] && continue
+        # Get summary for this key (rough extraction)
+        local summary
+        summary=$(echo "$result" | grep -o "\"key\":\"$key\"[^}]*\"summary\":\"[^\"]*\"" | grep -o '"summary":"[^"]*"' | sed 's/"summary":"//g' | sed 's/"//g' | head -1)
+        echo -e "  ${BOLD_CYAN}$key${NC} $summary"
+    done
+    
+    echo ""
+}
+
+cmd_jira_move() {
+    if ! is_jira_configured; then
+        show_error "JIRA not configured"
+        return 1
+    fi
+    
+    show_banner
+    show_info "Move JIRA Ticket"
+    
+    local ticket_key="${1:-}"
+    [[ -z "$ticket_key" ]] && ticket_key=$(read_input "Ticket key (e.g., PROJ-123)")
+    [[ -z "$ticket_key" ]] && { show_error "Ticket key required"; return 1; }
+    
+    echo -e "${CYAN}Fetching available transitions...${NC}"
+    
+    local transitions
+    transitions=$(jira_api GET "/issue/$ticket_key/transitions")
+    
+    if ! echo "$transitions" | grep -q '"id"'; then
+        show_error "No transitions available or ticket not found"
+        return 1
+    fi
+    
+    echo ""
+    echo -e "${BOLD}Available transitions:${NC}"
+    
+    # Extract transitions
+    local trans_ids=()
+    local trans_names=()
+    local i=1
+    
+    while read -r trans_line; do
+        [[ -z "$trans_line" ]] && continue
+        local tid tname
+        tid=$(echo "$trans_line" | cut -d'|' -f1)
+        tname=$(echo "$trans_line" | cut -d'|' -f2)
+        trans_ids+=("$tid")
+        trans_names+=("$tname")
+        echo "  $i) $tname"
+        ((i++))
+    done < <(echo "$transitions" | grep -o '"id":"[^"]*"[^}]*"name":"[^"]*"' | sed 's/"id":"//g' | sed 's/".*"name":"/|/g' | sed 's/"//g')
+    
+    echo -n "> "
+    read -r choice
+    
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le ${#trans_ids[@]} ]]; then
+        local transition_id="${trans_ids[$((choice-1))]}"
+        local transition_name="${trans_names[$((choice-1))]}"
+        
+        echo ""
+        echo -e "${CYAN}Moving ticket to $transition_name...${NC}"
+        
+        local payload="{\"transition\":{\"id\":\"$transition_id\"}}"
+        
+        jira_api POST "/issue/$ticket_key/transitions" "$payload" >/dev/null
+        
+        show_success "Ticket $ticket_key moved to $transition_name"
+    else
+        show_error "Invalid selection"
+    fi
+}
+
+cmd_jira_comment() {
+    if ! is_jira_configured; then
+        show_error "JIRA not configured"
+        return 1
+    fi
+    
+    show_banner
+    show_info "Add Comment to Ticket"
+    
+    local ticket_key
+    ticket_key=$(read_input "Ticket key (e.g., PROJ-123)")
+    [[ -z "$ticket_key" ]] && { show_error "Ticket key required"; return 1; }
+    
+    local comment
+    comment=$(read_input "Comment")
+    [[ -z "$comment" ]] && { show_error "Comment required"; return 1; }
+    
+    echo ""
+    echo -e "${CYAN}Adding comment...${NC}"
+    
+    local escaped_comment
+    escaped_comment=$(json_escape "$comment")
+    local payload="{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"$escaped_comment\"}]}]}}"
+    
+    local result
+    result=$(jira_api POST "/issue/$ticket_key/comment" "$payload")
+    
+    if echo "$result" | grep -q '"id"'; then
+        show_success "Comment added to $ticket_key"
+    else
+        show_error "Failed to add comment"
+    fi
+}
+
+cmd_jira_search() {
+    if ! is_jira_configured; then
+        show_error "JIRA not configured"
+        return 1
+    fi
+    
+    show_banner
+    show_info "Search JIRA Tickets"
+    
+    local query
+    query=$(read_input "Search query")
+    [[ -z "$query" ]] && { show_error "Query required"; return 1; }
+    
+    echo -e "${CYAN}Searching...${NC}"
+    
+    local jql="text ~ \"$query\" ORDER BY updated DESC"
+    local encoded_jql
+    encoded_jql=$(url_encode "$jql")
+    
+    local result
+    result=$(jira_api GET "/search?jql=$encoded_jql&maxResults=15")
+    
+    if ! echo "$result" | grep -q '"key"'; then
+        show_info "No tickets found matching: $query"
+        return 0
+    fi
+    
+    echo ""
+    echo -e "${BOLD}Search Results${NC}"
+    echo -e "${DIM}──────────────────────────────────────────${NC}"
+    
+    echo "$result" | grep -o '"key":"[^"]*"' | sed 's/"key":"//g' | sed 's/"//g' | while read -r key; do
+        [[ -z "$key" ]] && continue
+        local summary
+        summary=$(echo "$result" | grep -o "\"key\":\"$key\"[^}]*\"summary\":\"[^\"]*\"" | grep -o '"summary":"[^"]*"' | sed 's/"summary":"//g' | sed 's/"//g' | head -1)
+        echo -e "  ${BOLD_CYAN}$key${NC} $summary"
+    done
+    
+    echo ""
+}
+
+# ============================================
+# ⚙️  Config Commands
+# ============================================
+
+cmd_config_status() {
+    show_banner
+    echo -e "${BOLD}Configuration Status${NC}"
+    echo -e "${DIM}──────────────────────────────────────────${NC}"
+    echo ""
+    
+    # GitHub
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        echo -e "  ${GREEN}✓${NC} GitHub: Configured as ${BOLD}${GITHUB_USERNAME:-unknown}${NC}"
+    else
+        echo -e "  ${RED}✗${NC} GitHub: Not configured"
+    fi
+    
+    # JIRA
+    if is_jira_configured; then
+        echo -e "  ${GREEN}✓${NC} JIRA: Configured (${JIRA_HOST})"
+    else
+        echo -e "  ${YELLOW}○${NC} JIRA: Not configured (optional)"
+    fi
+    
+    # GitHub Org
+    if [[ -n "${GITHUB_ORG:-}" ]]; then
+        echo -e "  ${GREEN}✓${NC} GitHub Org: ${GITHUB_ORG}"
+    else
+        echo -e "  ${DIM}○${NC} GitHub Org: Not set"
+    fi
+    
+    echo ""
+    echo -e "${DIM}Config file: $PROJECT_ROOT/.env${NC}"
+    echo ""
+}
+
+cmd_setup() {
+    show_banner
+    
+    show_box "Welcome to Kuzo MCP Setup! 🧙‍♂️" "Let's configure your environment.
+
+You'll need:
+  • A GitHub Personal Access Token
+  • Your GitHub username"
+    
+    echo ""
+    
+    local github_token
+    github_token=$(read_password "GitHub Personal Access Token")
+    
+    local github_username
+    github_username=$(read_input "GitHub Username")
+    
+    echo ""
+    show_info "JIRA configuration is optional"
+    
+    local jira_host="" jira_email="" jira_token=""
+    if confirm "Configure JIRA?"; then
+        jira_host=$(read_input "JIRA Host (e.g., company.atlassian.net)")
+        jira_email=$(read_input "JIRA Email")
+        jira_token=$(read_password "JIRA API Token")
+    fi
+    
+    echo ""
+    echo -e "${CYAN}Writing configuration...${NC}"
+    
+    cat > "$PROJECT_ROOT/.env" << EOF
+# ╔═══════════════════════════════════════════════════════════════════╗
+# ║                    🚀 Kuzo MCP Configuration                       ║
+# ╚═══════════════════════════════════════════════════════════════════╝
+
+# GitHub Configuration
+GITHUB_TOKEN=$github_token
+GITHUB_USERNAME=$github_username
+GITHUB_ORG=
+
+# JIRA Configuration
+JIRA_HOST=$jira_host
+JIRA_EMAIL=$jira_email
+JIRA_API_TOKEN=$jira_token
+
+# Webhook Server
+WEBHOOK_PORT=3847
+WEBHOOK_SECRET=
+
+# CLI Preferences
+CLI_PERSONALITY=helpful
+
+# Editor for PR descriptions
+EDITOR=vi
+EOF
+    
+    show_success "Configuration saved!"
+    echo ""
+    
+    # Reload config
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$line" ]] && continue
+        if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            export "$line"
+        fi
+    done < "$PROJECT_ROOT/.env"
+    
+    cmd_config_status
+}
+
+# ============================================
+# 🎮 Interactive Mode
+# ============================================
+
+interactive_menu() {
+    show_banner
+    
+    if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+        show_warning "Kuzo MCP isn't configured yet!"
+        if confirm "Run setup wizard?"; then
+            cmd_setup
+        fi
+        show_goodbye
+        return
+    fi
+    
+    echo -e "${BOLD}What would you like to do?${NC}"
+    echo ""
+    if is_jira_configured; then
+        echo -e "${DIM}─── JIRA ───${NC}"
+        echo "  1) 🎫 My Tickets"
+        echo "  2) 📍 Move Ticket"
+        echo "  3) 💬 Add Comment"
+        echo "  4) 🔎 Search Tickets"
+        echo ""
+    fi
+    echo -e "${DIM}─── Pull Requests ───${NC}"
+    echo "  5) 🆕 Create a PR"
+    echo "  6) ✏️  Update a PR"
+    echo "  7) 📋 List PRs"
+    echo ""
+    echo -e "${DIM}─── Repositories ───${NC}"
+    echo "  8) 📦 Create a Repo"
+    echo "  9) 📚 List My Repos"
+    echo ""
+    echo -e "${DIM}─── Settings ───${NC}"
+    echo "  10) ⚙️  Check Config"
+    echo "  11) 🔧 Run Setup"
+    echo ""
+    echo "  0) 👋 Exit"
+    echo ""
+    echo -n "> "
+    read -r choice
+    
+    case "$choice" in
+        1) is_jira_configured && cmd_jira_mine || show_error "JIRA not configured" ;;
+        2) is_jira_configured && cmd_jira_move || show_error "JIRA not configured" ;;
+        3) is_jira_configured && cmd_jira_comment || show_error "JIRA not configured" ;;
+        4) is_jira_configured && cmd_jira_search || show_error "JIRA not configured" ;;
+        5) cmd_pr_create ;;
+        6) cmd_pr_update ;;
+        7) cmd_pr_list ;;
+        8) cmd_repo_create ;;
+        9) cmd_repo_list ;;
+        10) cmd_config_status ;;
+        11) cmd_setup ;;
+        0|q|exit) ;;
+        *) show_error "Invalid option" ;;
+    esac
+    
+    show_goodbye
+}
+
+# ============================================
+# 📚 Help
+# ============================================
+
+show_help() {
+    show_banner
+    echo -e "${BOLD}Usage:${NC} kuzo [command] [subcommand]"
+    echo ""
+    echo -e "${BOLD}Commands:${NC}"
+    echo ""
+    echo -e "  ${CYAN}pr${NC}          Pull request management"
+    echo "    create    Create a new pull request"
+    echo "    update    Update an existing pull request"
+    echo "    list      List pull requests"
+    echo ""
+    echo -e "  ${CYAN}repo${NC}        Repository management"
+    echo "    create    Create a new repository"
+    echo "    list      List your repositories"
+    echo ""
+    echo -e "  ${CYAN}jira${NC}        JIRA integration"
+    echo "    mine      View your assigned tickets"
+    echo "    move      Move a ticket to different status"
+    echo "    comment   Add comment to a ticket"
+    echo "    search    Search tickets"
+    echo ""
+    echo -e "  ${CYAN}config${NC}      Configuration"
+    echo "    status    Show configuration status"
+    echo ""
+    echo -e "  ${CYAN}setup${NC}       Run the setup wizard"
+    echo ""
+    echo -e "${BOLD}Examples:${NC}"
+    echo "  kuzo                    # Interactive mode"
+    echo "  kuzo pr create          # Create a pull request"
+    echo "  kuzo jira mine          # View my JIRA tickets"
+    echo "  kuzo config status      # Check configuration"
+    echo ""
+    echo -e "${BOLD}Requirements:${NC}"
+    echo "  • bash 3.2+ (included on macOS/Linux)"
+    echo "  • curl (usually pre-installed)"
+    echo "  • That's it! No jq, no python, no node"
+    echo ""
+}
+
+# ============================================
+# 🚀 Main Entry Point
+# ============================================
+
+main() {
+    check_requirements
+    
+    local command="${1:-}"
+    local subcommand="${2:-}"
+    
+    case "$command" in
+        "")
+            interactive_menu
+            ;;
+        "-h"|"--help"|"help")
+            show_help
+            ;;
+        "-v"|"--version"|"version")
+            echo "Kuzo MCP Bash CLI v1.0.0 (pure bash, no dependencies)"
+            ;;
+        "setup")
+            cmd_setup
+            show_goodbye
+            ;;
+        "config")
+            case "$subcommand" in
+                ""|"status") cmd_config_status ;;
+                "setup") cmd_setup; show_goodbye ;;
+                *) show_error "Unknown config command: $subcommand" ;;
+            esac
+            ;;
+        "pr")
+            case "$subcommand" in
+                "create"|"new") cmd_pr_create; show_goodbye ;;
+                "update"|"edit") cmd_pr_update; show_goodbye ;;
+                "list"|"ls"|"") cmd_pr_list; show_goodbye ;;
+                *) show_error "Unknown pr command: $subcommand" ;;
+            esac
+            ;;
+        "repo")
+            case "$subcommand" in
+                "create"|"new") cmd_repo_create; show_goodbye ;;
+                "list"|"ls"|"") cmd_repo_list; show_goodbye ;;
+                *) show_error "Unknown repo command: $subcommand" ;;
+            esac
+            ;;
+        "jira")
+            case "$subcommand" in
+                "mine"|"tickets"|"") cmd_jira_mine; show_goodbye ;;
+                "move") cmd_jira_move "${3:-}"; show_goodbye ;;
+                "comment"|"c") cmd_jira_comment; show_goodbye ;;
+                "search"|"s") cmd_jira_search; show_goodbye ;;
+                *) show_error "Unknown jira command: $subcommand" ;;
+            esac
+            ;;
+        *)
+            show_error "Unknown command: $command"
+            echo ""
+            show_help
+            ;;
+    esac
+}
+
+main "$@"
