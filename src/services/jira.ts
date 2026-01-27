@@ -383,9 +383,15 @@ export class JiraService {
       jql = `project = ${projectKey} AND ${jql}`;
     }
 
-    const data = await this.request<{ issues: any[] }>(
-      `/search?jql=${encodeURIComponent(jql)}&maxResults=50`,
-    );
+    const data = await this.request<{ issues: any[] }>(`/search/jql`, {
+      method: "POST",
+      body: JSON.stringify({ jql, maxResults: 50 }),
+    });
+
+    if (!data.issues || !Array.isArray(data.issues)) {
+      logger.warn("No issues returned from JIRA search");
+      return [];
+    }
 
     return data.issues.map((issue) => this.mapTicketResponse(issue));
   }
@@ -399,9 +405,15 @@ export class JiraService {
   ): Promise<JiraTicket[]> {
     logger.debug(`Searching tickets with JQL: ${jql}`);
 
-    const data = await this.request<{ issues: any[] }>(
-      `/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}`,
-    );
+    const data = await this.request<{ issues: any[] }>(`/search/jql`, {
+      method: "POST",
+      body: JSON.stringify({ jql, maxResults }),
+    });
+
+    if (!data.issues || !Array.isArray(data.issues)) {
+      logger.warn("No issues returned from JIRA search");
+      return [];
+    }
 
     return data.issues.map((issue) => this.mapTicketResponse(issue));
   }
@@ -418,9 +430,15 @@ export class JiraService {
       jql = `project = ${projectKey} AND ${jql}`;
     }
 
-    const data = await this.request<{ issues: any[] }>(
-      `/search?jql=${encodeURIComponent(jql)}&maxResults=50`,
-    );
+    const data = await this.request<{ issues: any[] }>(`/search/jql`, {
+      method: "POST",
+      body: JSON.stringify({ jql, maxResults: 50 }),
+    });
+
+    if (!data.issues || !Array.isArray(data.issues)) {
+      logger.warn("No code review issues returned from JIRA search");
+      return [];
+    }
 
     return data.issues.map((issue) => ({
       id: issue.id,

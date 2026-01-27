@@ -835,13 +835,15 @@ function displayTicketList(tickets: JiraTicket[]): void {
   );
 
   tickets.forEach((ticket) => {
-    const statusName = ticket.status.name;
+    const statusName = ticket.status?.name || "Unknown";
     const statusColor = getStatusColor(statusName);
     const priorityName = ticket.priority?.name || "None";
     const priorityIcon = getPriorityIcon(priorityName);
+    const ticketKey = ticket.key || "???";
+    const summary = ticket.summary || "";
 
     console.log(
-      `  ${priorityIcon} ${chalk.yellow(ticket.key.padEnd(12))} ${statusColor(statusName.padEnd(15))} ${chalk.white(ticket.summary.slice(0, 45))}${ticket.summary.length > 45 ? "..." : ""}`,
+      `  ${priorityIcon} ${chalk.yellow(ticketKey.padEnd(12))} ${statusColor(statusName.padEnd(15))} ${chalk.white(summary.slice(0, 45))}${summary.length > 45 ? "..." : ""}`,
     );
   });
 
