@@ -20,6 +20,7 @@
 - [Migration Plan](#migration-plan)
   - [Phase 1: Core Infrastructure](#phase-1-core-infrastructure)
   - [Phase 2: Convert Existing Code to Plugins](#phase-2-convert-existing-code-to-plugins)
+  - [Phase 2.5: Plugin Security & Open-Source Readiness](#phase-25-plugin-security--open-source-readiness)
   - [Phase 3: Expand GitHub Plugin](#phase-3-expand-github-plugin)
   - [Phase 4: New Integrations](#phase-4-new-integrations)
   - [Phase 5: Cross-Plugin Workflows](#phase-5-cross-plugin-workflows)
@@ -449,6 +450,128 @@ export default {
 - [ ] Old `src/mcp/server.ts`, `src/services/github.ts`, `src/services/jira.ts` deleted
 - [ ] CLI still works (updated to use plugin registry or direct plugin imports)
 - [ ] Types split into per-plugin type files
+
+---
+
+### Phase 2.5: Plugin Security & Open-Source Readiness
+
+**Goal:** Transform Kuzo MCP from a personal trusted-plugins architecture into a security-hardened platform capable of loading untrusted third-party plugins. This unlocks the open-source ecosystem vision — a single centralized MCP server loading plugins, replacing the wasteful server-per-integration pattern that dominates the current MCP ecosystem.
+
+**Status:** Deferred — begins after Phase 2 ships (3 real plugins as design targets).
+
+**Why this phase exists:** The current MCP ecosystem is architecturally inefficient. Every integration ships as its own Node process with duplicated protocol code, lifecycle management, and zero composition. A centralized plugin-based server is strictly better — but the only blocker to open-sourcing it is security: how do you safely load plugins from untrusted sources?
+
+Phase 1-2 build the plugin architecture under a **trusted plugin** assumption (all plugins authored by the project owner). Phase 2.5 earns the right to drop that assumption.
+
+#### Threat Model
+
+Current Phase 1/2 architecture assumes trusted plugins. Under an open-source ecosystem, every assumption becomes a threat:
+
+| Threat | Current State | Why It's Exploitable |
+|--------|--------------|---------------------|
+| Credential exfiltration across plugins | All plugins share process-wide env var access via `ConfigManager` | A malicious `weather` plugin could read `GITHUB_TOKEN` |
+| Unauthorized API calls on behalf of another plugin | Any plugin can `callTool()` any registered tool | A malicious plugin could silently `github_create_pull_request` |
+| Filesystem escape | Plugins run in main Node process with full `fs` access | A plugin could read `~/.ssh/id_rsa` |
+| Network exfiltration | No network policy, plugins can `fetch()` arbitrary endpoints | A plugin could phone home with stolen data |
+| Supply chain compromise | No plugin signing or verification | A compromised plugin update could backdoor the whole server |
+| Information leaks via cross-plugin interaction | Plugin tool outputs flow freely through `callTool()` | A plugin could see data it shouldn't |
+
+#### Research Areas (before any code)
+
+1. **Capability-based security**
+   - Literature: E language, Capsicum, Fuchsia's Zircon, Principle of Least Authority
+   - Prior art: Deno permissions, WASI capabilities, Node's experimental Permission Model
+   - Question: Can system resources (env vars, network, fs) be exposed as capability tokens granted per-plugin by the core?
+
+2. **Plugin sandboxing**
+   - Options with trade-offs:
+     - Worker threads — weak isolation, low overhead, shared memory concerns
+     - `vm` contexts — leaky boundaries, not a security boundary per Node docs
+     - Child processes — strong isolation, IPC cost, heavier startup
+     - WASM — strongest isolation, runtime constraints, limited ecosystem
+     - Firecracker microVMs (Vercel Sandbox style) — bulletproof, overkill for local MCP
+   - Prior art: VS Code extension host (separate process), Chrome extensions (sandboxed contexts), Figma plugins (iframes)
+
+3. **Credential management**
+   - Options: OS keychain, encrypted at rest, vault-style short-lived tokens, OAuth delegation
+   - Design question: Should plugins NEVER see raw credentials, only get pre-authenticated clients from the core? Pattern: `context.credentials.requestClient("github")` returns a ready Octokit, plugin never touches the token.
+
+4. **Permission model**
+   - Declarative manifest (browser-extension style `permissions` field)
+   - Consent UX: install-time prompts vs runtime prompts
+   - Revocation & audit log of granted capabilities
+   - Inspiration: Android runtime permissions, iOS privacy prompts
+
+5. **Supply chain security**
+   - Plugin signing: Sigstore, npm provenance
+   - Source verification: trusted registry, git commit-hash locking
+   - Manifest integrity: hash-locked dependencies
+   - Update mechanism: how do plugins update without reintroducing trust?
+
+6. **Cross-plugin isolation**
+   - Should plugin A discover which plugins are loaded? (info leak vector)
+   - Should `callTool()` require explicit dependency declarations in the manifest?
+   - Should plugin outputs be sanitized before flowing to other plugins?
+
+#### Architectural Changes (retrofitted from Phase 2)
+
+Current Phase 1 design choices that assume trusted plugins:
+
+| Current | Future |
+|---------|--------|
+| `PluginContext.config: Map<string, string>` — raw env var access | `PluginContext.credentials` — capability broker, no raw access |
+| `PluginContext.callTool` — unrestricted cross-plugin calls | Permission-checked, declared dependencies in manifest |
+| `PluginLoader` loads plugins into main process with full privileges | Plugins run in isolated contexts (worker/child process/WASM) |
+| `KuzoPlugin` manifest has no capability declarations | `KuzoPlugin.requiredCapabilities: Capability[]` |
+| Tool handlers have unrestricted `fs`/`net` access | Handlers run in sandbox with declared capabilities only |
+
+The 3 Phase 2 plugins (git-context, github, jira) will be retrofitted against the new architecture. Each plugin has roughly one place where credentials are initialized — mechanical refactor, not a rewrite.
+
+#### Design Deliverables (pre-code)
+
+- Detailed threat model doc
+- Capability taxonomy (the full list of capabilities a plugin can request)
+- Plugin manifest v2 spec (permissions, capabilities, metadata)
+- Sandbox architecture decision doc (which isolation mechanism wins and why)
+- Credential broker API design
+- Permission UX design (consent flows, revocation, audit)
+- Migration plan for Phase 2 plugins
+
+#### Implementation Sub-Phases (within Phase 2.5)
+
+1. **Research + design docs** (no code)
+2. **Architectural hooks PR** — update `PluginContext`, `ToolDefinition`, `KuzoPlugin` interfaces with security-ready types
+3. **Credential broker** implementation
+4. **Sandbox layer** — start with Workers, escalate to child processes or WASM if needed
+5. **Permission manifest + consent flow**
+6. **Retrofit Phase 2 plugins** (git-context, github, jira) against new interfaces
+7. **Supply chain** — signing, registry, update mechanism
+
+#### Success Criteria
+
+- [ ] A malicious third-party plugin cannot access other plugins' credentials
+- [ ] A malicious plugin cannot make unauthorized API calls on behalf of other plugins
+- [ ] Plugins cannot escape their declared filesystem/network sandbox
+- [ ] Users have visibility into every capability each plugin requests before installing
+- [ ] Plugin authors have a clear, documented path for declaring required permissions
+- [ ] Existing Phase 2 plugins are migrated without functionality loss
+- [ ] Threat model doc is public and reviewable
+
+#### Open Questions
+
+- Is Node.js sufficient for sandboxing, or do we need WASM / separate processes?
+- Is there a minimal viable security model that unblocks open-sourcing without the full research phase?
+- How much DX friction is acceptable? (Deno's permission prompts are clear but annoying.)
+- Does the plugin distribution mechanism need its own registry, or can npm + signing suffice?
+- What does the revocation story look like for a long-running server?
+
+#### Blocking Dependencies
+
+- Phase 2 must be complete (need real plugins to design against, not hypothetical ones)
+
+#### Why We're Deferring, Not Doing It Now
+
+Doing this phase before Phase 2 would mean designing security for plugins that don't exist yet. The risk is over-engineering for imagined threats instead of real ones. By shipping Phase 2's 3 plugins first, we get concrete design targets for the security spike and avoid building abstractions we don't need. Retrofitting 3 plugins is cheap; retrofitting 10 (if we deferred further) would not be.
 
 ---
 
