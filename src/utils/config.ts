@@ -12,12 +12,18 @@ import type { Personality } from "../types/index.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Try to load .env from project root
-const envPath = resolve(__dirname, "../../.env");
-if (existsSync(envPath)) {
+// Try multiple locations for .env file
+const possibleEnvPaths = [
+  resolve(__dirname, "../../.env"), // From dist/utils -> project root
+  resolve(__dirname, "../../../.env"), // From dist/utils -> one more level up
+  resolve(process.cwd(), ".env"), // Current working directory
+];
+
+const envPath = possibleEnvPaths.find((p) => existsSync(p));
+if (envPath) {
   dotenvConfig({ path: envPath });
 } else {
-  // Try current working directory
+  // Fallback to default dotenv behavior
   dotenvConfig();
 }
 
