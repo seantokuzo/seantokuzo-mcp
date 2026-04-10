@@ -190,10 +190,10 @@ interface PluginContext {
   logger: Logger;
 
   /**
-   * Call a tool on another plugin.
+   * Call another registered tool by its unique tool name.
    * This is the ONLY way plugins communicate — no direct imports.
    */
-  callTool: (pluginName: string, toolName: string, args: any) => Promise<any>;
+  callTool: (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
 }
 ```
 
@@ -201,7 +201,7 @@ interface PluginContext {
 
 ```typescript
 interface ToolDefinition {
-  /** Tool name (will be prefixed: "github_create_pr") */
+  /** Tool name — must be globally unique (e.g., "github_create_pr") */
   name: string;
 
   /** Description shown to the LLM */
@@ -723,40 +723,34 @@ DEFAULT_PR_BASE_BRANCH=main       # Default PR target branch
 
 ### Plugin Config (kuzo.config.ts)
 
-```typescript
-import type { KuzoConfig } from "./src/plugins/types.js";
+Plugin enable/disable is defined as `DEFAULT_PLUGIN_CONFIG` in `src/core/config.ts`:
 
-const config: KuzoConfig = {
+```typescript
+const DEFAULT_PLUGIN_CONFIG: KuzoConfig = {
   plugins: {
     "git-context": { enabled: true },
-    "github": { enabled: true },
-    "jira": { enabled: true },
-    "confluence": { enabled: false },
-    "discord": { enabled: false },
-    "calendar": { enabled: false },
-    "sms": { enabled: false },
-    "browser": { enabled: false },
-    "notion": { enabled: false },
-    "slack": { enabled: false },
+    github: { enabled: true },
+    jira: { enabled: true },
   },
 };
-
-export default config;
 ```
+
+Runtime config file loading (e.g., `kuzo.config.ts` at project root) will be added when there are more plugins to manage.
 
 ### Config Flow
 
 ```
 1. Server starts
-2. Loader reads kuzo.config.ts -> list of enabled plugins
-3. For each enabled plugin:
-   a. Import plugin from src/plugins/{name}/index.ts
+2. ConfigManager loads .env and reads DEFAULT_PLUGIN_CONFIG
+3. Loader iterates enabled plugins from config
+4. For each enabled plugin:
+   a. Dynamic import from dist/plugins/{name}/index.js
    b. Check plugin.requiredConfig against process.env
    c. If missing vars -> skip plugin, log warning
    d. If all present -> build PluginContext with filtered config
    e. Call plugin.initialize(context)
    f. Register plugin's tools and resources in registry
-4. Server is ready, only loaded plugins are active
+5. Server is ready, only loaded plugins are active
 ```
 
 ---
