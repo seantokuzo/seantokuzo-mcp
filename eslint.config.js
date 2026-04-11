@@ -19,14 +19,6 @@ export default tseslint.config(
     },
   },
   {
-    ignores: [
-      "dist/",
-      "node_modules/",
-      // Pre-refactor code — will be lint-clean when converted to plugins (Phase 2)
-      "src/services/",
-      "src/cli/",
-      "src/mcp/",
-      "src/server.ts",
-    ],
+    ignores: ["dist/", "node_modules/"],
   },
 );
