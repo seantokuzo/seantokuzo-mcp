@@ -31,8 +31,8 @@
 **Phase 2 Sub-phase Split (2026-04-10):** Phase 2 is too large for a single PR. Split into 4 sub-phases, each its own branch + PR:
 - **2.a** — git-context plugin (COMPLETE, merged PR #6)
 - **2.b** — github plugin (COMPLETE, merged PR #7)
-- **2.c** — jira plugin (NEXT UP)
-- **2.d** — cleanup + CLI migration (delete legacy `src/services/`, `src/mcp/server.ts`, `src/types/index.ts`; point CLI at plugin registry)
+- **2.c** — jira plugin (COMPLETE, merged PR #8)
+- **2.d** — cleanup + CLI migration (delete legacy `src/services/`, `src/mcp/server.ts`, `src/types/index.ts`; point CLI at plugin registry) (NEXT UP)
 
 Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts` and `src/mcp/server.ts` coexist as separate entry points during the migration.
 
@@ -59,7 +59,26 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - 4 rounds of Copilot review (29 comments total: 25 fixed, 4 deferred to Phase 2.5 — all 4 flagged redundant `Schema.parse()` in handlers, which needs a `ToolDefinition<TInput>` generic or `defineTool<S>` helper to fix properly and belongs with the broader type-contract work)
 - Legacy `src/services/github.ts` and `src/mcp/server.ts` left intact — deleted in 2.d
 
-**Next up: Phase 2.c — jira plugin**
+**Phase 2.c — jira plugin** (complete — merged PR #8, 2026-04-11)
+- `src/plugins/jira/` — 11 MCP tools across 4 tool files (`tickets.ts`, `transitions.ts`, `subtasks.ts`, `comments.ts`)
+- `JiraClient` wraps native `fetch` with Basic auth (email:api_token → base64); constructor-injected host/email/token/logger, no singleton, no global config
+- `state.ts` module-local client reference matches the github plugin pattern (`setClient`/`getClient`/`resetClient`)
+- `adf.ts` houses `extractTextFromADF` (ported from legacy `JiraService`) and `textToADF` (inverse — wraps plain text in a single paragraph doc for writes); rich-text authoring is deferred, plain text is enough for 2.c
+- Raw Jira API shapes stay as private interfaces inside `client.ts` (`JiraIssueRaw`, `JiraFieldsRaw`, `JiraTransitionRaw`, `JiraCommentRaw`); the plugin-owned types in `types.ts` are what tools actually consume
+- `/search/jql` (POST) is the modern enhanced JQL endpoint — used for `searchTickets`, `getMyTickets`, and `getMyCodeReviews`
+- `moveTicket` is the only high-level client helper: resolves a target transition by matching either the transition name OR the destination status name (case-insensitive), throws a descriptive error listing available transitions if nothing matches
+- `createSubtask` does a follow-up `getTicket(newKey)` after `POST /issue` because the create response only returns `{id, key, self}` — status is workflow-dependent (not always "To Do") and assignee may be auto-populated by project defaults. One extra round-trip for authoritative data
+- `JiraSubtask.assignee` is a nested `{accountId, displayName} | null` — caught drifting between displayName (getMyCodeReviews) and accountId (createSubtask) in review, forced every callsite to populate both
+- Tool schemas use `.min(1)` on every non-empty string field (summary, description, comment, assignee_account_id, ticket_key, body). Empty strings fail validation up front instead of slipping past `.refine()` and getting silently dropped by the client. `labels: []` is the documented way to clear all labels
+- Client methods use `!== undefined` consistently so debug logs and request bodies agree on what "provided" means
+- `getTicket` does NOT `?expand=transitions` — `mapTicketResponse` never read that data and callers who need transitions hit `getTransitions()` directly
+- Debug logs on mutating methods (updateTicket, transitionTicket, createSubtask, addComment, updateTicket) log metadata only (keys, field flags, lengths) — never full config/body content
+- No cross-plugin concerns (cross-plugin Jira↔GitHub workflows are Phase 5). First plugin where `resolveRepository`-style cross-plugin callouts don't apply
+- 2 rounds of Copilot review (8 comments total: all 8 fixed in-PR — empty-string consistency x4, ambiguous assignee type, hardcoded subtask status, wasted `?expand=transitions`, stale `update_ticket` doc string)
+- Smoke test: `node dist/core/server.js` loaded `git-context` and `github`; `jira` was discovered + initialized but hit a 401 on `/myself` against a stale local API token — the legacy `JiraService.verifyConnection()` returned the identical 401, so code parity with the legacy service is the acceptance-criteria surrogate. User agreed to rotate the token out-of-band rather than block the PR
+- Legacy `src/services/jira.ts` left intact — deleted in 2.d
+
+**Next up: Phase 2.d — cleanup + CLI migration**
 
 ### Phase 2.b Decomposition
 
@@ -282,10 +301,10 @@ These decisions affect scope significantly — the executing session should conf
 ### New (Phase 2 — in flight)
 - `src/plugins/git-context/` — 1 tool, 1 resource (Phase 2.a, merged PR #6)
 - `src/plugins/github/` — 23 tools across pulls/reviews/repos/branches (Phase 2.b, merged PR #7). First real cross-plugin `callTool("get_git_context")` consumer.
+- `src/plugins/jira/` — 11 tools across tickets/transitions/subtasks/comments (Phase 2.c, merged PR #8). Zero cross-plugin concerns; `JiraClient` wraps native `fetch` with Basic auth.
 
 ### Not Yet Built
-- `src/plugins/jira/` — Phase 2.c (NEXT UP)
-- Legacy cleanup: delete `src/services/`, `src/mcp/server.ts`, `src/types/index.ts`; migrate CLI to plugin clients — Phase 2.d
+- Legacy cleanup: delete `src/services/`, `src/mcp/server.ts`, `src/types/index.ts`; migrate CLI to plugin clients — Phase 2.d (NEXT UP)
 - Any Phase 3+ integrations (releases, actions, labels, etc.)
 - Tests (vitest not yet configured)
 
