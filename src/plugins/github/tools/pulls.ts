@@ -143,8 +143,25 @@ The 'description' parameter should contain the FULL description you generate —
 
     const gitData = await getGitContextSafe(context);
     const sourceBranch = input.source_branch ?? gitData?.currentBranch ?? null;
-    const targetBranch =
-      input.target_branch ?? gitData?.defaultBranch ?? "main";
+
+    // Resolve target branch in priority order:
+    //   1. Explicit input
+    //   2. git-context defaultBranch (from local git remote HEAD)
+    //   3. GitHub API repo.default_branch (authoritative — handles `master`
+    //      and custom default branches for repos with no local clone)
+    let targetBranch: string;
+    let targetBranchSource: string;
+    if (input.target_branch) {
+      targetBranch = input.target_branch;
+      targetBranchSource = "provided";
+    } else if (gitData?.defaultBranch) {
+      targetBranch = gitData.defaultBranch;
+      targetBranchSource = "auto-detected (git default branch)";
+    } else {
+      const info = await client.getRepoInfo(repo);
+      targetBranch = info.default_branch;
+      targetBranchSource = "auto-detected (GitHub default_branch)";
+    }
 
     const resolved = {
       repository: { value: fullRepo, source: repoSource },
@@ -156,9 +173,7 @@ The 'description' parameter should contain the FULL description you generate —
       },
       targetBranch: {
         value: targetBranch,
-        source: input.target_branch
-          ? "provided"
-          : "auto-detected (default branch)",
+        source: targetBranchSource,
       },
     };
 
@@ -313,15 +328,30 @@ TIP: If the user doesn't specify a PR number, this tool auto-detects the PR for 
     };
 
     const currentPR = await client.getPullRequest(repo, pullNumber);
-    const commits = await client.getPRCommits(repo, pullNumber);
 
-    let newBody: string;
-    if (input.append_to_existing && currentPR.body) {
-      newBody =
-        currentPR.body +
-        "\n\n---\n\n## 📝 Update\n\n" +
-        (input.description ?? "");
-    } else {
+    // Body update logic:
+    //   - append_to_existing=true + description given → append update section
+    //     to currentPR.body (treating null body as empty string)
+    //   - append_to_existing=true + no description → no body change
+    //   - append_to_existing=false + description given → regenerate full body
+    //     from commits + description (replace mode)
+    //   - append_to_existing=false + no description → title-only update,
+    //     leave body untouched so we don't wipe a hand-written description
+    let newBody: string | undefined;
+    const updateDescription = input.description?.trim() ?? "";
+
+    if (input.append_to_existing) {
+      if (updateDescription) {
+        const existingBody = currentPR.body ?? "";
+        newBody =
+          existingBody +
+          (existingBody ? "\n\n---\n\n" : "") +
+          "## 📝 Update\n\n" +
+          updateDescription;
+      }
+      // else: leave newBody undefined → Octokit won't touch the body
+    } else if (updateDescription) {
+      const commits = await client.getPRCommits(repo, pullNumber);
       newBody = generatePRDescription({
         commits,
         diffStats: {
@@ -334,6 +364,7 @@ TIP: If the user doesn't specify a PR number, this tool auto-detects the PR for 
         targetBranch: currentPR.base.ref,
       });
     }
+    // else: title-only update path → newBody stays undefined
 
     const pr = await client.updatePullRequest({
       repo,

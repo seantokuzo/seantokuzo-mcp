@@ -241,11 +241,13 @@ export class GitHubClient {
     repo: GitHubRepo,
     state: "open" | "closed" | "all" = "open",
   ): Promise<PullRequestInfo[]> {
-    const { data } = await this.octokit.pulls.list({
+    // Paginate across all pages. For monster repos, callers should narrow
+    // by `state` — defaulting to "open" keeps the common case small.
+    const data = await this.octokit.paginate(this.octokit.pulls.list, {
       owner: repo.owner,
       repo: repo.repo,
       state,
-      per_page: 30,
+      per_page: 100,
     });
 
     return data.map((pr) => this.mapPullRequestResponse(pr));
@@ -270,7 +272,7 @@ export class GitHubClient {
     repo: GitHubRepo,
     pullNumber: number,
   ): Promise<CommitInfo[]> {
-    const { data } = await this.octokit.pulls.listCommits({
+    const data = await this.octokit.paginate(this.octokit.pulls.listCommits, {
       owner: repo.owner,
       repo: repo.repo,
       pull_number: pullNumber,
@@ -289,7 +291,7 @@ export class GitHubClient {
     repo: GitHubRepo,
     pullNumber: number,
   ): Promise<ChangedFile[]> {
-    const { data } = await this.octokit.pulls.listFiles({
+    const data = await this.octokit.paginate(this.octokit.pulls.listFiles, {
       owner: repo.owner,
       repo: repo.repo,
       pull_number: pullNumber,
@@ -310,7 +312,7 @@ export class GitHubClient {
   ): Promise<PRFileDiff[]> {
     this.logger.debug(`Fetching PR files with patches for PR #${pullNumber}`);
 
-    const { data } = await this.octokit.pulls.listFiles({
+    const data = await this.octokit.paginate(this.octokit.pulls.listFiles, {
       owner: repo.owner,
       repo: repo.repo,
       pull_number: pullNumber,
@@ -339,10 +341,11 @@ export class GitHubClient {
     repo: GitHubRepo,
     pullNumber: number,
   ): Promise<PRReview[]> {
-    const { data } = await this.octokit.pulls.listReviews({
+    const data = await this.octokit.paginate(this.octokit.pulls.listReviews, {
       owner: repo.owner,
       repo: repo.repo,
       pull_number: pullNumber,
+      per_page: 100,
     });
 
     return data.map((review) => ({
@@ -359,12 +362,15 @@ export class GitHubClient {
     repo: GitHubRepo,
     pullNumber: number,
   ): Promise<PRReviewComment[]> {
-    const { data } = await this.octokit.pulls.listReviewComments({
-      owner: repo.owner,
-      repo: repo.repo,
-      pull_number: pullNumber,
-      per_page: 100,
-    });
+    const data = await this.octokit.paginate(
+      this.octokit.pulls.listReviewComments,
+      {
+        owner: repo.owner,
+        repo: repo.repo,
+        pull_number: pullNumber,
+        per_page: 100,
+      },
+    );
 
     return data.map((comment) => ({
       id: comment.id,

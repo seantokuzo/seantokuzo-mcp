@@ -22,7 +22,11 @@ export function parseRepoIdentifier(
   input: string,
   defaultOwner?: string,
 ): GitHubRepo {
-  const urlMatch = input.match(/github\.com[/:]([\w-]+)\/([\w.-]+?)(?:\.git)?$/);
+  // Allow optional trailing slash so `https://github.com/owner/repo/` parses
+  // the same as `https://github.com/owner/repo`.
+  const urlMatch = input.match(
+    /github\.com[/:]([\w-]+)\/([\w.-]+?)(?:\.git)?\/?$/,
+  );
   if (urlMatch && urlMatch[1] && urlMatch[2]) {
     return { owner: urlMatch[1], repo: urlMatch[2] };
   }
