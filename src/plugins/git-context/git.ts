@@ -39,18 +39,26 @@ function parseGitHubUrl(url: string): { owner: string; repo: string } | null {
   return null;
 }
 
-/** Walk up from startPath looking for a .git directory */
+/**
+ * Walk up from startPath looking for a .git directory.
+ * Cross-platform: terminates when `dirname(path) === path` (POSIX root is `/`,
+ * Windows drive root is `C:\` — both are fixed points of `dirname`).
+ */
 function findGitRoot(startPath?: string): string | null {
   let currentPath = startPath ?? process.cwd();
 
-  while (currentPath !== "/") {
+  while (true) {
     if (existsSync(resolve(currentPath, ".git"))) {
       return currentPath;
     }
-    currentPath = dirname(currentPath);
-  }
 
-  return null;
+    const parentPath = dirname(currentPath);
+    if (parentPath === currentPath) {
+      return null;
+    }
+
+    currentPath = parentPath;
+  }
 }
 
 /** Resolve the default branch (main/master) from remote HEAD or local refs */
