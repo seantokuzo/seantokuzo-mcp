@@ -28,7 +28,88 @@
 
 **Roadmap Update (2026-04-10):** Added Phase 2.5 — Plugin Security & Open-Source Readiness. The project now aspirationally aims to become an open-source centralized MCP platform (replacing the wasteful server-per-integration pattern). Full security model research/design/implementation will happen between Phase 2 and Phase 3, using Phase 2's 3 plugins as concrete design targets. See `docs/PLANNING.md` for the full spec.
 
-**Next up: Phase 2 — Convert Existing Code to Plugins**
+**Phase 2 Sub-phase Split (2026-04-10):** Phase 2 is too large for a single PR. Split into 4 sub-phases, each its own branch + PR:
+- **2.a** — git-context plugin (COMPLETE, merged PR #6)
+- **2.b** — github plugin (NEXT UP)
+- **2.c** — jira plugin (new MCP exposure of Jira methods)
+- **2.d** — cleanup + CLI migration (delete legacy `src/services/`, `src/mcp/server.ts`, `src/types/index.ts`; point CLI at plugin registry)
+
+Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts` and `src/mcp/server.ts` coexist as separate entry points during the migration.
+
+**Phase 2.a — git-context plugin** (complete — merged PR #6)
+- `src/plugins/git-context/` with index, git detection, types, tool, and resource
+- 1 tool (`get_git_context`) and 1 resource (`git://context`) exposed
+- Cross-platform `findGitRoot` (Windows drive roots now terminate correctly)
+- `_`-prefix convention respected by eslint (matches TS `noUnusedParameters`)
+
+**Next up: Phase 2.b — github plugin**
+
+### Phase 2.b Decomposition
+
+**Goal:** Full GitHub integration as a plugin. All 27 methods on `GitHubService` either become MCP tools, become private client helpers, or get deleted. Plus: cross-plugin `callTool("get_git_context")` for auto-detect on PR operations — first real test of the Phase 1 cross-plugin API.
+
+**Target tool count:** ~20 tools across 4-5 tool files.
+
+**Internal Waves:**
+
+| Wave | Scope | Files | Notes |
+|------|-------|-------|-------|
+| **1 — Foundation** | Types, Octokit client wrapper, plugin entry, shared helpers | `types.ts`, `client.ts`, `index.ts`, `shared.ts` | `client.ts` wraps Octokit, not a god object. `shared.ts` has `parseRepoIdentifier` and `resolveRepository` (the latter calls `context.callTool("get_git_context")` for auto-detect) |
+| **2 — PR tools** | Biggest tool file — ports 5 existing tools + adds 5 new | `tools/pulls.ts` | Includes PR description generator (private helper, ported from `src/mcp/server.ts`) |
+| **3 — Review tools** | PR reviews, review comments, submit review | `tools/reviews.ts` | 4 new tools, all previously service-only |
+| **4 — Repo tools** | Create/get/update/list repos, README, issues check | `tools/repos.ts` | 6-7 new tools |
+| **5 — Branch/File tools** | List branches, get file content, changed files | `tools/branches.ts` or merged into repos | 2-3 tools |
+| **6 — Wire + smoke test** | Assemble plugin tools array, live-boot verify | `index.ts` | Both `git-context` and `github` plugins should load together |
+
+**Tool inventory:**
+
+PR tools (pulls.ts):
+- `create_pull_request` (existing) — uses `callTool("get_git_context")` for auto-detect
+- `update_pull_request` (existing) — auto-detect PR number via `find_pr_for_branch`
+- `get_pull_request` (existing)
+- `list_pull_requests` (existing)
+- `find_pr_for_branch` (existing)
+- `get_pr_files` (new)
+- `get_pr_files_with_patch` (new)
+- `get_pr_commits` (new)
+- `get_changed_files` (new)
+- `get_diff_stats` (new)
+
+Review tools (reviews.ts):
+- `get_pr_reviews`
+- `get_pr_review_comments`
+- `submit_review`
+- `add_review_comment`
+
+Repo tools (repos.ts):
+- `create_repository`
+- `get_repo_info`
+- `update_repository`
+- `list_my_repos`
+- `get_readme`
+- `update_readme`
+- `check_issues`
+
+Branch/File tools (branches.ts):
+- `list_branches`
+- `get_file_content`
+
+**Plugin config:**
+```typescript
+requiredConfig: ["GITHUB_TOKEN"]
+optionalConfig: ["GITHUB_USERNAME", "GITHUB_ORG"]
+```
+
+**Cross-plugin concerns:**
+- `create_pull_request`, `update_pull_request`, `find_pr_for_branch` will call `context.callTool("get_git_context", {})` for auto-detect
+- Return value shape is known (see `src/plugins/git-context/tools/context.ts`), github plugin will define a local `GitContextResult` interface and `as`-cast the result
+- Cross-plugin type contracts are intentionally loose until Phase 2.5 formalizes them
+
+**Acceptance:**
+- All existing `GitHubService` API coverage exposed as MCP tools
+- `create_pull_request` reaches feature parity (PR description generator works end-to-end)
+- `src/services/github.ts` and legacy `src/mcp/server.ts` left intact — deletion in 2.d
+- `node dist/core/server.js` boots with both `git-context` and `github` plugins loaded
 
 ---
 
