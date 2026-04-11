@@ -15,7 +15,7 @@
 - Set up Claude tooling (hooks, rules, agents, skills, GitHub instructions)
 - Customized CI workflow for Node.js/TypeScript
 
-**Phase 1: Core Infrastructure** (complete)
+**Phase 1: Core Infrastructure** (complete — merged in PR #5)
 
 - Plugin system types (`src/plugins/types.ts`)
 - Structured logger with stderr output for MCP compatibility (`src/core/logger.ts`)
@@ -25,6 +25,8 @@
 - New MCP server delegating through registry (`src/core/server.ts`)
 - Zod-to-JSON-Schema conversion for MCP tool listings
 - Entry point: `npm run start:kuzo` / `node dist/core/server.js`
+
+**Roadmap Update (2026-04-10):** Added Phase 2.5 — Plugin Security & Open-Source Readiness. The project now aspirationally aims to become an open-source centralized MCP platform (replacing the wasteful server-per-integration pattern). Full security model research/design/implementation will happen between Phase 2 and Phase 3, using Phase 2's 3 plugins as concrete design targets. See `docs/PLANNING.md` for the full spec.
 
 **Next up: Phase 2 — Convert Existing Code to Plugins**
 
