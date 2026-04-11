@@ -261,18 +261,22 @@ export class JiraClient {
       },
     });
 
+    // Use `!== undefined` consistently so the debug log and the request body
+    // agree on what "provided" means. The tool schema rejects empty strings
+    // up front (`.min(1)`), and callers invoking the client directly are
+    // responsible for not passing empties they don't mean.
     const fields: Record<string, unknown> = {};
 
-    if (config.summary) {
+    if (config.summary !== undefined) {
       fields.summary = config.summary;
     }
-    if (config.description) {
+    if (config.description !== undefined) {
       fields.description = textToADF(config.description);
     }
-    if (config.labels) {
+    if (config.labels !== undefined) {
       fields.labels = config.labels;
     }
-    if (config.assigneeAccountId) {
+    if (config.assigneeAccountId !== undefined) {
       fields.assignee = { accountId: config.assigneeAccountId };
     }
 
@@ -328,7 +332,10 @@ export class JiraClient {
       transition: { id: transitionId },
     };
 
-    if (comment) {
+    // `!== undefined` keeps the log and the request body in sync. Tool schema
+    // rejects empty strings up front (`.min(1)`), so MCP callers don't need
+    // to worry about sending blank comments.
+    if (comment !== undefined) {
       body.update = {
         comment: [{ add: { body: textToADF(comment) } }],
       };
@@ -417,10 +424,10 @@ export class JiraClient {
       issuetype: { name: "Sub-task" },
     };
 
-    if (config.description) {
+    if (config.description !== undefined) {
       fields.description = textToADF(config.description);
     }
-    if (config.assigneeAccountId) {
+    if (config.assigneeAccountId !== undefined) {
       fields.assignee = { accountId: config.assigneeAccountId };
     }
 
@@ -429,12 +436,31 @@ export class JiraClient {
       body: JSON.stringify({ fields }),
     });
 
+    const newKey = data.key;
+    if (!newKey) {
+      throw new Error(
+        "createSubtask: Jira did not return a key for the new issue",
+      );
+    }
+
+    // POST /issue returns only `{id, key, self}` — no status, no assignee. The
+    // initial status is workflow-dependent (not always "To Do") and the
+    // assignee may have been auto-populated by project defaults. Fetch the
+    // created issue to return authoritative data. One extra round-trip, but
+    // callers get accurate state instead of a hardcoded lie.
+    const created = await this.getTicket(newKey);
+
     return {
-      id: data.id ?? "",
-      key: data.key ?? "",
-      summary: config.summary,
-      status: "To Do",
-      assignee: config.assigneeAccountId ?? null,
+      id: created.id,
+      key: created.key,
+      summary: created.summary,
+      status: created.status.name,
+      assignee: created.assignee
+        ? {
+            accountId: created.assignee.accountId,
+            displayName: created.assignee.displayName,
+          }
+        : null,
       parent: {
         key: config.parentKey,
         summary: parent.summary,
@@ -464,7 +490,12 @@ export class JiraClient {
         key: issue.key ?? "",
         summary: fields.summary ?? "",
         status: fields.status?.name ?? "Unknown",
-        assignee: fields.assignee?.displayName ?? null,
+        assignee: fields.assignee
+          ? {
+              accountId: fields.assignee.accountId ?? "",
+              displayName: fields.assignee.displayName ?? "Unknown",
+            }
+          : null,
         parent: {
           key: fields.parent?.key ?? "",
           summary: fields.parent?.fields?.summary ?? "",

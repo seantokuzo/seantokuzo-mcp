@@ -59,6 +59,7 @@ const moveTicketSchema = z.object({
     ),
   comment: z
     .string()
+    .min(1)
     .optional()
     .describe("Optional plain-text comment to post with the transition"),
 });

@@ -27,14 +27,18 @@ const createSubtaskSchema = z.object({
   summary: z.string().min(1).describe("Subtask summary / title"),
   description: z
     .string()
+    .min(1)
     .optional()
     .describe(
       "Optional plain-text description. Wrapped in a single ADF paragraph — rich formatting is not supported yet.",
     ),
   assignee_account_id: z
     .string()
+    .min(1)
     .optional()
-    .describe("Atlassian accountId of the assignee. Leave empty to stay unassigned."),
+    .describe(
+      "Atlassian accountId of the assignee. Leave empty to stay unassigned.",
+    ),
 });
 
 const createSubtaskTool: ToolDefinition = {

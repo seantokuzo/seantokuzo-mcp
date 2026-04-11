@@ -95,7 +95,16 @@ export interface JiraSubtask {
   key: string;
   summary: string;
   status: string;
-  assignee: string | null;
+  /**
+   * Assignee as a structured user object. Previously typed as a bare
+   * `string | null` but semantics drifted between callsites (sometimes
+   * displayName, sometimes accountId). Forcing both fields keeps callsites
+   * honest. Null when the subtask is unassigned.
+   */
+  assignee: {
+    accountId: string;
+    displayName: string;
+  } | null;
   parent: {
     key: string;
     summary: string;

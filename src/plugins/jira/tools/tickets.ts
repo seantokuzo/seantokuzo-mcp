@@ -124,9 +124,14 @@ const getMyTicketsTool: ToolDefinition = {
 const updateTicketSchema = z
   .object({
     ticket_key: ticketKeyField,
-    summary: z.string().optional().describe("New ticket summary / title"),
+    summary: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("New ticket summary / title"),
     description: z
       .string()
+      .min(1)
       .optional()
       .describe(
         "New description (plain text). Wrapped in a single ADF paragraph — rich formatting is not supported yet.",
@@ -134,9 +139,12 @@ const updateTicketSchema = z
     labels: z
       .array(z.string())
       .optional()
-      .describe("Full replacement list of labels. Not a partial add."),
+      .describe(
+        "Full replacement list of labels. Pass an empty array to clear all labels.",
+      ),
     assignee_account_id: z
       .string()
+      .min(1)
       .optional()
       .describe(
         "Atlassian accountId of the new assignee. Use Jira's people picker to find account IDs.",
