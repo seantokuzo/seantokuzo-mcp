@@ -23,6 +23,8 @@ const repositoryField = z
 
 const pullNumberField = z
   .number()
+  .int()
+  .min(1)
   .describe("The pull request number to target");
 
 // ============================================================================
@@ -94,7 +96,11 @@ const getPRReviewCommentsTool: ToolDefinition = {
 
 const reviewCommentSchema = z.object({
   path: z.string().describe("File path in the repository"),
-  line: z.number().describe("Line number in the file to comment on"),
+  line: z
+    .number()
+    .int()
+    .min(1)
+    .describe("Line number in the file to comment on"),
   body: z.string().describe("Comment text"),
   side: z
     .enum(["LEFT", "RIGHT"])
@@ -161,7 +167,7 @@ const addReviewCommentSchema = z.object({
   pull_number: pullNumberField,
   body: z.string().describe("Comment body"),
   path: z.string().describe("File path in the repository"),
-  line: z.number().describe("Line number to comment on"),
+  line: z.number().int().min(1).describe("Line number to comment on"),
   commit_id: z
     .string()
     .describe(

@@ -116,25 +116,19 @@ export class GitHubClient {
     base: string,
     head: string,
   ): Promise<CommitInfo[]> {
-    try {
-      const { data } = await this.octokit.repos.compareCommits({
-        owner: repo.owner,
-        repo: repo.repo,
-        base,
-        head,
-      });
+    const { data } = await this.octokit.repos.compareCommits({
+      owner: repo.owner,
+      repo: repo.repo,
+      base,
+      head,
+    });
 
-      return data.commits.map((commit) => ({
-        sha: commit.sha,
-        message: commit.commit.message,
-        author:
-          commit.commit.author?.name ?? commit.author?.login ?? "Unknown",
-        date: commit.commit.author?.date ?? "",
-      }));
-    } catch (err) {
-      this.logger.warn(`Could not compare commits`, err);
-      return [];
-    }
+    return data.commits.map((commit) => ({
+      sha: commit.sha,
+      message: commit.commit.message,
+      author: commit.commit.author?.name ?? commit.author?.login ?? "Unknown",
+      date: commit.commit.author?.date ?? "",
+    }));
   }
 
   async getDiffStats(
@@ -142,23 +136,18 @@ export class GitHubClient {
     base: string,
     head: string,
   ): Promise<DiffStats> {
-    try {
-      const { data } = await this.octokit.repos.compareCommits({
-        owner: repo.owner,
-        repo: repo.repo,
-        base,
-        head,
-      });
+    const { data } = await this.octokit.repos.compareCommits({
+      owner: repo.owner,
+      repo: repo.repo,
+      base,
+      head,
+    });
 
-      return {
-        additions: data.files?.reduce((sum, f) => sum + f.additions, 0) ?? 0,
-        deletions: data.files?.reduce((sum, f) => sum + f.deletions, 0) ?? 0,
-        changedFiles: data.files?.length ?? 0,
-      };
-    } catch (err) {
-      this.logger.warn(`Could not get diff stats`, err);
-      return { additions: 0, deletions: 0, changedFiles: 0 };
-    }
+    return {
+      additions: data.files?.reduce((sum, f) => sum + f.additions, 0) ?? 0,
+      deletions: data.files?.reduce((sum, f) => sum + f.deletions, 0) ?? 0,
+      changedFiles: data.files?.length ?? 0,
+    };
   }
 
   async getChangedFiles(
@@ -166,24 +155,19 @@ export class GitHubClient {
     base: string,
     head: string,
   ): Promise<ChangedFile[]> {
-    try {
-      const { data } = await this.octokit.repos.compareCommits({
-        owner: repo.owner,
-        repo: repo.repo,
-        base,
-        head,
-      });
+    const { data } = await this.octokit.repos.compareCommits({
+      owner: repo.owner,
+      repo: repo.repo,
+      base,
+      head,
+    });
 
-      return (data.files ?? []).map((file) => ({
-        filename: file.filename,
-        status: file.status,
-        additions: file.additions,
-        deletions: file.deletions,
-      }));
-    } catch (err) {
-      this.logger.warn(`Could not get changed files`, err);
-      return [];
-    }
+    return (data.files ?? []).map((file) => ({
+      filename: file.filename,
+      status: file.status,
+      additions: file.additions,
+      deletions: file.deletions,
+    }));
   }
 
   // ==========================================================================
@@ -193,7 +177,14 @@ export class GitHubClient {
   async createPullRequest(
     config: PullRequestConfig,
   ): Promise<PullRequestInfo> {
-    this.logger.debug("Creating PR", config);
+    // Log only metadata — body may contain secrets or large payloads.
+    this.logger.debug("Creating PR", {
+      repo: `${config.repo.owner}/${config.repo.repo}`,
+      head: config.head,
+      base: config.base,
+      title: config.title,
+      draft: config.draft ?? false,
+    });
 
     const { data } = await this.octokit.pulls.create({
       owner: config.repo.owner,
@@ -211,7 +202,13 @@ export class GitHubClient {
   async updatePullRequest(
     config: PullRequestUpdateConfig,
   ): Promise<PullRequestInfo> {
-    this.logger.debug("Updating PR", config);
+    // Log only metadata — body may contain secrets or large payloads.
+    this.logger.debug("Updating PR", {
+      repo: `${config.repo.owner}/${config.repo.repo}`,
+      pullNumber: config.pullNumber,
+      title: config.title,
+      hasBody: config.body !== undefined,
+    });
 
     const { data } = await this.octokit.pulls.update({
       owner: config.repo.owner,
@@ -457,7 +454,10 @@ export class GitHubClient {
   // ==========================================================================
 
   async createRepository(config: CreateRepoConfig): Promise<RepoInfo> {
-    this.logger.debug("Creating repository", config);
+    this.logger.debug("Creating repository", {
+      name: config.name,
+      private: config.private ?? false,
+    });
 
     const { data } = await this.octokit.repos.createForAuthenticatedUser({
       name: config.name,
@@ -481,7 +481,11 @@ export class GitHubClient {
   }
 
   async updateRepository(config: UpdateRepoConfig): Promise<RepoInfo> {
-    this.logger.debug("Updating repository", config);
+    this.logger.debug("Updating repository", {
+      repo: `${config.repo.owner}/${config.repo.repo}`,
+      name: config.name,
+      private: config.private,
+    });
 
     const { data } = await this.octokit.repos.update({
       owner: config.repo.owner,

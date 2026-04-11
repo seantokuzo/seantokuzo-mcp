@@ -204,16 +204,30 @@ The 'description' parameter should contain the FULL description you generate —
       };
     }
 
-    const commits = await client.getCommitsBetween(
-      repo,
-      targetBranch,
-      sourceBranch,
-    );
-    const diffStats = await client.getDiffStats(
-      repo,
-      targetBranch,
-      sourceBranch,
-    );
+    // Commits/diff stats feed the PR description generator. If the compare
+    // call fails (rare — usually transient or rate-limited), degrade
+    // gracefully with a minimal description rather than failing the whole
+    // PR creation. The client methods themselves throw so direct tool calls
+    // (get_diff_stats, get_changed_files) still surface errors loudly.
+    let commits: CommitInfo[] = [];
+    let diffStats: DiffStats = { additions: 0, deletions: 0, changedFiles: 0 };
+    try {
+      commits = await client.getCommitsBetween(
+        repo,
+        targetBranch,
+        sourceBranch,
+      );
+      diffStats = await client.getDiffStats(
+        repo,
+        targetBranch,
+        sourceBranch,
+      );
+    } catch (err) {
+      context.logger.warn(
+        "Could not fetch commits/diff for PR description — creating with minimal description",
+        err,
+      );
+    }
 
     const title =
       input.title ??
@@ -267,6 +281,8 @@ const updatePRSchema = z.object({
   repository: repositoryField,
   pull_number: z
     .number()
+    .int()
+    .min(1)
     .optional()
     .describe(
       "The PR number to update. If omitted, auto-detected by finding the open PR for the current branch.",
@@ -395,7 +411,7 @@ TIP: If the user doesn't specify a PR number, this tool auto-detects the PR for 
 
 const getPRSchema = z.object({
   repository: repositoryField,
-  pull_number: z.number().describe("The PR number to fetch"),
+  pull_number: z.number().int().min(1).describe("The PR number to fetch"),
 });
 
 const getPullRequestTool: ToolDefinition = {
@@ -572,7 +588,7 @@ const findPRForBranchTool: ToolDefinition = {
 
 const getPRFilesSchema = z.object({
   repository: repositoryField,
-  pull_number: z.number().describe("The PR number"),
+  pull_number: z.number().int().min(1).describe("The PR number"),
 });
 
 const getPRFilesTool: ToolDefinition = {
