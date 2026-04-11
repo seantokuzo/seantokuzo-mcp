@@ -5,7 +5,7 @@
 
 import inquirer from "inquirer";
 import chalk from "chalk";
-import { getJiraService } from "../../services/jira.js";
+import { JiraClient } from "../../plugins/jira/client.js";
 import {
   showBanner,
   showSuccess,
@@ -15,7 +15,19 @@ import {
   showBox,
   createStyledSpinner,
 } from "../ui/display.js";
-import type { JiraTicket, JiraSubtask } from "../../types/index.js";
+import type { JiraTicket, JiraSubtask } from "../../plugins/jira/types.js";
+
+/**
+ * Construct a JiraClient from environment variables.
+ * Throws if required env vars are missing — callers should handle errors.
+ */
+function createJiraClient(): JiraClient {
+  return new JiraClient({
+    host: process.env["JIRA_HOST"] ?? "",
+    email: process.env["JIRA_EMAIL"] ?? "",
+    token: process.env["JIRA_API_TOKEN"] ?? "",
+  });
+}
 
 /**
  * View my assigned tickets
@@ -24,7 +36,7 @@ export async function myTicketsInteractive(): Promise<void> {
   showBanner();
 
   try {
-    const jira = getJiraService();
+    const jira = createJiraClient();
 
     const spinner = createStyledSpinner("Connecting to JIRA");
     spinner.start();
@@ -90,7 +102,7 @@ export async function myReviewsInteractive(): Promise<void> {
   showBanner();
 
   try {
-    const jira = getJiraService();
+    const jira = createJiraClient();
 
     const spinner = createStyledSpinner("Fetching your code review subtasks");
     spinner.start();
@@ -158,7 +170,7 @@ export async function moveTicketInteractive(ticketKey?: string): Promise<void> {
   }
 
   try {
-    const jira = getJiraService();
+    const jira = createJiraClient();
 
     // Get ticket key if not provided
     if (!ticketKey) {
@@ -244,7 +256,7 @@ export async function subtasksInteractive(): Promise<void> {
   showBanner();
 
   try {
-    const jira = getJiraService();
+    const jira = createJiraClient();
 
     const { ticketKey } = await inquirer.prompt<{ ticketKey: string }>([
       {
@@ -331,7 +343,7 @@ export async function workflowInteractive(): Promise<void> {
   showBanner();
 
   try {
-    const jira = getJiraService();
+    const jira = createJiraClient();
 
     const { ticketKey } = await inquirer.prompt<{ ticketKey: string }>([
       {
@@ -449,7 +461,7 @@ export async function workflowInteractive(): Promise<void> {
           assigneeAccountId: assignee,
         });
         created.push(subtask.key);
-      } catch (err) {
+      } catch {
         console.log(chalk.red(`  Failed to create: ${template.name}`));
       }
     }
@@ -474,7 +486,7 @@ export async function addCommentInteractive(): Promise<void> {
   showBanner();
 
   try {
-    const jira = getJiraService();
+    const jira = createJiraClient();
 
     const { ticketKey, comment } = await inquirer.prompt<{
       ticketKey: string;
@@ -520,7 +532,7 @@ export async function searchTicketsInteractive(): Promise<void> {
   showBanner();
 
   try {
-    const jira = getJiraService();
+    const jira = createJiraClient();
 
     const { searchType } = await inquirer.prompt<{ searchType: string }>([
       {
@@ -636,13 +648,13 @@ async function ticketActionsMenu(ticket: JiraTicket): Promise<void> {
     },
   ]);
 
-  const jira = getJiraService();
+  const jira = createJiraClient();
 
   switch (action) {
     case "move":
       await moveTicketInteractive(ticket.key);
       break;
-    case "subtasks":
+    case "subtasks": {
       const subtasks = await jira.getSubtasks(ticket.key);
       if (subtasks.length === 0) {
         showInfo("No subtasks");
@@ -650,10 +662,11 @@ async function ticketActionsMenu(ticket: JiraTicket): Promise<void> {
         displaySubtaskList(subtasks);
       }
       break;
+    }
     case "create-subtask":
       await createSubtaskInteractive(ticket.key);
       break;
-    case "comment":
+    case "comment": {
       const { comment } = await inquirer.prompt<{ comment: string }>([
         { type: "input", name: "comment", message: "Comment:" },
       ]);
@@ -662,10 +675,12 @@ async function ticketActionsMenu(ticket: JiraTicket): Promise<void> {
         showSuccess("Comment added!");
       }
       break;
-    case "browser":
+    }
+    case "browser": {
       const ticketUrl = `https://${process.env["JIRA_HOST"]}/browse/${ticket.key}`;
       console.log(chalk.cyan(`\n  🌐 ${ticketUrl}\n`));
       break;
+    }
   }
 }
 
@@ -686,7 +701,7 @@ async function selectAndMoveSubtask(subtasks: JiraSubtask[]): Promise<void> {
 }
 
 async function selectAndUpdateSubtask(subtasks: JiraSubtask[]): Promise<void> {
-  const jira = getJiraService();
+  const jira = createJiraClient();
 
   const { key } = await inquirer.prompt<{ key: string }>([
     {
@@ -722,13 +737,20 @@ async function selectAndUpdateSubtask(subtasks: JiraSubtask[]): Promise<void> {
     const { text } = await inquirer.prompt<{ text: string }>([
       { type: "input", name: "text", message: "Text to append:" },
     ]);
-    await jira.appendToDescription(key, text);
+    // JiraClient doesn't have appendToDescription — inline the read+update
+    // the same way the old service did it.
+    const existing = await jira.getTicket(key);
+    const existingDescription = existing.description || "";
+    const newDescription = existingDescription
+      ? `${existingDescription}\n\n${text}`
+      : text;
+    await jira.updateTicket({ ticketKey: key, description: newDescription });
     showSuccess("Description updated!");
   }
 }
 
 async function selectAndCommentSubtask(subtasks: JiraSubtask[]): Promise<void> {
-  const jira = getJiraService();
+  const jira = createJiraClient();
 
   const { key } = await inquirer.prompt<{ key: string }>([
     {
@@ -753,7 +775,7 @@ async function selectAndCommentSubtask(subtasks: JiraSubtask[]): Promise<void> {
 }
 
 async function createSubtaskInteractive(parentKey: string): Promise<void> {
-  const jira = getJiraService();
+  const jira = createJiraClient();
 
   const { summary, description, assignToSelf } = await inquirer.prompt<{
     summary: string;

@@ -4,6 +4,11 @@
  * The most glorious PR automation tool ever created
  */
 
+// Side-effect import: loads `.env` before any command module evaluates.
+// Must stay the first import so env vars are available to all subsequent
+// modules during ESM dependency evaluation.
+import "./bootstrap.js";
+
 import { Command } from "commander";
 import chalk from "chalk";
 import {
@@ -30,7 +35,11 @@ import {
   searchTicketsInteractive,
 } from "./commands/jira.js";
 import { showBanner, showGoodbye, showError } from "./ui/display.js";
-import { isConfigured } from "../utils/config.js";
+
+/** Inline replacement for the deleted `utils/config.ts` helper. */
+function isConfigured(): boolean {
+  return !!process.env["GITHUB_TOKEN"] && !!process.env["GITHUB_USERNAME"];
+}
 
 const program = new Command();
 

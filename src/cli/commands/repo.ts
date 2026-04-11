@@ -5,7 +5,7 @@
 
 import inquirer from "inquirer";
 import chalk from "chalk";
-import { getGitHubService } from "../../services/github.js";
+import { GitHubClient } from "../../plugins/github/client.js";
 import {
   showBanner,
   showSuccess,
@@ -17,7 +17,7 @@ import {
   createStyledSpinner,
   showBox,
 } from "../ui/display.js";
-import type { GitHubRepo } from "../../types/index.js";
+import type { GitHubRepo } from "../../plugins/github/types.js";
 
 // Common gitignore templates
 const GITIGNORE_TEMPLATES = [
@@ -44,13 +44,47 @@ const LICENSE_TEMPLATES = [
 ];
 
 /**
+ * Parse a GitHub URL or owner/repo string into components.
+ * If only repo name is provided and GITHUB_USERNAME is set, uses that as owner.
+ * Inlined from the legacy GitHubService since GitHubClient doesn't own this helper.
+ */
+function parseRepoIdentifier(input: string): GitHubRepo {
+  // Handle full URLs: https://github.com/owner/repo or git@github.com:owner/repo.git
+  const urlMatch = input.match(/github\.com[/:]([\w-]+)\/([\w-]+)/);
+  if (urlMatch) {
+    return { owner: urlMatch[1]!, repo: urlMatch[2]!.replace(/\.git$/, "") };
+  }
+
+  // Handle owner/repo format
+  const parts = input.split("/");
+  if (parts.length === 2 && parts[0] && parts[1]) {
+    return { owner: parts[0], repo: parts[1] };
+  }
+
+  // Handle just repo name - use GITHUB_USERNAME as default owner
+  if (parts.length === 1 && parts[0]) {
+    const username = process.env["GITHUB_USERNAME"] ?? "";
+    if (username) {
+      return { owner: username, repo: parts[0] };
+    }
+  }
+
+  throw new Error(
+    `Invalid repository identifier: ${input}. Use owner/repo, a GitHub URL, or just repo name if GITHUB_USERNAME is set.`,
+  );
+}
+
+/**
  * Interactive repo creation flow
  */
 export async function createRepoInteractive(): Promise<void> {
   showBanner();
 
   try {
-    const github = getGitHubService();
+    const github = new GitHubClient({
+      token: process.env["GITHUB_TOKEN"] ?? "",
+      username: process.env["GITHUB_USERNAME"],
+    });
 
     // Verify connection first
     const spinner = createStyledSpinner("Connecting to GitHub");
@@ -328,7 +362,10 @@ export async function updateReadmeInteractive(
   showBanner();
 
   try {
-    const github = getGitHubService();
+    const github = new GitHubClient({
+      token: process.env["GITHUB_TOKEN"] ?? "",
+      username: process.env["GITHUB_USERNAME"],
+    });
 
     // Verify connection
     const spinner = createStyledSpinner("Connecting to GitHub");
@@ -356,7 +393,7 @@ export async function updateReadmeInteractive(
         },
       ]);
 
-      repo = github.parseRepoIdentifier(repoInput);
+      repo = parseRepoIdentifier(repoInput);
     }
 
     // Fetch existing README
@@ -506,7 +543,10 @@ export async function updateVisibilityInteractive(
   showBanner();
 
   try {
-    const github = getGitHubService();
+    const github = new GitHubClient({
+      token: process.env["GITHUB_TOKEN"] ?? "",
+      username: process.env["GITHUB_USERNAME"],
+    });
 
     // Verify connection
     const spinner = createStyledSpinner("Connecting to GitHub");
@@ -534,7 +574,7 @@ export async function updateVisibilityInteractive(
         },
       ]);
 
-      repo = github.parseRepoIdentifier(repoInput);
+      repo = parseRepoIdentifier(repoInput);
     }
 
     // Get current repo info
@@ -622,7 +662,10 @@ export async function checkIssuesInteractive(repo?: GitHubRepo): Promise<void> {
   showBanner();
 
   try {
-    const github = getGitHubService();
+    const github = new GitHubClient({
+      token: process.env["GITHUB_TOKEN"] ?? "",
+      username: process.env["GITHUB_USERNAME"],
+    });
 
     // Verify connection
     const spinner = createStyledSpinner("Connecting to GitHub");
@@ -650,7 +693,7 @@ export async function checkIssuesInteractive(repo?: GitHubRepo): Promise<void> {
         },
       ]);
 
-      repo = github.parseRepoIdentifier(repoInput);
+      repo = parseRepoIdentifier(repoInput);
     }
 
     // Check issues
@@ -709,7 +752,10 @@ export async function listReposInteractive(): Promise<void> {
   showBanner();
 
   try {
-    const github = getGitHubService();
+    const github = new GitHubClient({
+      token: process.env["GITHUB_TOKEN"] ?? "",
+      username: process.env["GITHUB_USERNAME"],
+    });
 
     // Verify connection
     const spinner = createStyledSpinner("Connecting to GitHub");

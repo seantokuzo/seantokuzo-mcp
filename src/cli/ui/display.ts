@@ -8,9 +8,22 @@ import boxen from "boxen";
 import figlet from "figlet";
 import gradient from "gradient-string";
 import { createSpinner } from "nanospinner";
-import { getConfig } from "../../utils/config.js";
 import { getRandomMessage, type MessageType } from "./messages.js";
-import type { PullRequestInfo, RepoInfo } from "../../types/index.js";
+import type {
+  PullRequestInfo,
+  RepoInfo,
+} from "../../plugins/github/types.js";
+
+type Personality = "professional" | "chaotic" | "zen";
+
+/** Resolve CLI personality from env, defaulting to "chaotic" on missing/invalid. */
+function getPersonality(): Personality {
+  const raw = process.env["CLI_PERSONALITY"] ?? "chaotic";
+  const allowed = ["professional", "chaotic", "zen"] as const;
+  return (allowed as readonly string[]).includes(raw)
+    ? (raw as Personality)
+    : "chaotic";
+}
 
 // Custom gradients
 const kuzoGradient = gradient(["#FF6B6B", "#4ECDC4", "#45B7D1"]);
@@ -22,8 +35,6 @@ const infoGradient = gradient(["#2193b0", "#6dd5ed"]);
  * Display the epic banner
  */
 export function showBanner(): void {
-  const config = getConfig();
-
   console.log();
   console.log(
     kuzoGradient(
@@ -46,9 +57,7 @@ export function showBanner(): void {
   console.log();
 
   // Random welcome message based on personality
-  console.log(
-    chalk.yellow(getRandomMessage("welcome", config.cli.personality)),
-  );
+  console.log(chalk.yellow(getRandomMessage("welcome", getPersonality())));
   console.log();
 }
 
@@ -79,14 +88,11 @@ export function showBox(
  * Show success message
  */
 export function showSuccess(message: string): void {
-  const config = getConfig();
   console.log();
   console.log(successGradient("  ✅ SUCCESS"));
   console.log(chalk.green(`  ${message}`));
   console.log();
-  console.log(
-    chalk.gray(`  ${getRandomMessage("success", config.cli.personality)}`),
-  );
+  console.log(chalk.gray(`  ${getRandomMessage("success", getPersonality())}`));
   console.log();
 }
 
@@ -94,7 +100,6 @@ export function showSuccess(message: string): void {
  * Show error message
  */
 export function showError(message: string, details?: string): void {
-  const config = getConfig();
   console.log();
   console.log(errorGradient("  ❌ ERROR"));
   console.log(chalk.red(`  ${message}`));
@@ -102,9 +107,7 @@ export function showError(message: string, details?: string): void {
     console.log(chalk.gray(`  ${details}`));
   }
   console.log();
-  console.log(
-    chalk.gray(`  ${getRandomMessage("error", config.cli.personality)}`),
-  );
+  console.log(chalk.gray(`  ${getRandomMessage("error", getPersonality())}`));
   console.log();
 }
 
@@ -132,8 +135,7 @@ export function showInfo(message: string): void {
  * Create a spinner with personality
  */
 export function createStyledSpinner(text: string) {
-  const config = getConfig();
-  const spinnerText = `${text} ${chalk.gray(getRandomMessage("thinking", config.cli.personality))}`;
+  const spinnerText = `${text} ${chalk.gray(getRandomMessage("thinking", getPersonality()))}`;
 
   return createSpinner(spinnerText, {
     color: "cyan",
@@ -210,12 +212,9 @@ export function displayPRList(prs: PullRequestInfo[]): void {
  * Show goodbye message
  */
 export function showGoodbye(): void {
-  const config = getConfig();
   console.log();
   console.log(chalk.gray("─────────────────────────────────────────"));
-  console.log(
-    kuzoGradient(getRandomMessage("goodbye", config.cli.personality)),
-  );
+  console.log(kuzoGradient(getRandomMessage("goodbye", getPersonality())));
   console.log(chalk.gray("─────────────────────────────────────────"));
   console.log();
 }
@@ -257,10 +256,7 @@ export function divider(): void {
  * Message with personality
  */
 export function say(type: MessageType): void {
-  const config = getConfig();
-  console.log(
-    chalk.gray(`  ${getRandomMessage(type, config.cli.personality)}`),
-  );
+  console.log(chalk.gray(`  ${getRandomMessage(type, getPersonality())}`));
 }
 
 /**

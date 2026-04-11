@@ -9,8 +9,9 @@ import { spawn } from "child_process";
 import { writeFileSync, readFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { getGitHubService } from "../../services/github.js";
-import { getConfig } from "../../utils/config.js";
+import { GitHubClient } from "../../plugins/github/client.js";
+import { parseRepoIdentifier } from "../../plugins/github/shared.js";
+import type { GitHubRepo } from "../../plugins/github/types.js";
 import {
   showBanner,
   showSuccess,
@@ -22,7 +23,32 @@ import {
   createStyledSpinner,
   showBox,
 } from "../ui/display.js";
-import type { GitHubRepo } from "../../types/index.js";
+
+/**
+ * Build a `GitHubClient` from the current env vars.
+ * Returns null and emits a user-facing error if GITHUB_TOKEN is missing.
+ */
+function createGitHubClientFromEnv(): {
+  github: GitHubClient;
+  defaultOwner: string | undefined;
+} | null {
+  const token = process.env["GITHUB_TOKEN"] ?? "";
+  const username = process.env["GITHUB_USERNAME"] ?? "";
+
+  if (!token) {
+    showError(
+      "GitHub token not configured",
+      "Set GITHUB_TOKEN in your .env file (run `kuzo setup` to configure).",
+    );
+    return null;
+  }
+
+  const github = new GitHubClient({
+    token,
+    username: username || undefined,
+  });
+  return { github, defaultOwner: username || undefined };
+}
 
 /**
  * Get the user's preferred editor
@@ -73,10 +99,12 @@ Lines starting with <!-- will be removed.
     });
 
     child.on("error", (error) => {
-      // Clean up temp file
+      // Clean up temp file (ignore cleanup failure)
       try {
         unlinkSync(tempPath);
-      } catch {}
+      } catch {
+        // ignore
+      }
       reject(
         new Error(
           `Failed to open editor: ${error.message}\nSet your EDITOR or VISUAL environment variable.`,
@@ -115,11 +143,14 @@ Lines starting with <!-- will be removed.
 export async function createPRInteractive(): Promise<void> {
   showBanner();
 
-  const config = getConfig();
+  const defaultBaseBranch = process.env["DEFAULT_PR_BASE_BRANCH"] ?? "main";
+  const defaultDraft = process.env["DEFAULT_PR_DRAFT"] === "true";
+
+  const clientOrNull = createGitHubClientFromEnv();
+  if (!clientOrNull) return;
+  const { github, defaultOwner } = clientOrNull;
 
   try {
-    const github = getGitHubService();
-
     // Verify connection first
     const spinner = createStyledSpinner("Connecting to GitHub");
     spinner.start();
@@ -147,8 +178,8 @@ export async function createPRInteractive(): Promise<void> {
 
     let repo: GitHubRepo;
     try {
-      repo = github.parseRepoIdentifier(repoInput);
-    } catch (error) {
+      repo = parseRepoIdentifier(repoInput, defaultOwner);
+    } catch {
       showError("Invalid repository format", "Use owner/repo or a GitHub URL");
       return;
     }
@@ -179,7 +210,7 @@ export async function createPRInteractive(): Promise<void> {
         name: "targetBranch",
         message: "🎯 Target branch (merge into):",
         choices: branchNames,
-        default: config.defaults.baseBranch,
+        default: defaultBaseBranch,
       },
     ]);
 
@@ -412,7 +443,7 @@ export async function createPRInteractive(): Promise<void> {
         type: "confirm",
         name: "isDraft",
         message: "📝 Create as draft PR?",
-        default: config.defaults.draft,
+        default: defaultDraft,
       },
     ]);
 
@@ -471,9 +502,11 @@ export async function updatePRInteractive(
     showBanner();
   }
 
-  try {
-    const github = getGitHubService();
+  const clientOrNull = createGitHubClientFromEnv();
+  if (!clientOrNull) return;
+  const { github, defaultOwner } = clientOrNull;
 
+  try {
     let repo = existingRepo;
     let prNumber = existingPRNumber;
 
@@ -503,7 +536,7 @@ export async function updatePRInteractive(
         },
       ]);
 
-      repo = github.parseRepoIdentifier(repoInput);
+      repo = parseRepoIdentifier(repoInput, defaultOwner);
     }
 
     if (!prNumber) {
@@ -767,9 +800,11 @@ export async function updatePRInteractive(
 export async function listPRsInteractive(): Promise<void> {
   showBanner();
 
-  try {
-    const github = getGitHubService();
+  const clientOrNull = createGitHubClientFromEnv();
+  if (!clientOrNull) return;
+  const { github, defaultOwner } = clientOrNull;
 
+  try {
     // Verify connection
     const spinner = createStyledSpinner("Connecting to GitHub");
     spinner.start();
@@ -795,7 +830,7 @@ export async function listPRsInteractive(): Promise<void> {
       },
     ]);
 
-    const repo = github.parseRepoIdentifier(repoInput);
+    const repo = parseRepoIdentifier(repoInput, defaultOwner);
 
     const { state } = await inquirer.prompt<{
       state: "open" | "closed" | "all";
