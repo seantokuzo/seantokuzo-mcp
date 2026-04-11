@@ -33,3 +33,6 @@ coverage/
 # Misc
 *.tgz
 .npm
+
+# Session handoff scratch files
+next-phase.md
