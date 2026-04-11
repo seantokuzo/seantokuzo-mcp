@@ -62,15 +62,25 @@ export async function resolveRepository(
     };
   }
 
-  const result = (await context.callTool(
-    "get_git_context",
-    {},
-  )) as GitContextResult;
+  // Fall back to the git-context plugin. If it's disabled or not registered
+  // the registry will throw — translate that into a user-facing error instead
+  // of leaking "Tool not found".
+  let result: GitContextResult;
+  try {
+    result = (await context.callTool(
+      "get_git_context",
+      {},
+    )) as GitContextResult;
+  } catch {
+    throw new Error(
+      "Repository is required unless the git-context plugin is enabled and you are in a git repository.",
+    );
+  }
 
   const data = result?.data;
   if (!data?.isGitRepo || !data.owner || !data.repo) {
     throw new Error(
-      "No repository specified and not in a git repository. Please provide a repository.",
+      "Repository is required unless the git-context plugin is enabled and you are in a git repository.",
     );
   }
 

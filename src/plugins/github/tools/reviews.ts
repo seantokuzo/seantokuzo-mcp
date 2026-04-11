@@ -99,6 +99,7 @@ const reviewCommentSchema = z.object({
   side: z
     .enum(["LEFT", "RIGHT"])
     .optional()
+    .default("RIGHT")
     .describe(
       "Which side of the diff (LEFT = base/original, RIGHT = head/updated). Default: RIGHT.",
     ),

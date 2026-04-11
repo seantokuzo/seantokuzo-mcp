@@ -67,7 +67,7 @@ const getFileContentSchema = z.object({
   ref: z
     .string()
     .describe(
-      "Git ref — branch name, tag, or commit SHA. Defaults to the repo's default branch if you just want the latest main.",
+      "Git ref to read from — branch name, tag, or commit SHA. Required. Pass the repo's default branch (from `get_repo_info`) if you want the latest main.",
     ),
 });
 

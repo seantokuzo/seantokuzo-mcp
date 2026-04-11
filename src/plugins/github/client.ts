@@ -40,6 +40,19 @@ const noopLogger: PluginLogger = {
   error: () => undefined,
 };
 
+/** Extract a numeric HTTP status from an Octokit error, or undefined */
+function getErrorStatus(err: unknown): number | undefined {
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "status" in err &&
+    typeof (err as { status: unknown }).status === "number"
+  ) {
+    return (err as { status: number }).status;
+  }
+  return undefined;
+}
+
 export class GitHubClient {
   readonly defaultOwner: string | undefined;
   private readonly octokit: Octokit;
@@ -84,7 +97,8 @@ export class GitHubClient {
   // ==========================================================================
 
   async listBranches(repo: GitHubRepo): Promise<BranchInfo[]> {
-    const { data } = await this.octokit.repos.listBranches({
+    // Paginate so the tool actually returns *all* branches for repos with >100.
+    const data = await this.octokit.paginate(this.octokit.repos.listBranches, {
       owner: repo.owner,
       repo: repo.repo,
       per_page: 100,
@@ -501,8 +515,14 @@ export class GitHubClient {
       const content = Buffer.from(data.content, "base64").toString("utf-8");
       return { content, sha: data.sha };
     } catch (err) {
-      this.logger.debug("No README found or error fetching", err);
-      return null;
+      // Only swallow 404 ("README missing") — rethrow auth/rate-limit/server errors
+      // so callers see them instead of interpreting them as "no README".
+      if (getErrorStatus(err) === 404) {
+        this.logger.debug("README not found", err);
+        return null;
+      }
+      this.logger.warn("Error fetching README", err);
+      throw err;
     }
   }
 
@@ -542,23 +562,39 @@ export class GitHubClient {
       return { enabled: false, open_count: 0, closed_count: 0 };
     }
 
-    const open_count = repoInfo.open_issues_count;
-
+    // GitHub's `open_issues_count` on the repo endpoint counts PRs too, and
+    // `issues.listForRepo` with per_page:1 only tells us "any closed issues
+    // exist" — not an actual count. Use the Search API for accurate
+    // issue-only totals (PRs excluded via the `is:issue` qualifier).
     try {
-      const { data: closedIssues } = await this.octokit.issues.listForRepo({
-        owner: repo.owner,
-        repo: repo.repo,
-        state: "closed",
-        per_page: 1,
-      });
+      const [openResult, closedResult] = await Promise.all([
+        this.octokit.search.issuesAndPullRequests({
+          q: `repo:${repo.owner}/${repo.repo} is:issue is:open`,
+          per_page: 1,
+        }),
+        this.octokit.search.issuesAndPullRequests({
+          q: `repo:${repo.owner}/${repo.repo} is:issue is:closed`,
+          per_page: 1,
+        }),
+      ]);
 
       return {
         enabled: true,
-        open_count,
-        closed_count: closedIssues.length > 0 ? 1 : 0,
+        open_count: openResult.data.total_count,
+        closed_count: closedResult.data.total_count,
       };
-    } catch {
-      return { enabled: true, open_count, closed_count: 0 };
+    } catch (err) {
+      // Search API is rate-limited independently (30/min unauth'd).
+      // If it fails, fall back to the repo-level count and note it's a PRs-included approximation.
+      this.logger.warn(
+        "Search API failed for issue counts — falling back to repo.open_issues_count (includes PRs)",
+        err,
+      );
+      return {
+        enabled: true,
+        open_count: repoInfo.open_issues_count,
+        closed_count: 0,
+      };
     }
   }
 
@@ -584,8 +620,14 @@ export class GitHubClient {
       }
       return null;
     } catch (err) {
-      this.logger.debug("Could not get file content", err);
-      return null;
+      // Only swallow 404 ("file missing") — rethrow auth/rate-limit/server errors
+      // so callers don't confuse them with "file not found".
+      if (getErrorStatus(err) === 404) {
+        this.logger.debug("File not found", err);
+        return null;
+      }
+      this.logger.warn("Could not get file content", err);
+      throw err;
     }
   }
 
