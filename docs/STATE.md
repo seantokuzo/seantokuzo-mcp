@@ -113,6 +113,140 @@ optionalConfig: ["GITHUB_USERNAME", "GITHUB_ORG"]
 
 ---
 
+### Phase 2.c Decomposition — jira plugin
+
+**Goal:** Expose Jira service methods as MCP tools for the first time. Jira was previously CLI-only; this phase makes every Jira operation available to Claude via MCP.
+
+**Target tool count:** 11 tools across 4 tool files.
+
+**Internal Waves:**
+
+| Wave | Scope | Files | Notes |
+|------|-------|-------|-------|
+| **1 — Foundation** | Types, HTTP client wrapper, plugin entry, ADF parser helper | `types.ts`, `client.ts`, `index.ts`, `adf.ts` | `client.ts` wraps `fetch` with Basic auth. `adf.ts` has `extractTextFromADF` ported from `JiraService` |
+| **2 — Ticket tools** | Get/search/update tickets | `tools/tickets.ts` | 4 tools |
+| **3 — Transition tools** | Get transitions, move by status name | `tools/transitions.ts` | 2 tools; `move_ticket` uses high-level name match |
+| **4 — Subtask tools** | Create/list subtasks, code review subtasks | `tools/subtasks.ts` | 3 tools |
+| **5 — Comment tools** | Add/list comments | `tools/comments.ts` | 2 tools |
+| **6 — Wire + smoke test** | Assemble, live-boot verify | `index.ts` | All 3 plugins should load together |
+
+**Tool inventory:**
+
+Ticket tools (tickets.ts):
+- `get_ticket` — fetch by key (e.g., "PROJ-123")
+- `search_tickets` — JQL search with maxResults
+- `get_my_tickets` — shorthand for assignee=currentUser, unresolved
+- `update_ticket` — summary, description, labels, assignee
+
+Transition tools (transitions.ts):
+- `get_transitions` — list available transitions for a ticket
+- `move_ticket` — high-level transition by status name (uses `get_transitions` internally)
+
+Subtask tools (subtasks.ts):
+- `create_subtask` — new subtask under a parent
+- `get_subtasks` — list subtasks for a parent
+- `get_my_code_reviews` — JQL shortcut for review subtasks assigned to me
+
+Comment tools (comments.ts):
+- `add_comment` — post ADF-formatted comment
+- `get_comments` — list comments with ADF→text extraction
+
+**Plugin config:**
+```typescript
+requiredConfig: ["JIRA_HOST", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+optionalConfig: []
+```
+
+**Cross-plugin concerns:** None in Phase 2.c. Cross-plugin Jira↔GitHub workflows (e.g., `create_pr_and_link_jira`, `ticket_to_pr`) are Phase 5.
+
+**Acceptance:**
+- All 11 Jira tools exposed via MCP
+- `requiredConfig` validation gracefully skips the plugin if Jira env vars are missing
+- `src/services/jira.ts` and `src/cli/commands/jira.ts` left intact — deletion in 2.d
+- `node dist/core/server.js` boots with all 3 plugins (`git-context`, `github`, `jira`) loaded
+
+---
+
+### Phase 2.d Decomposition — cleanup + CLI migration
+
+**Goal:** Delete the legacy monolithic code paths. Migrate the CLI to use the new plugin clients directly. Achieve feature parity with zero legacy code remaining.
+
+**Scope:**
+- **Delete:** `src/services/git.ts`, `src/services/github.ts`, `src/services/jira.ts`, `src/mcp/server.ts`, `src/types/index.ts`
+- **Migrate:** 5 CLI command files (`pr.ts` 1358 LOC, `repo.ts` 877 LOC, `review.ts` 723 LOC, `jira.ts` 936 LOC, `config.ts` 289 LOC) — ~4200 LOC of import updates and service→client swaps
+- **Update:** `src/index.ts` exports
+- **Investigate:** `src/server.ts` (Express webhook, 275 LOC, marked "unused?" in STATE.md)
+- **Decide:** fate of `src/utils/config.ts` (143 LOC) and `src/utils/logger.ts` (85 LOC)
+- **Scope check:** every `import .* from .*types/index` and every `import .* from .*services/` must be rewritten or removed
+
+### Decision Points (resolve BEFORE code execution)
+
+These decisions affect scope significantly — the executing session should confirm with the user upfront instead of guessing:
+
+1. **CLI migration strategy**
+   - **(a) Direct client imports** *(recommended)* — CLI imports `GitHubClient` / `JiraClient` from plugin directories. Mechanical 1:1 replacement of `getGitHubService()` → `new GitHubClient(token)`. Preserves CLI ergonomics, ~1000 LOC of find/replace work. Doesn't violate the "plugins don't import plugins" rule since the CLI isn't a plugin.
+   - **(b) Registry-based** — CLI instantiates `PluginRegistry` + `PluginLoader` and routes through `registry.callTool(...)`. Architecturally pure but heavyweight for a CLI. Each command would serialize args, go through Zod validation twice, deserialize the JSON result. Not worth it.
+   - **(c) Delete the CLI entirely** — MCP is now the primary interface via Claude; CLI becomes dead weight. Only consider if the CLI isn't actively used.
+
+2. **`src/utils/logger.ts` fate**
+   - **(a) Keep** *(recommended)* — CLI needs a **stdout** logger for normal output; the new `src/core/logger.ts` writes exclusively to **stderr** (because stdout is the MCP transport). Keeping the old CLI logger is the simplest path.
+   - **(b) Delete and extend core logger** — Add a `destination: "stdout" | "stderr"` option to `KuzoLogger`. More work, marginal benefit.
+
+3. **`src/utils/config.ts` fate**
+   - **(a) Delete** *(recommended)* — After CLI migration, the old flat `Config` interface has no consumers. `ConfigManager` in `src/core/config.ts` replaces it for plugin-aware code; CLI can read env vars directly.
+   - **(b) Keep** — If `config.ts` CLI command logic depends on it heavily. Check `src/cli/commands/config.ts` before deciding.
+
+4. **`src/server.ts` (Express webhook) fate**
+   - **Action:** `git log` the file + `grep` for references. STATE.md marks it "unused?" — verify, then delete if no consumers. The webhook pattern is a dead end for a stdio-based MCP server anyway.
+
+### Waves
+
+| Wave | Scope | Dependencies |
+|------|-------|--------------|
+| **0 — Decision gate** | Confirm the 4 decision points above with user | — |
+| **1 — Delete legacy services** | Remove `src/services/git.ts`, `github.ts`, `jira.ts` | Decision gate |
+| **2 — CLI migration** | 5 command files, replace service calls with plugin client imports, replace type imports | Wave 1 (broken imports are the forcing function) |
+| **3 — Delete legacy MCP server** | Remove `src/mcp/server.ts`, update `package.json` scripts (remove `start:mcp`, promote `start:kuzo` → `start:mcp`) | Wave 2 |
+| **4 — Delete flat types file** | Remove `src/types/index.ts`, update `src/index.ts` exports | Waves 1-3 |
+| **5 — Delete webhook server** | Remove `src/server.ts` if confirmed unused | — |
+| **6 — Delete old config utility** | Remove `src/utils/config.ts` if decision (3a) was chosen | Wave 2 |
+| **7 — Eslint cleanup** | Remove `src/services/`, `src/mcp/`, `src/server.ts` from `eslint.config.js` ignore list (files no longer exist) | Waves 1, 3, 5 |
+| **8 — Full verify** | lint, typecheck, build, smoke test MCP server with all 3 plugins loaded, smoke test each CLI command | All waves |
+
+### Acceptance
+
+- [ ] Zero references to `src/services/*`, `src/mcp/server.ts`, `src/types/index.ts` in the codebase
+- [ ] All 5 CLI commands work end-to-end (manual smoke test)
+- [ ] `npm run start:kuzo` (or renamed `start:mcp`) loads git-context + github + jira plugins
+- [ ] `npm run lint && npm run typecheck && npm run build` — all clean
+- [ ] `eslint.config.js` no longer ignores pre-refactor paths (because they don't exist)
+- [ ] No ruleset bypasses needed for merge — branch protection config resolved
+
+---
+
+### Execution Strategy for the Mega Pass
+
+**Combined scope of 2.b + 2.c + 2.d:**
+- ~2300 LOC of new plugin code (2.b + 2.c)
+- ~5500 LOC of deletions (2.d)
+- ~1000 LOC of CLI migration (2.d)
+- ~20 files touched for plugins, ~10 files touched for deletions/migration
+- 3 separate PRs (one per sub-phase)
+
+**Recommended execution split** (within the mega pass):
+
+1. **Session 1 — Phase 2.b (github plugin).** Full PR cycle: branch, build, PR, address review, merge. Natural stopping point at merge.
+
+2. **Session 2 — Phase 2.c (jira plugin).** Similar pattern, same shape, different API. Natural stopping point at merge.
+
+3. **Session 3 — Phase 2.d (cleanup).** Different kind of work — deletions + mechanical migration + decision gate. Best done with fresh context after 2.b and 2.c are battle-tested.
+
+**Alternative:** If the executing session has fresh max-reasoning context and aggressive subagent delegation, 2.b + 2.c could fit in one session since they follow the same pattern. 2.d should still be its own session because of the decision gate and the qualitative difference in the work.
+
+**Why not all three in one session:** Combined LOC activity is ~8000. CLAUDE.md's context management guide flags 15+ files per task as a "spawn subagent" signal — this mega pass hits that by the end of 2.b alone. Context rot will degrade quality on 2.d decisions unless the session delegates aggressively.
+
+---
+
 ## What Exists Today
 
 ### Working (pre-refactor)
