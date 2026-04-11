@@ -23,7 +23,7 @@ const plugin: KuzoPlugin = {
     "GitHub integration — pull requests, reviews, repository management, branches, and file content. Auto-detects repo and branch via the git-context plugin.",
   version: "1.0.0",
   requiredConfig: ["GITHUB_TOKEN"],
-  optionalConfig: ["GITHUB_USERNAME", "GITHUB_ORG"],
+  optionalConfig: ["GITHUB_USERNAME"],
   tools: [
     ...pullRequestTools,
     ...reviewTools,
