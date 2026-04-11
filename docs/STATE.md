@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-04-10
+**Last Updated:** 2026-04-11
 
 ---
 
@@ -30,8 +30,8 @@
 
 **Phase 2 Sub-phase Split (2026-04-10):** Phase 2 is too large for a single PR. Split into 4 sub-phases, each its own branch + PR:
 - **2.a** — git-context plugin (COMPLETE, merged PR #6)
-- **2.b** — github plugin (NEXT UP)
-- **2.c** — jira plugin (new MCP exposure of Jira methods)
+- **2.b** — github plugin (COMPLETE, merged PR #7)
+- **2.c** — jira plugin (NEXT UP)
 - **2.d** — cleanup + CLI migration (delete legacy `src/services/`, `src/mcp/server.ts`, `src/types/index.ts`; point CLI at plugin registry)
 
 Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts` and `src/mcp/server.ts` coexist as separate entry points during the migration.
@@ -42,7 +42,24 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - Cross-platform `findGitRoot` (Windows drive roots now terminate correctly)
 - `_`-prefix convention respected by eslint (matches TS `noUnusedParameters`)
 
-**Next up: Phase 2.b — github plugin**
+**Phase 2.b — github plugin** (complete — merged PR #7, 2026-04-11)
+- `src/plugins/github/` — 23 MCP tools across 4 tool files (`pulls.ts`, `reviews.ts`, `repos.ts`, `branches.ts`)
+- `GitHubClient` wraps Octokit with constructor-injected token and optional logger; no singleton, no global config
+- `state.ts` holds module-local client reference, set in `initialize()` and accessed lazily by tool handlers via `getClient()` — avoids circular imports between `index.ts` and tool files
+- `shared.ts` centralizes `parseRepoIdentifier` and `resolveRepository`; the latter is the first real use of cross-plugin `callTool("get_git_context", {})`. `GitContextResult` is defined locally and `as`-cast from the registry response (cross-plugin types stay loose until Phase 2.5)
+- `create_pull_request` has a 3-tier target-branch cascade: explicit input → git-context `defaultBranch` → GitHub API `repo.default_branch` (handles `master` and custom defaults for repos with no local clone)
+- `update_pull_request` body logic: append-mode treats null body as empty string; title-only updates leave body untouched so hand-written PR descriptions don't get wiped
+- All list methods (`listBranches`, `listPullRequests`, `getPRCommits`, `getPRFiles`, `getPRFilesWithPatch`, `getPRReviews`, `getPRReviewComments`) use `octokit.paginate` — "all X" means all X
+- Compare-based client methods (`getCommitsBetween`, `getDiffStats`, `getChangedFiles`) propagate Octokit errors instead of silently returning []/zeros; `create_pull_request` wraps them in its own try/catch so PR creation still degrades gracefully on transient compare failures
+- `checkIssues` uses the Search API (`is:issue` qualifier) for accurate open/closed counts that exclude PRs, with a logged fallback to `repo.open_issues_count` if Search is rate-limited
+- `getReadme`/`getFileContent` only swallow 404s; rethrow auth/rate-limit/5xx errors via a shared `getErrorStatus` helper
+- Debug logs on mutating methods log metadata only (repo, head/base, title, pullNumber, `hasBody` flag) — never full config/body content
+- `pull_number` and inline-comment `line` schemas use `.int().min(1)` so Zod rejects floats/NaN at validation time
+- `parseRepoIdentifier` tolerates trailing slashes on GitHub URLs
+- 4 rounds of Copilot review (29 comments total: 25 fixed, 4 deferred to Phase 2.5 — all 4 flagged redundant `Schema.parse()` in handlers, which needs a `ToolDefinition<TInput>` generic or `defineTool<S>` helper to fix properly and belongs with the broader type-contract work)
+- Legacy `src/services/github.ts` and `src/mcp/server.ts` left intact — deleted in 2.d
+
+**Next up: Phase 2.c — jira plugin**
 
 ### Phase 2.b Decomposition
 
@@ -262,9 +279,13 @@ These decisions affect scope significantly — the executing session should conf
 - Plugin system core (`src/core/` — server, registry, loader, config, logger)
 - Plugin type definitions (`src/plugins/types.ts`)
 
+### New (Phase 2 — in flight)
+- `src/plugins/git-context/` — 1 tool, 1 resource (Phase 2.a, merged PR #6)
+- `src/plugins/github/` — 23 tools across pulls/reviews/repos/branches (Phase 2.b, merged PR #7). First real cross-plugin `callTool("get_git_context")` consumer.
+
 ### Not Yet Built
-- Actual plugins (git-context, github, jira — Phase 2)
-- Jira MCP tools (service exists, not exposed via MCP)
+- `src/plugins/jira/` — Phase 2.c (NEXT UP)
+- Legacy cleanup: delete `src/services/`, `src/mcp/server.ts`, `src/types/index.ts`; migrate CLI to plugin clients — Phase 2.d
 - Any Phase 3+ integrations (releases, actions, labels, etc.)
 - Tests (vitest not yet configured)
 
