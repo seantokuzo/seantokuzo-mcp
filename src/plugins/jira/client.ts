@@ -212,9 +212,12 @@ export class JiraClient {
   // ==========================================================================
 
   async getTicket(ticketKey: string): Promise<JiraTicket> {
+    // No `?expand=transitions` — `mapTicketResponse` doesn't read them, and
+    // callers who actually need transitions use `getTransitions()` which hits
+    // a dedicated endpoint. Keeping the expand was wasted payload + latency.
     this.logger.debug(`Fetching ticket ${ticketKey}`);
     const data = await this.request<JiraIssueRaw>(
-      `/issue/${encodeURIComponent(ticketKey)}?expand=transitions`,
+      `/issue/${encodeURIComponent(ticketKey)}`,
     );
     return this.mapTicketResponse(data);
   }

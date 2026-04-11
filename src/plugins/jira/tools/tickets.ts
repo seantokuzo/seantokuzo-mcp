@@ -166,7 +166,7 @@ const updateTicketTool: ToolDefinition = {
   name: "update_ticket",
   description: `Update fields on a Jira ticket (summary, description, labels, assignee).
 
-All parameters except \`ticket_key\` are optional, but at least one update field must be provided. Empty/falsy values are ignored — to clear a field, use the Jira UI.`,
+All parameters except \`ticket_key\` are optional, but at least one update field must be provided. String fields (summary, description, assignee_account_id) must be non-empty — to clear one of those, use the Jira UI. To clear every label on a ticket, pass \`labels: []\`.`,
   inputSchema: updateTicketSchema,
   handler: async (args, _context) => {
     const input = updateTicketSchema.parse(args);
