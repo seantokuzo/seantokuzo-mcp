@@ -32,7 +32,7 @@
 - **2.a** — git-context plugin (COMPLETE, merged PR #6)
 - **2.b** — github plugin (COMPLETE, merged PR #7)
 - **2.c** — jira plugin (COMPLETE, merged PR #8)
-- **2.d** — cleanup + CLI migration (delete legacy `src/services/`, `src/mcp/server.ts`, `src/types/index.ts`; point CLI at plugin registry) (NEXT UP)
+- **2.d** — cleanup + CLI migration (COMPLETE, merged PR #9)
 
 Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts` and `src/mcp/server.ts` coexist as separate entry points during the migration.
 
@@ -78,7 +78,16 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - Smoke test: `node dist/core/server.js` loaded `git-context` and `github`; `jira` was discovered + initialized but hit a 401 on `/myself` against a stale local API token — the legacy `JiraService.verifyConnection()` returned the identical 401, so code parity with the legacy service is the acceptance-criteria surrogate. User agreed to rotate the token out-of-band rather than block the PR
 - Legacy `src/services/jira.ts` left intact — deleted in 2.d
 
-**Next up: Phase 2.d — cleanup + CLI migration**
+**Phase 2.d — cleanup + CLI migration** (complete — merged PR #9, 2026-04-11)
+- `src/cli/bootstrap.ts` — new side-effect `.env` loader, imported first in CLI entry so env vars are available during ESM dependency evaluation
+- CLI commands (`pr.ts`, `repo.ts`, `review.ts`, `jira.ts`, `config.ts`) + `ui/display.ts` migrated from `getGitHubService`/`getJiraService`/`getConfig` singletons to direct `GitHubClient`/`JiraClient` instantiation + `process.env` reads
+- Inlined helpers where plugin clients don't expose them: `parseRepoIdentifier` (repo.ts, later switched to shared import after Copilot review), `findPRByBranchInOrg` (review.ts), `appendToDescription` orchestration (jira.ts), `createGitHubClientFromEnv`/`createJiraClient` factories
+- ~3566 LOC deleted: `src/services/{git,github,jira}.ts`, `src/mcp/server.ts`, `src/types/index.ts`, `src/server.ts` (orphaned Express webhook), `src/utils/{config,logger}.ts`, `src/index.ts` (barrel + banner)
+- `package.json`: `start:kuzo` renamed to canonical `start:mcp`; `start`, `dev`, old `start:mcp`, `start:webhook` removed; `main` field removed; `express` + `@types/express` dropped (11 transitive packages pruned)
+- `eslint.config.js`: stale ignore entries removed; `src/cli/` brought into the linted tree (6 pre-existing errors fixed)
+- 1 round of Copilot review (3 comments: buggy regex in inlined `parseRepoIdentifier` → switched to shared import; error-swallowing try/catch in `findPRByBranchInOrg` → removed; generic `createJiraClient` error → explicit env var validation)
+
+**Next up: Phase 2.5 — Plugin Security & Open-Source Readiness** (with Phase 2.b deferred `ToolDefinition<TInput>` generic rolled in as warmup)
 
 ### Phase 2.b Decomposition
 
@@ -285,27 +294,29 @@ These decisions affect scope significantly — the executing session should conf
 
 ## What Exists Today
 
-### Working (pre-refactor)
-- Monolithic MCP server with 6 PR tools (`src/mcp/server.ts`)
-- GitHub service with full Octokit wrapper (`src/services/github.ts`)
-- Jira service with REST v3 integration (`src/services/jira.ts`)
-- Git context detection (`src/services/git.ts`)
-- Interactive CLI with PR, repo, review, jira commands (`src/cli/`)
-- Bash CLI alternative (`cli-bash/`)
-- Webhook server for GitHub push events (`src/server.ts`)
-
-### New (Phase 1)
+### Core (Phase 1)
 - Plugin system core (`src/core/` — server, registry, loader, config, logger)
 - Plugin type definitions (`src/plugins/types.ts`)
 
-### New (Phase 2 — in flight)
+### Plugins (Phase 2)
 - `src/plugins/git-context/` — 1 tool, 1 resource (Phase 2.a, merged PR #6)
-- `src/plugins/github/` — 23 tools across pulls/reviews/repos/branches (Phase 2.b, merged PR #7). First real cross-plugin `callTool("get_git_context")` consumer.
-- `src/plugins/jira/` — 11 tools across tickets/transitions/subtasks/comments (Phase 2.c, merged PR #8). Zero cross-plugin concerns; `JiraClient` wraps native `fetch` with Basic auth.
+- `src/plugins/github/` — 23 tools across pulls/reviews/repos/branches (Phase 2.b, merged PR #7). Cross-plugin `callTool("get_git_context")` consumer.
+- `src/plugins/jira/` — 11 tools across tickets/transitions/subtasks/comments (Phase 2.c, merged PR #8). `JiraClient` wraps native `fetch` with Basic auth.
+
+### CLI (Phase 2.d)
+- Interactive CLI with PR, repo, review, jira, config commands (`src/cli/`)
+- Uses plugin clients directly (`GitHubClient`, `JiraClient`) — no legacy service singletons
+- `src/cli/bootstrap.ts` loads `.env` as ESM side-effect before any command module
+- Bash CLI alternative still at `cli-bash/` (untouched)
+
+### Legacy Code — Fully Deleted (Phase 2.d, PR #9)
+All legacy code paths removed. No monolithic services, no flat type barrel, no webhook server, no legacy MCP entry. Directories `src/services/`, `src/mcp/`, `src/types/`, `src/utils/` no longer exist.
 
 ### Not Yet Built
-- Legacy cleanup: delete `src/services/`, `src/mcp/server.ts`, `src/types/index.ts`; migrate CLI to plugin clients — Phase 2.d (NEXT UP)
-- Any Phase 3+ integrations (releases, actions, labels, etc.)
+- Plugin security & open-source readiness (Phase 2.5 — NEXT UP)
+- Phase 3+ GitHub plugin expansion (releases, actions, labels, issues, etc.)
+- New integrations (Phase 4: Confluence, Discord, SMS, Calendar, Notion, Slack)
+- Cross-plugin workflows (Phase 5)
 - Tests (vitest not yet configured)
 
 ---
