@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import type { ToolDefinition } from "../../types.js";
+import { defineTool, type ToolDefinition } from "../../types.js";
 import { getClient } from "../state.js";
 
 // ============================================================================
@@ -26,13 +26,12 @@ const getTicketSchema = z.object({
   ticket_key: ticketKeyField,
 });
 
-const getTicketTool: ToolDefinition = {
+const getTicketTool = defineTool({
   name: "get_ticket",
   description:
     "Fetch a Jira ticket by key (e.g. 'PROJ-123'). Returns summary, description, status, assignee, labels, subtasks, and metadata.",
   inputSchema: getTicketSchema,
-  handler: async (args, _context) => {
-    const input = getTicketSchema.parse(args);
+  handler: async (input, _context) => {
     const client = getClient();
 
     const ticket = await client.getTicket(input.ticket_key);
@@ -42,7 +41,7 @@ const getTicketTool: ToolDefinition = {
       data: ticket,
     };
   },
-};
+});
 
 // ============================================================================
 // search_tickets
@@ -65,14 +64,13 @@ const searchTicketsSchema = z.object({
     .describe("Maximum number of tickets to return (1-100, default 50)"),
 });
 
-const searchTicketsTool: ToolDefinition = {
+const searchTicketsTool = defineTool({
   name: "search_tickets",
   description: `Search Jira tickets using JQL (Jira Query Language).
 
 TIP: Use \`get_my_tickets\` for the common "assigned to me" case instead of writing JQL by hand.`,
   inputSchema: searchTicketsSchema,
-  handler: async (args, _context) => {
-    const input = searchTicketsSchema.parse(args);
+  handler: async (input, _context) => {
     const client = getClient();
 
     const tickets = await client.searchTickets(input.jql, input.max_results);
@@ -83,7 +81,7 @@ TIP: Use \`get_my_tickets\` for the common "assigned to me" case instead of writ
       data: tickets,
     };
   },
-};
+});
 
 // ============================================================================
 // get_my_tickets
@@ -96,13 +94,12 @@ const getMyTicketsSchema = z.object({
     .describe("Optional project key to filter by (e.g. 'PROJ')"),
 });
 
-const getMyTicketsTool: ToolDefinition = {
+const getMyTicketsTool = defineTool({
   name: "get_my_tickets",
   description:
     "Get all unresolved Jira tickets assigned to the authenticated user, sorted by most recently updated. Optionally filter by project key.",
   inputSchema: getMyTicketsSchema,
-  handler: async (args, _context) => {
-    const input = getMyTicketsSchema.parse(args);
+  handler: async (input, _context) => {
     const client = getClient();
 
     const tickets = await client.getMyTickets(input.project_key);
@@ -115,7 +112,7 @@ const getMyTicketsTool: ToolDefinition = {
       data: tickets,
     };
   },
-};
+});
 
 // ============================================================================
 // update_ticket
@@ -162,14 +159,13 @@ const updateTicketSchema = z
     },
   );
 
-const updateTicketTool: ToolDefinition = {
+const updateTicketTool = defineTool({
   name: "update_ticket",
   description: `Update fields on a Jira ticket (summary, description, labels, assignee).
 
 All parameters except \`ticket_key\` are optional, but at least one update field must be provided. String fields (summary, description, assignee_account_id) must be non-empty — to clear one of those, use the Jira UI. To clear every label on a ticket, pass \`labels: []\`.`,
   inputSchema: updateTicketSchema,
-  handler: async (args, _context) => {
-    const input = updateTicketSchema.parse(args);
+  handler: async (input, _context) => {
     const client = getClient();
 
     await client.updateTicket({
@@ -194,7 +190,7 @@ All parameters except \`ticket_key\` are optional, but at least one update field
       },
     };
   },
-};
+});
 
 // ============================================================================
 // Export

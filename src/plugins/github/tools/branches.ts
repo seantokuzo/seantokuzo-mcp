@@ -5,7 +5,7 @@
  */
 
 import { z } from "zod";
-import type { ToolDefinition } from "../../types.js";
+import { defineTool, type ToolDefinition } from "../../types.js";
 import { getClient } from "../state.js";
 import { resolveRepository } from "../shared.js";
 
@@ -24,13 +24,12 @@ const listBranchesSchema = z.object({
   repository: repositoryField,
 });
 
-const listBranchesTool: ToolDefinition = {
+const listBranchesTool = defineTool({
   name: "list_branches",
   description:
     "List all branches in a repository, including their protection status and the SHA of the latest commit on each.",
   inputSchema: listBranchesSchema,
-  handler: async (args, context) => {
-    const input = listBranchesSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo, source: repoSource } = await resolveRepository(
@@ -53,7 +52,7 @@ const listBranchesTool: ToolDefinition = {
       data: branches,
     };
   },
-};
+});
 
 // ============================================================================
 // get_file_content
@@ -71,13 +70,12 @@ const getFileContentSchema = z.object({
     ),
 });
 
-const getFileContentTool: ToolDefinition = {
+const getFileContentTool = defineTool({
   name: "get_file_content",
   description:
     "Read the contents of a single file from a GitHub repository at a specific ref. Returns null if the file doesn't exist.",
   inputSchema: getFileContentSchema,
-  handler: async (args, context) => {
-    const input = getFileContentSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo } = await resolveRepository(
@@ -106,7 +104,7 @@ const getFileContentTool: ToolDefinition = {
       },
     };
   },
-};
+});
 
 // ============================================================================
 // Export

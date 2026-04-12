@@ -3,10 +3,10 @@
  */
 
 import { z } from "zod";
-import type { ToolDefinition } from "../../types.js";
+import { defineTool } from "../../types.js";
 import { getGitContext, getGitContextSummary } from "../git.js";
 
-export const getGitContextTool: ToolDefinition = {
+export const getGitContextTool = defineTool({
   name: "get_git_context",
   description: `Get the current git context including repository, branch, and status.
 
@@ -48,4 +48,4 @@ Returns:
       },
     };
   },
-};
+});

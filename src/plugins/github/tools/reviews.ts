@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import type { ToolDefinition } from "../../types.js";
+import { defineTool, type ToolDefinition } from "../../types.js";
 import { getClient } from "../state.js";
 import { resolveRepository } from "../shared.js";
 
@@ -36,13 +36,12 @@ const getPRReviewsSchema = z.object({
   pull_number: pullNumberField,
 });
 
-const getPRReviewsTool: ToolDefinition = {
+const getPRReviewsTool = defineTool({
   name: "get_pr_reviews",
   description:
     "Get all reviews submitted for a pull request (approvals, change requests, comments).",
   inputSchema: getPRReviewsSchema,
-  handler: async (args, context) => {
-    const input = getPRReviewsSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo } = await resolveRepository(
@@ -59,19 +58,18 @@ const getPRReviewsTool: ToolDefinition = {
       data: reviews,
     };
   },
-};
+});
 
 // ============================================================================
 // get_pr_review_comments
 // ============================================================================
 
-const getPRReviewCommentsTool: ToolDefinition = {
+const getPRReviewCommentsTool = defineTool({
   name: "get_pr_review_comments",
   description:
     "Get all line-level review comments on a pull request (inline comments tied to specific files and lines).",
   inputSchema: getPRReviewsSchema,
-  handler: async (args, context) => {
-    const input = getPRReviewsSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo } = await resolveRepository(
@@ -88,7 +86,7 @@ const getPRReviewCommentsTool: ToolDefinition = {
       data: comments,
     };
   },
-};
+});
 
 // ============================================================================
 // submit_review
@@ -126,14 +124,13 @@ const submitReviewSchema = z.object({
     .describe("Optional inline comments to submit as part of this review"),
 });
 
-const submitReviewTool: ToolDefinition = {
+const submitReviewTool = defineTool({
   name: "submit_review",
   description: `Submit a complete review on a pull request with an overall verdict (APPROVE, REQUEST_CHANGES, or COMMENT) and optional inline comments.
 
 Use this when performing a full code review. For single ad-hoc comments, use \`add_review_comment\` instead.`,
   inputSchema: submitReviewSchema,
-  handler: async (args, context) => {
-    const input = submitReviewSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo } = await resolveRepository(
@@ -156,7 +153,7 @@ Use this when performing a full code review. For single ad-hoc comments, use \`a
       data: review,
     };
   },
-};
+});
 
 // ============================================================================
 // add_review_comment
@@ -182,13 +179,12 @@ const addReviewCommentSchema = z.object({
     ),
 });
 
-const addReviewCommentTool: ToolDefinition = {
+const addReviewCommentTool = defineTool({
   name: "add_review_comment",
   description:
     "Add a single inline review comment to a specific line in a pull request. Useful for quick feedback without submitting a full review.",
   inputSchema: addReviewCommentSchema,
-  handler: async (args, context) => {
-    const input = addReviewCommentSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo } = await resolveRepository(
@@ -213,7 +209,7 @@ const addReviewCommentTool: ToolDefinition = {
       data: comment,
     };
   },
-};
+});
 
 // ============================================================================
 // Export

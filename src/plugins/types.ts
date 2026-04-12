@@ -46,6 +46,20 @@ export interface ToolDefinition {
   handler: (args: unknown, context: PluginContext) => Promise<unknown>;
 }
 
+/**
+ * Helper to define a tool with full type inference.
+ * The Zod schema type flows through to the handler's `args` parameter,
+ * so handlers receive typed args without manual `.parse()`.
+ */
+export function defineTool<S extends z.ZodType>(def: {
+  name: string;
+  description: string;
+  inputSchema: S;
+  handler: (args: z.infer<S>, context: PluginContext) => Promise<unknown>;
+}): ToolDefinition {
+  return def as ToolDefinition;
+}
+
 /** MCP resource definition registered by a plugin */
 export interface ResourceDefinition {
   /** Resource URI (e.g., "git://context") */
