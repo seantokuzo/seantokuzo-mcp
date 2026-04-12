@@ -19,14 +19,29 @@ import type { JiraTicket, JiraSubtask } from "../../plugins/jira/types.js";
 
 /**
  * Construct a JiraClient from environment variables.
- * Throws if required env vars are missing — callers should handle errors.
+ *
+ * Validates required env vars up front and throws a message listing exactly
+ * which ones are missing, so the outer try/catch on each exported function
+ * surfaces a clear, actionable error via `showError` (vs. the `JiraClient`
+ * constructor's generic "requires host, email, and token").
  */
 function createJiraClient(): JiraClient {
-  return new JiraClient({
-    host: process.env["JIRA_HOST"] ?? "",
-    email: process.env["JIRA_EMAIL"] ?? "",
-    token: process.env["JIRA_API_TOKEN"] ?? "",
-  });
+  const host = process.env["JIRA_HOST"]?.trim() ?? "";
+  const email = process.env["JIRA_EMAIL"]?.trim() ?? "";
+  const token = process.env["JIRA_API_TOKEN"]?.trim() ?? "";
+
+  const missing: string[] = [];
+  if (!host) missing.push("JIRA_HOST");
+  if (!email) missing.push("JIRA_EMAIL");
+  if (!token) missing.push("JIRA_API_TOKEN");
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required JIRA environment variables: ${missing.join(", ")}. Set them in your .env file (run \`kuzo setup\`).`,
+    );
+  }
+
+  return new JiraClient({ host, email, token });
 }
 
 /**

@@ -33,6 +33,9 @@ interface CodeConcern {
 /**
  * Find a PR by branch name within an org/repo.
  * Inlined from legacy GitHubService.findPRByBranchInOrg — not available on GitHubClient.
+ *
+ * Errors propagate to the caller so auth/rate-limit/permission failures surface
+ * with a real message instead of silently becoming "No PR found".
  */
 async function findPRByBranchInOrg(
   github: GitHubClient,
@@ -42,21 +45,16 @@ async function findPRByBranchInOrg(
 ): Promise<PullRequestInfo | null> {
   const repo: GitHubRepo = { owner: org, repo: repoName };
 
-  try {
-    // First try with head filter
-    const pr = await github.findPRForBranch(repo, branchName);
-    if (pr) return pr;
+  // First try with head filter
+  const pr = await github.findPRForBranch(repo, branchName);
+  if (pr) return pr;
 
-    // Fallback: list open PRs and match head ref case-insensitively
-    const prs = await github.listPullRequests(repo, "open");
-    const found = prs.find(
-      (p) => p.head.ref.toLowerCase() === branchName.toLowerCase(),
-    );
-    return found ?? null;
-  } catch (error) {
-    console.error(`Could not find PR: ${error}`);
-    return null;
-  }
+  // Fallback: list open PRs and match head ref case-insensitively
+  const prs = await github.listPullRequests(repo, "open");
+  const found = prs.find(
+    (p) => p.head.ref.toLowerCase() === branchName.toLowerCase(),
+  );
+  return found ?? null;
 }
 
 /**
