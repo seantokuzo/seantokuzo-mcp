@@ -7,7 +7,7 @@
  */
 
 import { z } from "zod";
-import type { ToolDefinition } from "../../types.js";
+import { defineTool, type ToolDefinition } from "../../types.js";
 import { getClient } from "../state.js";
 import { resolveRepository, getGitContextSafe } from "../shared.js";
 import type { CommitInfo, DiffStats } from "../types.js";
@@ -116,7 +116,7 @@ const createPRSchema = z.object({
     .describe("Whether to create as a draft PR"),
 });
 
-const createPullRequestTool: ToolDefinition = {
+const createPullRequestTool = defineTool({
   name: "create_pull_request",
   description: `Create a new GitHub pull request.
 
@@ -130,8 +130,7 @@ AI-Enhanced Descriptions: When the user provides brief notes about their changes
 
 The 'description' parameter should contain the FULL description you generate — the tool will format it with headers and stats.`,
   inputSchema: createPRSchema,
-  handler: async (args, context) => {
-    const input = createPRSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo, source: repoSource } = await resolveRepository(
@@ -271,7 +270,7 @@ The 'description' parameter should contain the FULL description you generate —
       },
     };
   },
-};
+});
 
 // ============================================================================
 // update_pull_request
@@ -301,14 +300,13 @@ const updatePRSchema = z.object({
     ),
 });
 
-const updatePullRequestTool: ToolDefinition = {
+const updatePullRequestTool = defineTool({
   name: "update_pull_request",
   description: `Update an existing pull request's title and/or description.
 
 TIP: If the user doesn't specify a PR number, this tool auto-detects the PR for the current branch. Use this when the user wants to improve a PR description or update it after pushing new changes.`,
   inputSchema: updatePRSchema,
-  handler: async (args, context) => {
-    const input = updatePRSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo, source: repoSource } = await resolveRepository(
@@ -403,7 +401,7 @@ TIP: If the user doesn't specify a PR number, this tool auto-detects the PR for 
       },
     };
   },
-};
+});
 
 // ============================================================================
 // get_pull_request
@@ -414,12 +412,11 @@ const getPRSchema = z.object({
   pull_number: z.number().int().min(1).describe("The PR number to fetch"),
 });
 
-const getPullRequestTool: ToolDefinition = {
+const getPullRequestTool = defineTool({
   name: "get_pull_request",
   description: "Get details about a specific pull request by number.",
   inputSchema: getPRSchema,
-  handler: async (args, context) => {
-    const input = getPRSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo, source: repoSource } = await resolveRepository(
@@ -456,7 +453,7 @@ const getPullRequestTool: ToolDefinition = {
       },
     };
   },
-};
+});
 
 // ============================================================================
 // list_pull_requests
@@ -471,12 +468,11 @@ const listPRsSchema = z.object({
     .describe("Filter by PR state"),
 });
 
-const listPullRequestsTool: ToolDefinition = {
+const listPullRequestsTool = defineTool({
   name: "list_pull_requests",
   description: "List pull requests for a repository (default: open PRs).",
   inputSchema: listPRsSchema,
-  handler: async (args, context) => {
-    const input = listPRsSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo, source: repoSource } = await resolveRepository(
@@ -507,7 +503,7 @@ const listPullRequestsTool: ToolDefinition = {
       })),
     };
   },
-};
+});
 
 // ============================================================================
 // find_pr_for_branch
@@ -521,13 +517,12 @@ const findPRSchema = z.object({
     .describe("The branch name to find a PR for. Auto-detected if omitted."),
 });
 
-const findPRForBranchTool: ToolDefinition = {
+const findPRForBranchTool = defineTool({
   name: "find_pr_for_branch",
   description:
     "Find the open pull request associated with a specific branch. Useful to check whether a PR already exists.",
   inputSchema: findPRSchema,
-  handler: async (args, context) => {
-    const input = findPRSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo, source: repoSource } = await resolveRepository(
@@ -580,7 +575,7 @@ const findPRForBranchTool: ToolDefinition = {
       },
     };
   },
-};
+});
 
 // ============================================================================
 // get_pr_files
@@ -591,13 +586,12 @@ const getPRFilesSchema = z.object({
   pull_number: z.number().int().min(1).describe("The PR number"),
 });
 
-const getPRFilesTool: ToolDefinition = {
+const getPRFilesTool = defineTool({
   name: "get_pr_files",
   description:
     "Get the list of files changed in a pull request (filename, status, additions, deletions). Use `get_pr_files_with_patch` if you also need the actual diff content.",
   inputSchema: getPRFilesSchema,
-  handler: async (args, context) => {
-    const input = getPRFilesSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo } = await resolveRepository(
@@ -614,19 +608,18 @@ const getPRFilesTool: ToolDefinition = {
       data: files,
     };
   },
-};
+});
 
 // ============================================================================
 // get_pr_files_with_patch
 // ============================================================================
 
-const getPRFilesWithPatchTool: ToolDefinition = {
+const getPRFilesWithPatchTool = defineTool({
   name: "get_pr_files_with_patch",
   description:
     "Get PR files including the full diff/patch content for each file. Use this when you need to actually read the code changes (e.g. for code review).",
   inputSchema: getPRFilesSchema,
-  handler: async (args, context) => {
-    const input = getPRFilesSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo } = await resolveRepository(
@@ -643,18 +636,17 @@ const getPRFilesWithPatchTool: ToolDefinition = {
       data: files,
     };
   },
-};
+});
 
 // ============================================================================
 // get_pr_commits
 // ============================================================================
 
-const getPRCommitsTool: ToolDefinition = {
+const getPRCommitsTool = defineTool({
   name: "get_pr_commits",
   description: "Get the commit history for a specific pull request.",
   inputSchema: getPRFilesSchema,
-  handler: async (args, context) => {
-    const input = getPRFilesSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo } = await resolveRepository(
@@ -671,7 +663,7 @@ const getPRCommitsTool: ToolDefinition = {
       data: commits,
     };
   },
-};
+});
 
 // ============================================================================
 // get_changed_files (between refs)
@@ -683,13 +675,12 @@ const getChangedFilesSchema = z.object({
   head: z.string().describe("Head ref (branch, tag, or SHA) to compare to"),
 });
 
-const getChangedFilesTool: ToolDefinition = {
+const getChangedFilesTool = defineTool({
   name: "get_changed_files",
   description:
     "List files changed between two refs (branches, tags, or SHAs). Useful for previewing what a PR would contain before creating it.",
   inputSchema: getChangedFilesSchema,
-  handler: async (args, context) => {
-    const input = getChangedFilesSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo } = await resolveRepository(
@@ -706,19 +697,18 @@ const getChangedFilesTool: ToolDefinition = {
       data: files,
     };
   },
-};
+});
 
 // ============================================================================
 // get_diff_stats (between refs)
 // ============================================================================
 
-const getDiffStatsTool: ToolDefinition = {
+const getDiffStatsTool = defineTool({
   name: "get_diff_stats",
   description:
     "Get aggregate diff stats (additions, deletions, changed files) between two refs.",
   inputSchema: getChangedFilesSchema,
-  handler: async (args, context) => {
-    const input = getChangedFilesSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo } = await resolveRepository(
@@ -735,7 +725,7 @@ const getDiffStatsTool: ToolDefinition = {
       data: stats,
     };
   },
-};
+});
 
 // ============================================================================
 // Export

@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import type { ToolDefinition } from "../../types.js";
+import { defineTool, type ToolDefinition } from "../../types.js";
 import { getClient } from "../state.js";
 import { resolveRepository } from "../shared.js";
 
@@ -48,13 +48,12 @@ const createRepoSchema = z.object({
     .describe("A license template keyword (e.g. 'mit', 'apache-2.0')"),
 });
 
-const createRepositoryTool: ToolDefinition = {
+const createRepositoryTool = defineTool({
   name: "create_repository",
   description:
     "Create a new repository on GitHub under the authenticated user's account.",
   inputSchema: createRepoSchema,
-  handler: async (args) => {
-    const input = createRepoSchema.parse(args);
+  handler: async (input) => {
     const client = getClient();
 
     const repo = await client.createRepository(input);
@@ -73,7 +72,7 @@ const createRepositoryTool: ToolDefinition = {
       },
     };
   },
-};
+});
 
 // ============================================================================
 // get_repo_info
@@ -83,13 +82,12 @@ const getRepoInfoSchema = z.object({
   repository: repositoryField,
 });
 
-const getRepoInfoTool: ToolDefinition = {
+const getRepoInfoTool = defineTool({
   name: "get_repo_info",
   description:
     "Get detailed metadata about a repository (description, visibility, stars, default branch, etc.).",
   inputSchema: getRepoInfoSchema,
-  handler: async (args, context) => {
-    const input = getRepoInfoSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo, source: repoSource } = await resolveRepository(
@@ -111,7 +109,7 @@ const getRepoInfoTool: ToolDefinition = {
       data: info,
     };
   },
-};
+});
 
 // ============================================================================
 // update_repository
@@ -127,13 +125,12 @@ const updateRepoSchema = z.object({
   has_projects: z.boolean().optional().describe("Enable/disable projects"),
 });
 
-const updateRepositoryTool: ToolDefinition = {
+const updateRepositoryTool = defineTool({
   name: "update_repository",
   description:
     "Update repository settings — name, description, visibility, and feature toggles (issues/wiki/projects).",
   inputSchema: updateRepoSchema,
-  handler: async (args, context) => {
-    const input = updateRepoSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo, source: repoSource } = await resolveRepository(
@@ -164,7 +161,7 @@ const updateRepositoryTool: ToolDefinition = {
       data: updated,
     };
   },
-};
+});
 
 // ============================================================================
 // list_my_repos
@@ -186,13 +183,12 @@ const listMyReposSchema = z.object({
     .describe("Max repos to return (1-100)"),
 });
 
-const listMyReposTool: ToolDefinition = {
+const listMyReposTool = defineTool({
   name: "list_my_repos",
   description:
     "List repositories for the authenticated user, sorted by recent activity by default.",
   inputSchema: listMyReposSchema,
-  handler: async (args) => {
-    const input = listMyReposSchema.parse(args);
+  handler: async (input) => {
     const client = getClient();
 
     const repos = await client.listMyRepos({
@@ -217,7 +213,7 @@ const listMyReposTool: ToolDefinition = {
       })),
     };
   },
-};
+});
 
 // ============================================================================
 // get_readme
@@ -227,13 +223,12 @@ const getReadmeSchema = z.object({
   repository: repositoryField,
 });
 
-const getReadmeTool: ToolDefinition = {
+const getReadmeTool = defineTool({
   name: "get_readme",
   description:
     "Get the README.md content for a repository. Returns null if no README exists.",
   inputSchema: getReadmeSchema,
-  handler: async (args, context) => {
-    const input = getReadmeSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo, source: repoSource } = await resolveRepository(
@@ -273,7 +268,7 @@ const getReadmeTool: ToolDefinition = {
       },
     };
   },
-};
+});
 
 // ============================================================================
 // update_readme
@@ -290,13 +285,12 @@ const updateReadmeSchema = z.object({
     ),
 });
 
-const updateReadmeTool: ToolDefinition = {
+const updateReadmeTool = defineTool({
   name: "update_readme",
   description:
     "Create or update the README.md for a repository. Pass raw markdown content — base64 encoding is handled internally.",
   inputSchema: updateReadmeSchema,
-  handler: async (args, context) => {
-    const input = updateReadmeSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo } = await resolveRepository(
@@ -313,7 +307,7 @@ const updateReadmeTool: ToolDefinition = {
       data: result,
     };
   },
-};
+});
 
 // ============================================================================
 // check_issues
@@ -323,13 +317,12 @@ const checkIssuesSchema = z.object({
   repository: repositoryField,
 });
 
-const checkIssuesTool: ToolDefinition = {
+const checkIssuesTool = defineTool({
   name: "check_issues",
   description:
     "Check whether issues are enabled on a repository and get basic open/closed counts.",
   inputSchema: checkIssuesSchema,
-  handler: async (args, context) => {
-    const input = checkIssuesSchema.parse(args);
+  handler: async (input, context) => {
     const client = getClient();
 
     const { repo, source: repoSource } = await resolveRepository(
@@ -351,7 +344,7 @@ const checkIssuesTool: ToolDefinition = {
       data: status,
     };
   },
-};
+});
 
 // ============================================================================
 // Export

@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import type { ToolDefinition } from "../../types.js";
+import { defineTool, type ToolDefinition } from "../../types.js";
 import { getClient } from "../state.js";
 
 // ============================================================================
@@ -26,13 +26,12 @@ const getTransitionsSchema = z.object({
   ticket_key: ticketKeyField,
 });
 
-const getTransitionsTool: ToolDefinition = {
+const getTransitionsTool = defineTool({
   name: "get_transitions",
   description:
     "List the workflow transitions currently available for a Jira ticket. Each transition has a name (e.g. 'Start Progress') and a target status (e.g. 'In Progress'). Use `move_ticket` to actually apply one.",
   inputSchema: getTransitionsSchema,
-  handler: async (args, _context) => {
-    const input = getTransitionsSchema.parse(args);
+  handler: async (input, _context) => {
     const client = getClient();
 
     const transitions = await client.getTransitions(input.ticket_key);
@@ -43,7 +42,7 @@ const getTransitionsTool: ToolDefinition = {
       data: transitions,
     };
   },
-};
+});
 
 // ============================================================================
 // move_ticket
@@ -64,14 +63,13 @@ const moveTicketSchema = z.object({
     .describe("Optional plain-text comment to post with the transition"),
 });
 
-const moveTicketTool: ToolDefinition = {
+const moveTicketTool = defineTool({
   name: "move_ticket",
   description: `Move a Jira ticket to a new status by name.
 
 Looks up the available transitions and picks the one whose name or target status matches (case-insensitive). Throws a descriptive error listing available transitions if no match is found. Use \`get_transitions\` first if you need to see options.`,
   inputSchema: moveTicketSchema,
-  handler: async (args, _context) => {
-    const input = moveTicketSchema.parse(args);
+  handler: async (input, _context) => {
     const client = getClient();
 
     const transition = await client.moveTicket(
@@ -95,7 +93,7 @@ Looks up the available transitions and picks the one whose name or target status
       },
     };
   },
-};
+});
 
 // ============================================================================
 // Export

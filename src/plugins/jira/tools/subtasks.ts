@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import type { ToolDefinition } from "../../types.js";
+import { defineTool, type ToolDefinition } from "../../types.js";
 import { getClient } from "../state.js";
 
 // ============================================================================
@@ -41,14 +41,13 @@ const createSubtaskSchema = z.object({
     ),
 });
 
-const createSubtaskTool: ToolDefinition = {
+const createSubtaskTool = defineTool({
   name: "create_subtask",
   description: `Create a new subtask under a parent Jira ticket.
 
 The subtask inherits the parent's project automatically. The issue type is fixed to "Sub-task" (the standard Jira subtask type). Returns the new subtask's key and metadata.`,
   inputSchema: createSubtaskSchema,
-  handler: async (args, _context) => {
-    const input = createSubtaskSchema.parse(args);
+  handler: async (input, _context) => {
     const client = getClient();
 
     const subtask = await client.createSubtask({
@@ -64,7 +63,7 @@ The subtask inherits the parent's project automatically. The issue type is fixed
       data: subtask,
     };
   },
-};
+});
 
 // ============================================================================
 // get_subtasks
@@ -74,13 +73,12 @@ const getSubtasksSchema = z.object({
   ticket_key: ticketKeyField,
 });
 
-const getSubtasksTool: ToolDefinition = {
+const getSubtasksTool = defineTool({
   name: "get_subtasks",
   description:
     "List the subtasks of a Jira ticket. Note: each subtask entry contains key, summary, and status, but NOT assignee (the parent's subtasks field doesn't include it). Call `get_ticket` on a specific subtask if you need full details.",
   inputSchema: getSubtasksSchema,
-  handler: async (args, _context) => {
-    const input = getSubtasksSchema.parse(args);
+  handler: async (input, _context) => {
     const client = getClient();
 
     const subtasks = await client.getSubtasks(input.ticket_key);
@@ -91,7 +89,7 @@ const getSubtasksTool: ToolDefinition = {
       data: subtasks,
     };
   },
-};
+});
 
 // ============================================================================
 // get_my_code_reviews
@@ -104,14 +102,13 @@ const getMyCodeReviewsSchema = z.object({
     .describe("Optional project key to filter by (e.g. 'PROJ')"),
 });
 
-const getMyCodeReviewsTool: ToolDefinition = {
+const getMyCodeReviewsTool = defineTool({
   name: "get_my_code_reviews",
   description: `Get all unresolved "code review" subtasks assigned to the authenticated user.
 
 Matches subtasks whose summary contains the word "review" (case-insensitive). Useful as a one-liner for "what reviews am I on the hook for?".`,
   inputSchema: getMyCodeReviewsSchema,
-  handler: async (args, _context) => {
-    const input = getMyCodeReviewsSchema.parse(args);
+  handler: async (input, _context) => {
     const client = getClient();
 
     const reviews = await client.getMyCodeReviews(input.project_key);
@@ -124,7 +121,7 @@ Matches subtasks whose summary contains the word "review" (case-insensitive). Us
       data: reviews,
     };
   },
-};
+});
 
 // ============================================================================
 // Export

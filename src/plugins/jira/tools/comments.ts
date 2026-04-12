@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import type { ToolDefinition } from "../../types.js";
+import { defineTool, type ToolDefinition } from "../../types.js";
 import { getClient } from "../state.js";
 
 // ============================================================================
@@ -32,13 +32,12 @@ const addCommentSchema = z.object({
     ),
 });
 
-const addCommentTool: ToolDefinition = {
+const addCommentTool = defineTool({
   name: "add_comment",
   description:
     "Post a plain-text comment on a Jira ticket. Returns the new comment's id and author metadata.",
   inputSchema: addCommentSchema,
-  handler: async (args, _context) => {
-    const input = addCommentSchema.parse(args);
+  handler: async (input, _context) => {
     const client = getClient();
 
     const comment = await client.addComment(input.ticket_key, input.body);
@@ -49,7 +48,7 @@ const addCommentTool: ToolDefinition = {
       data: comment,
     };
   },
-};
+});
 
 // ============================================================================
 // get_comments
@@ -59,13 +58,12 @@ const getCommentsSchema = z.object({
   ticket_key: ticketKeyField,
 });
 
-const getCommentsTool: ToolDefinition = {
+const getCommentsTool = defineTool({
   name: "get_comments",
   description:
     "List all comments on a Jira ticket. Comment bodies are converted from ADF (Atlassian Document Format) to plain text — rich formatting, attachments, and mentions may be flattened.",
   inputSchema: getCommentsSchema,
-  handler: async (args, _context) => {
-    const input = getCommentsSchema.parse(args);
+  handler: async (input, _context) => {
     const client = getClient();
 
     const comments = await client.getComments(input.ticket_key);
@@ -76,7 +74,7 @@ const getCommentsTool: ToolDefinition = {
       data: comments,
     };
   },
-};
+});
 
 // ============================================================================
 // Export
