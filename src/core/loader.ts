@@ -5,7 +5,15 @@
 import { pathToFileURL, fileURLToPath } from "url";
 import { resolve, dirname } from "path";
 import { existsSync } from "fs";
-import type { KuzoPlugin, LoadResult, PluginContext } from "../plugins/types.js";
+import {
+  isV2Plugin,
+  type Capability,
+  type CredentialCapability,
+  type CrossPluginCapability,
+  type KuzoPlugin,
+  type LoadResult,
+  type PluginContext,
+} from "../plugins/types.js";
 import type { PluginRegistry } from "./registry.js";
 import type { ConfigManager } from "./config.js";
 import { createPluginLogger, type KuzoLogger } from "./logger.js";
@@ -54,6 +62,50 @@ export class PluginLoader {
     return result;
   }
 
+  /**
+   * Build a scoped callTool for V2 plugins.
+   * Only allows calls to tools owned by plugins declared in cross-plugin capabilities.
+   * Undeclared targets get "not found" — don't leak existence with "permission denied".
+   */
+  private buildScopedCallTool(
+    declaredDeps: Set<string>,
+  ): PluginContext["callTool"] {
+    return (toolName, args) => {
+      const entry = this.registry.findTool(toolName);
+      if (!entry || !declaredDeps.has(entry.plugin.name)) {
+        throw new Error(`Tool "${toolName}" not found`);
+      }
+      return this.registry.callTool(toolName, args);
+    };
+  }
+
+  /** Extract declared cross-plugin dependency names from V2 capabilities */
+  private extractCrossPluginDeps(plugin: KuzoPlugin): Set<string> {
+    if (!isV2Plugin(plugin)) return new Set();
+    const allCaps = [...plugin.capabilities, ...(plugin.optionalCapabilities ?? [])];
+    return new Set(
+      allCaps
+        .filter((c): c is CrossPluginCapability => c.kind === "cross-plugin")
+        .map((c) => {
+          const pluginName = c.target.split(":")[0];
+          return pluginName ?? c.target;
+        }),
+    );
+  }
+
+  /** Extract required env var names from V2 credential capabilities */
+  private extractV2Config(plugin: KuzoPlugin): { required: string[]; optional: string[] } {
+    if (!isV2Plugin(plugin)) return { required: [], optional: [] };
+    const toEnvVars = (caps: Capability[]) =>
+      caps
+        .filter((c): c is CredentialCapability => c.kind === "credentials")
+        .map((c) => c.env);
+    return {
+      required: toEnvVars(plugin.capabilities),
+      optional: toEnvVars(plugin.optionalCapabilities ?? []),
+    };
+  }
+
   /** Load a single plugin by name */
   async loadPlugin(name: string): Promise<LoadResult> {
     const result: LoadResult = { loaded: [], skipped: [], failed: [] };
@@ -83,11 +135,22 @@ export class PluginLoader {
         return result;
       }
 
-      // Validate required config
-      const { config, missing } = this.configManager.extractPluginConfig(
-        plugin.requiredConfig ?? [],
-        plugin.optionalConfig ?? [],
-      );
+      // Extract config — V2 derives from capabilities, V1 uses requiredConfig/optionalConfig
+      let config: Map<string, string>;
+      let missing: string[];
+
+      if (isV2Plugin(plugin)) {
+        const v2Config = this.extractV2Config(plugin);
+        ({ config, missing } = this.configManager.extractPluginConfig(
+          v2Config.required,
+          v2Config.optional,
+        ));
+      } else {
+        ({ config, missing } = this.configManager.extractPluginConfig(
+          plugin.requiredConfig ?? [],
+          plugin.optionalConfig ?? [],
+        ));
+      }
 
       if (missing.length > 0) {
         result.skipped.push({
@@ -97,11 +160,18 @@ export class PluginLoader {
         return result;
       }
 
+      // Build callTool — V2 gets scoped, V1 gets unrestricted
+      const deps = this.extractCrossPluginDeps(plugin);
+      const callTool = isV2Plugin(plugin)
+        ? this.buildScopedCallTool(deps)
+        : (toolName: string, args: Record<string, unknown>) =>
+            this.registry.callTool(toolName, args);
+
       // Build PluginContext
       const context: PluginContext = {
         config,
         logger: createPluginLogger(plugin.name),
-        callTool: (toolName, args) => this.registry.callTool(toolName, args),
+        callTool,
       };
 
       // Initialize plugin

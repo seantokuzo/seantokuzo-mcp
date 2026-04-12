@@ -95,7 +95,35 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - 0 Copilot review comments — clean merge
 - Addresses 4 deferred comments from PR #7 (Phase 2.b)
 
-**Next up: Phase 2.5 — Plugin Security & Open-Source Readiness** (research + design docs session)
+**Phase 2.5 — Plugin Security & Open-Source Readiness** (research + design: COMPLETE, 2026-04-12)
+- Full security design spec written: `docs/SECURITY.md`
+- Research covered: sandboxing mechanisms (6 approaches evaluated), capability-based security (Deno, Chrome MV3, iOS/Android, object-capability model, Windows 11 MCP), credential management (5 storage backends, 4 broker patterns), supply chain (npm provenance, Sigstore, lockfile strategies), cross-plugin isolation (callTool scoping, intrinsic freezing, lifecycle isolation)
+- **Architecture decisions made:**
+  - **Sandboxing:** Child process per plugin (phased — in-process hardening first, process isolation when third-party plugins ship)
+  - **Permissions:** Capability-based model with 5 categories (credentials, network, filesystem, cross-plugin, system). Declarative manifest v2 with typed `Capability` objects and `reason` fields.
+  - **Credentials:** Hybrid broker — pre-auth clients for known services (GitHub, Jira) + scoped authenticated fetch + raw escape hatch with audit logging. `@napi-rs/keyring` replaces archived `keytar` for future OS keychain storage.
+  - **Supply chain:** npm as plugin registry (`kuzo-mcp-plugin-*` convention), provenance via Sigstore required, manual update with rollback (never auto-update).
+  - **Cross-plugin:** Scoped `callTool` via manifest dependencies, intrinsic freezing (`Object.freeze` on prototypes), `process.exit` guard, shutdown timeouts.
+  - **Consent:** Dedicated `kuzo consent` CLI command (not runtime prompts — stdout is MCP transport). Trust overrides via `KUZO_TRUST_PLUGINS` env var. Consent stored in `~/.kuzo/consent.json`.
+- 11 open questions documented for resolution during implementation (tool name prefixing, credential storage backend, SES evaluation, audit log destination, deprecation timeline, permission escalation policy)
+- Implementation split into 5 sub-phases: 2.5a (manifest + hardening), 2.5b (credential broker), 2.5c (consent + audit), 2.5d (process isolation), 2.5e (supply chain)
+
+**Phase 2.5a — Manifest + Hardening** (complete — PR #11, 2026-04-12)
+- Discriminated union: `KuzoPluginBase` + `KuzoPluginV1` (legacy) + `KuzoPluginV2` (capabilities) with `permissionModel` discriminant and `isV2Plugin()` type guard. Decision: separate versioned interfaces > optional field accumulation (Chrome MV2→V3, Terraform protocol v5→v6 prior art)
+- 5 capability types: `CredentialCapability`, `NetworkCapability`, `FilesystemCapability`, `CrossPluginCapability`, `SystemCapability` — discriminated union on `kind`
+- V2 scoped `callTool`: loader extracts cross-plugin deps from capabilities, builds per-plugin scoped `callTool` that returns "not found" for undeclared targets (no info leak). V1 plugins keep unrestricted access.
+- Intrinsic hardening: `Object.freeze()` on 7 key prototypes before plugin load. `process.exit` guarded with stashed `realExit` for core paths. Force-exit 10s timeout on SIGINT/SIGTERM. Idempotent shutdown (double-signal safe).
+- Per-plugin 5s shutdown timeout via `Promise.race` in `registry.shutdownAll()`
+- Collision error messages sanitized: stop naming existing plugin in tool/resource collisions
+- All 3 plugins migrated to `KuzoPluginV2` with full capability declarations (git-context: filesystem+exec:git, github: credentials+network+cross-plugin, jira: credentials+network)
+- V2 config extraction derives env vars from `CredentialCapability.env` instead of flat `requiredConfig`
+
+**Next up: Phase 2.5b — Credential Broker**
+- `CredentialBroker` interface + `DefaultCredentialBroker` implementation in `src/core/credentials.ts`
+- Client factories for GitHub (Octokit) and Jira (JiraClient)
+- Migrate plugins off `context.config.get()` to `context.credentials.getClient()`
+- Deprecation warnings on `context.config` usage
+- See `docs/SECURITY.md` §6 + §10 for full spec
 
 ### Phase 2.b Decomposition
 
@@ -302,14 +330,16 @@ These decisions affect scope significantly — the executing session should conf
 
 ## What Exists Today
 
-### Core (Phase 1 + 2.5 warmup)
+### Core (Phase 1 + 2.5a)
 - Plugin system core (`src/core/` — server, registry, loader, config, logger)
-- Plugin type definitions (`src/plugins/types.ts`) — includes `defineTool<S>()` helper for typed tool authoring (PR #10)
+- Plugin type definitions (`src/plugins/types.ts`) — `KuzoPluginV1`/`V2` discriminated union, 5 capability types, `defineTool<S>()` helper, `isV2Plugin()` type guard
+- Runtime hardening: prototype freezing, `process.exit` guard, per-plugin shutdown timeouts, force-exit safety net
+- V2 scoped `callTool`: plugins can only call declared cross-plugin dependencies
 
-### Plugins (Phase 2)
-- `src/plugins/git-context/` — 1 tool, 1 resource (Phase 2.a, merged PR #6)
-- `src/plugins/github/` — 23 tools across pulls/reviews/repos/branches (Phase 2.b, merged PR #7). Cross-plugin `callTool("get_git_context")` consumer.
-- `src/plugins/jira/` — 11 tools across tickets/transitions/subtasks/comments (Phase 2.c, merged PR #8). `JiraClient` wraps native `fetch` with Basic auth.
+### Plugins (Phase 2 + 2.5a)
+- `src/plugins/git-context/` — 1 tool, 1 resource. V2 manifest: filesystem + system:exec:git
+- `src/plugins/github/` — 23 tools across pulls/reviews/repos/branches. V2 manifest: credentials + network + cross-plugin:git-context
+- `src/plugins/jira/` — 11 tools across tickets/transitions/subtasks/comments. V2 manifest: credentials + network
 
 ### CLI (Phase 2.d)
 - Interactive CLI with PR, repo, review, jira, config commands (`src/cli/`)
@@ -321,7 +351,10 @@ These decisions affect scope significantly — the executing session should conf
 All legacy code paths removed. No monolithic services, no flat type barrel, no webhook server, no legacy MCP entry. Directories `src/services/`, `src/mcp/`, `src/types/`, `src/utils/` no longer exist.
 
 ### Not Yet Built
-- Plugin security & open-source readiness (Phase 2.5 — NEXT UP)
+- Credential broker (Phase 2.5b — NEXT UP)
+- Consent flow + audit (Phase 2.5c)
+- Process isolation (Phase 2.5d — when third-party plugins ship)
+- Supply chain security (Phase 2.5e — when npm distribution ships)
 - Phase 3+ GitHub plugin expansion (releases, actions, labels, issues, etc.)
 - New integrations (Phase 4: Confluence, Discord, SMS, Calendar, Notion, Slack)
 - Cross-plugin workflows (Phase 5)
@@ -339,6 +372,8 @@ All legacy code paths removed. No monolithic services, no flat type barrel, no w
 | Zod for all validation | 2026-04-09 | Already in use, works well with MCP SDK |
 | ESM only | 2026-04-09 | Already configured, no reason to support CJS |
 | Packaging: local node command (Option A) | 2026-04-10 | `node dist/mcp/server.js` registered in Claude settings. Claude auto-starts it. npm publish (Option B) is an eventual goal for sharing/multi-machine use |
+| Discriminated union for plugin manifests | 2026-04-12 | `KuzoPluginV1 \| KuzoPluginV2` with `permissionModel` discriminant. Separate versioned interfaces > optional field accumulation. Prior art: Chrome MV2→V3, Terraform protocol v5→v6. Prevents junk drawer as security model evolves through V3+. |
+| process.exit guard + stashed realExit | 2026-04-12 | Override `process.exit` to block plugin DoS, stash real exit for core paths. Becomes irrelevant after Phase 2.5d (process isolation). Option B (exitCode + drain) broken for stdio servers — transport keeps event loop alive. |
 
 ---
 

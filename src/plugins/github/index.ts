@@ -9,7 +9,7 @@
  * Optional config: GITHUB_USERNAME (used as default owner for short repo names)
  */
 
-import type { KuzoPlugin } from "../types.js";
+import type { KuzoPluginV2 } from "../types.js";
 import { GitHubClient } from "./client.js";
 import { setClient, resetClient } from "./state.js";
 import { pullRequestTools } from "./tools/pulls.js";
@@ -17,13 +17,38 @@ import { reviewTools } from "./tools/reviews.js";
 import { repoTools } from "./tools/repos.js";
 import { branchTools } from "./tools/branches.js";
 
-const plugin: KuzoPlugin = {
+const plugin: KuzoPluginV2 = {
   name: "github",
   description:
     "GitHub integration — pull requests, reviews, repository management, branches, and file content. Auto-detects repo and branch via the git-context plugin.",
   version: "1.0.0",
-  requiredConfig: ["GITHUB_TOKEN"],
-  optionalConfig: ["GITHUB_USERNAME"],
+  permissionModel: 1,
+  capabilities: [
+    {
+      kind: "credentials",
+      env: "GITHUB_TOKEN",
+      access: "client",
+      reason: "Authenticates with the GitHub API for all operations",
+    },
+    {
+      kind: "network",
+      domain: "api.github.com",
+      reason: "All GitHub API calls",
+    },
+    {
+      kind: "cross-plugin",
+      target: "git-context",
+      reason: "Auto-detect repository and branch from local git",
+    },
+  ],
+  optionalCapabilities: [
+    {
+      kind: "credentials",
+      env: "GITHUB_USERNAME",
+      access: "raw",
+      reason: "Default owner for short repo names (e.g., 'myrepo' → 'owner/myrepo')",
+    },
+  ],
   tools: [
     ...pullRequestTools,
     ...reviewTools,
