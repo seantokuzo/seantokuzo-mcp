@@ -5,8 +5,7 @@
 
 import inquirer from "inquirer";
 import chalk from "chalk";
-import { getGitHubService } from "../../services/github.js";
-import { getConfig } from "../../utils/config.js";
+import { GitHubClient } from "../../plugins/github/client.js";
 import {
   showBanner,
   showSuccess,
@@ -19,8 +18,44 @@ import type {
   GitHubRepo,
   PRFileDiff,
   PullRequestInfo,
-  CodeConcern,
-} from "../../types/index.js";
+} from "../../plugins/github/types.js";
+
+// CLI-only type — inlined from legacy src/types/index.ts
+interface CodeConcern {
+  file: string;
+  line: number;
+  severity: "low" | "medium" | "high" | "critical";
+  type: "security" | "performance" | "bug" | "style" | "complexity" | "other";
+  message: string;
+  suggestion?: string;
+}
+
+/**
+ * Find a PR by branch name within an org/repo.
+ * Inlined from legacy GitHubService.findPRByBranchInOrg — not available on GitHubClient.
+ *
+ * Errors propagate to the caller so auth/rate-limit/permission failures surface
+ * with a real message instead of silently becoming "No PR found".
+ */
+async function findPRByBranchInOrg(
+  github: GitHubClient,
+  org: string,
+  repoName: string,
+  branchName: string,
+): Promise<PullRequestInfo | null> {
+  const repo: GitHubRepo = { owner: org, repo: repoName };
+
+  // First try with head filter
+  const pr = await github.findPRForBranch(repo, branchName);
+  if (pr) return pr;
+
+  // Fallback: list open PRs and match head ref case-insensitively
+  const prs = await github.listPullRequests(repo, "open");
+  const found = prs.find(
+    (p) => p.head.ref.toLowerCase() === branchName.toLowerCase(),
+  );
+  return found ?? null;
+}
 
 /**
  * Open a PR for review - find by repo name and branch
@@ -29,8 +64,10 @@ export async function openPRInteractive(): Promise<void> {
   showBanner();
 
   try {
-    const github = getGitHubService();
-    const config = getConfig();
+    const github = new GitHubClient({
+      token: process.env["GITHUB_TOKEN"] ?? "",
+      username: process.env["GITHUB_USERNAME"],
+    });
 
     // Verify connection
     const spinner = createStyledSpinner("Connecting to GitHub");
@@ -67,8 +104,8 @@ export async function openPRInteractive(): Promise<void> {
       },
     ]);
 
-    // Get org from config or ask
-    let org = config.github.org;
+    // Get org from env or ask
+    let org = process.env["GITHUB_ORG"] ?? "";
     if (!org) {
       const { orgInput } = await inquirer.prompt<{ orgInput: string }>([
         {
@@ -88,7 +125,7 @@ export async function openPRInteractive(): Promise<void> {
     );
     prSpinner.start();
 
-    const pr = await github.findPRByBranchInOrg(org, repoName, branchName);
+    const pr = await findPRByBranchInOrg(github, org, repoName, branchName);
 
     if (!pr) {
       prSpinner.error({ text: "No PR found" });
@@ -125,16 +162,16 @@ export async function openPRInteractive(): Promise<void> {
 
     switch (action) {
       case "files":
-        await showChangedFiles(repo, pr.number);
+        await showChangedFiles(github, repo, pr.number);
         break;
       case "review":
-        await reviewPRWithAnalysis(repo, pr);
+        await reviewPRWithAnalysis(github, repo, pr);
         break;
       case "approve":
-        await quickApprove(repo, pr.number);
+        await quickApprove(github, repo, pr.number);
         break;
       case "comment":
-        await addCommentOnly(repo, pr.number);
+        await addCommentOnly(github, repo, pr.number);
         break;
       case "browser":
         console.log(chalk.cyan(`\n  🌐 ${pr.html_url}\n`));
@@ -152,11 +189,10 @@ export async function openPRInteractive(): Promise<void> {
  * Show changed files in a PR
  */
 async function showChangedFiles(
+  github: GitHubClient,
   repo: GitHubRepo,
   pullNumber: number,
 ): Promise<void> {
-  const github = getGitHubService();
-
   const spinner = createStyledSpinner("Fetching changed files");
   spinner.start();
 
@@ -214,11 +250,10 @@ async function showChangedFiles(
  * Review PR with analysis - identify concerns
  */
 async function reviewPRWithAnalysis(
+  github: GitHubClient,
   repo: GitHubRepo,
   pr: PullRequestInfo,
 ): Promise<void> {
-  const github = getGitHubService();
-
   const spinner = createStyledSpinner("Analyzing PR changes");
   spinner.start();
 
@@ -296,19 +331,19 @@ async function reviewPRWithAnalysis(
 
   switch (reviewStyle) {
     case "sequential":
-      await reviewFilesSequentially(repo, pr.number, files);
+      await reviewFilesSequentially(github, repo, pr.number, files);
       break;
     case "concerns":
-      await reviewConcernsOnly(repo, pr.number, files, concerns);
+      await reviewConcernsOnly(github, repo, pr.number, files, concerns);
       break;
     case "approve":
-      await submitReviewInteractive(repo, pr.number, "APPROVE");
+      await submitReviewInteractive(github, repo, pr.number, "APPROVE");
       break;
     case "comment":
-      await submitReviewInteractive(repo, pr.number, "COMMENT");
+      await submitReviewInteractive(github, repo, pr.number, "COMMENT");
       break;
     case "changes":
-      await submitReviewInteractive(repo, pr.number, "REQUEST_CHANGES");
+      await submitReviewInteractive(github, repo, pr.number, "REQUEST_CHANGES");
       break;
   }
 }
@@ -317,6 +352,7 @@ async function reviewPRWithAnalysis(
  * Review files one by one
  */
 async function reviewFilesSequentially(
+  github: GitHubClient,
   repo: GitHubRepo,
   pullNumber: number,
   files: PRFileDiff[],
@@ -357,7 +393,7 @@ async function reviewFilesSequentially(
       ]);
       console.log(chalk.green(`  ✓ Comment noted: "${comment}"`));
     } else if (action === "done") {
-      await submitReviewInteractive(repo, pullNumber, "COMMENT");
+      await submitReviewInteractive(github, repo, pullNumber, "COMMENT");
       break;
     } else if (action === "stop") {
       break;
@@ -369,6 +405,7 @@ async function reviewFilesSequentially(
  * Review only files with concerns
  */
 async function reviewConcernsOnly(
+  github: GitHubClient,
   repo: GitHubRepo,
   pullNumber: number,
   files: PRFileDiff[],
@@ -417,13 +454,14 @@ async function reviewConcernsOnly(
     }
   }
 
-  await submitReviewInteractive(repo, pullNumber, "COMMENT");
+  await submitReviewInteractive(github, repo, pullNumber, "COMMENT");
 }
 
 /**
  * Quick approve a PR
  */
 async function quickApprove(
+  github: GitHubClient,
   repo: GitHubRepo,
   pullNumber: number,
 ): Promise<void> {
@@ -436,13 +474,14 @@ async function quickApprove(
     },
   ]);
 
-  await submitReviewInteractive(repo, pullNumber, "APPROVE", comment);
+  await submitReviewInteractive(github, repo, pullNumber, "APPROVE", comment);
 }
 
 /**
  * Add a comment without approving
  */
 async function addCommentOnly(
+  github: GitHubClient,
   repo: GitHubRepo,
   pullNumber: number,
 ): Promise<void> {
@@ -455,20 +494,19 @@ async function addCommentOnly(
     },
   ]);
 
-  await submitReviewInteractive(repo, pullNumber, "COMMENT", comment);
+  await submitReviewInteractive(github, repo, pullNumber, "COMMENT", comment);
 }
 
 /**
  * Submit a review
  */
 export async function submitReviewInteractive(
+  github: GitHubClient,
   repo: GitHubRepo,
   pullNumber: number,
   event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
   body?: string,
 ): Promise<void> {
-  const github = getGitHubService();
-
   if (!body) {
     const { reviewBody } = await inquirer.prompt<{ reviewBody: string }>([
       {

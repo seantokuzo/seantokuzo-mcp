@@ -5,7 +5,8 @@
 
 import inquirer from "inquirer";
 import chalk from "chalk";
-import { getGitHubService } from "../../services/github.js";
+import { GitHubClient } from "../../plugins/github/client.js";
+import { parseRepoIdentifier } from "../../plugins/github/shared.js";
 import {
   showBanner,
   showSuccess,
@@ -17,7 +18,7 @@ import {
   createStyledSpinner,
   showBox,
 } from "../ui/display.js";
-import type { GitHubRepo } from "../../types/index.js";
+import type { GitHubRepo } from "../../plugins/github/types.js";
 
 // Common gitignore templates
 const GITIGNORE_TEMPLATES = [
@@ -50,7 +51,10 @@ export async function createRepoInteractive(): Promise<void> {
   showBanner();
 
   try {
-    const github = getGitHubService();
+    const github = new GitHubClient({
+      token: process.env["GITHUB_TOKEN"] ?? "",
+      username: process.env["GITHUB_USERNAME"],
+    });
 
     // Verify connection first
     const spinner = createStyledSpinner("Connecting to GitHub");
@@ -328,7 +332,10 @@ export async function updateReadmeInteractive(
   showBanner();
 
   try {
-    const github = getGitHubService();
+    const github = new GitHubClient({
+      token: process.env["GITHUB_TOKEN"] ?? "",
+      username: process.env["GITHUB_USERNAME"],
+    });
 
     // Verify connection
     const spinner = createStyledSpinner("Connecting to GitHub");
@@ -356,7 +363,7 @@ export async function updateReadmeInteractive(
         },
       ]);
 
-      repo = github.parseRepoIdentifier(repoInput);
+      repo = parseRepoIdentifier(repoInput, process.env["GITHUB_USERNAME"]);
     }
 
     // Fetch existing README
@@ -506,7 +513,10 @@ export async function updateVisibilityInteractive(
   showBanner();
 
   try {
-    const github = getGitHubService();
+    const github = new GitHubClient({
+      token: process.env["GITHUB_TOKEN"] ?? "",
+      username: process.env["GITHUB_USERNAME"],
+    });
 
     // Verify connection
     const spinner = createStyledSpinner("Connecting to GitHub");
@@ -534,7 +544,7 @@ export async function updateVisibilityInteractive(
         },
       ]);
 
-      repo = github.parseRepoIdentifier(repoInput);
+      repo = parseRepoIdentifier(repoInput, process.env["GITHUB_USERNAME"]);
     }
 
     // Get current repo info
@@ -622,7 +632,10 @@ export async function checkIssuesInteractive(repo?: GitHubRepo): Promise<void> {
   showBanner();
 
   try {
-    const github = getGitHubService();
+    const github = new GitHubClient({
+      token: process.env["GITHUB_TOKEN"] ?? "",
+      username: process.env["GITHUB_USERNAME"],
+    });
 
     // Verify connection
     const spinner = createStyledSpinner("Connecting to GitHub");
@@ -650,7 +663,7 @@ export async function checkIssuesInteractive(repo?: GitHubRepo): Promise<void> {
         },
       ]);
 
-      repo = github.parseRepoIdentifier(repoInput);
+      repo = parseRepoIdentifier(repoInput, process.env["GITHUB_USERNAME"]);
     }
 
     // Check issues
@@ -709,7 +722,10 @@ export async function listReposInteractive(): Promise<void> {
   showBanner();
 
   try {
-    const github = getGitHubService();
+    const github = new GitHubClient({
+      token: process.env["GITHUB_TOKEN"] ?? "",
+      username: process.env["GITHUB_USERNAME"],
+    });
 
     // Verify connection
     const spinner = createStyledSpinner("Connecting to GitHub");
