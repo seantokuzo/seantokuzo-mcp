@@ -87,7 +87,15 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - `eslint.config.js`: stale ignore entries removed; `src/cli/` brought into the linted tree (6 pre-existing errors fixed)
 - 1 round of Copilot review (3 comments: buggy regex in inlined `parseRepoIdentifier` → switched to shared import; error-swallowing try/catch in `findPRByBranchInOrg` → removed; generic `createJiraClient` error → explicit env var validation)
 
-**Next up: Phase 2.5 — Plugin Security & Open-Source Readiness** (with Phase 2.b deferred `ToolDefinition<TInput>` generic rolled in as warmup)
+**Phase 2.5 warmup — `defineTool<S>` generic** (complete — merged PR #10, 2026-04-12)
+- Added `defineTool<S>()` helper to `src/plugins/types.ts` — infers Zod schema type and gives handlers typed args (`z.infer<S>`) at definition time
+- `ToolDefinition` interface stays non-generic (runtime/storage type); the generic lives only inside `defineTool()` to avoid `strictFunctionTypes` variance issues
+- Migrated all 35 tools across 9 files (3 plugins) to use `defineTool()`
+- Removed 34 redundant `Schema.parse(args)` calls — both `server.ts` and `registry.ts` already validate before calling handlers
+- 0 Copilot review comments — clean merge
+- Addresses 4 deferred comments from PR #7 (Phase 2.b)
+
+**Next up: Phase 2.5 — Plugin Security & Open-Source Readiness** (research + design docs session)
 
 ### Phase 2.b Decomposition
 
@@ -294,9 +302,9 @@ These decisions affect scope significantly — the executing session should conf
 
 ## What Exists Today
 
-### Core (Phase 1)
+### Core (Phase 1 + 2.5 warmup)
 - Plugin system core (`src/core/` — server, registry, loader, config, logger)
-- Plugin type definitions (`src/plugins/types.ts`)
+- Plugin type definitions (`src/plugins/types.ts`) — includes `defineTool<S>()` helper for typed tool authoring (PR #10)
 
 ### Plugins (Phase 2)
 - `src/plugins/git-context/` — 1 tool, 1 resource (Phase 2.a, merged PR #6)
