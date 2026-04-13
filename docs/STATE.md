@@ -141,10 +141,19 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - CLI interactive menu updated with Security section (consent, permissions, revoke, audit)
 - Consent/security commands bypass the GitHub config check (work without GITHUB_TOKEN)
 
-**Next up: Phase 2.5d — Process Isolation** (next session)
-- Child process per plugin, IPC bridge, Node Permission Model flags
-- Our own 3 plugins are the first "third-party" consumers — eat our own dog food
-- See `docs/SECURITY.md` §10 for full spec
+**Phase 2.5d — Process Isolation** (complete — 2026-04-13)
+- `src/core/ipc.ts` — JSON-RPC 2.0 protocol over Node IPC. `IpcChannel` class with request/response correlation via UUID, configurable timeouts, fire-and-forget notifications. Type guards for request/response/notification discrimination. Standard error codes (timeout, tool error, degraded).
+- `src/core/plugin-host.ts` — Child process entry point (executed via `fork()`). Loads exactly one plugin, reconstructs `DefaultCredentialBroker` with scoped env vars + capabilities, builds IPC-backed `PluginContext` (logger relays to parent, `callTool` routes through parent registry). Handles `initialize`, `callTool`, `readResource`, `shutdown`, `ping`.
+- `src/core/plugin-process.ts` — Parent-side `PluginProcess` manager per plugin. Lazy spawn on first tool call (zero startup cost). Crash recovery: exponential backoff (0/500ms/2s/8s/30s cap), reset after 60s stable, max 5 restarts in 5 min → `degraded` state. 30s heartbeat ping/pong with 5s timeout → kill + restart on no response. Graceful shutdown: IPC request → 5s timeout → SIGTERM → 3s → SIGKILL. Cross-plugin scope enforcement: child can only call tools in declared dependencies (checked in parent). `--max-old-space-size=256` per child. Optional Node Permission Model flags (`KUZO_NODE_PERMISSIONS=true`).
+- `src/core/loader.ts` — No longer calls `plugin.initialize()` in parent. Imports plugin module read-only for manifest (tool schemas, capabilities), creates `PluginProcess` with scoped env vars, registers proxy `ToolDefinition`s (real Zod schemas, handlers proxy to child via IPC). New `shutdownAll()` method for child process lifecycle. Removed `buildScopedCallTool()` and `buildCredentialBroker()` (child builds its own).
+- `src/core/server.ts` — Calls `loader.shutdownAll()` before `registry.shutdownAll()` on SIGINT/SIGTERM.
+- Env var scoping: each child receives ONLY its declared credential env vars + system essentials (PATH, LANG, TERM, NODE_ENV, HOME, DEBUG). Jira child cannot read `GITHUB_TOKEN`.
+- Smoke tested: 3 plugins register at startup with zero child processes, first `get_git_context` call spawns child (pid visible in logs), tool returns real data through full IPC round-trip, graceful shutdown terminates all children.
+
+**Next up: Phase 2.5e — Supply Chain** (next session)
+- Monorepo restructure with Turborepo, npm provenance via Sigstore
+- `kuzo plugins install/update/rollback` CLI commands
+- Each plugin becomes its own npm package
 
 ### Phase 2.b Decomposition
 
@@ -375,8 +384,7 @@ These decisions affect scope significantly — the executing session should conf
 All legacy code paths removed. No monolithic services, no flat type barrel, no webhook server, no legacy MCP entry. Directories `src/services/`, `src/mcp/`, `src/types/`, `src/utils/` no longer exist.
 
 ### Not Yet Built
-- Process isolation (Phase 2.5d — NEXT UP)
-- Supply chain security (Phase 2.5e — after 2.5d)
+- Supply chain security (Phase 2.5e — NEXT UP)
 - Phase 3+ GitHub plugin expansion (releases, actions, labels, issues, etc.)
 - New integrations (Phase 4: Confluence, Discord, SMS, Calendar, Notion, Slack)
 - Cross-plugin workflows (Phase 5)

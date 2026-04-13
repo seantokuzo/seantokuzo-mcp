@@ -468,10 +468,10 @@ Phase 1-2 build the plugin architecture under a **trusted plugin** assumption (a
 | Sub-Phase | Scope | Status | Dependencies |
 |-----------|-------|--------|-------------|
 | **2.5a** | Manifest + hardening | **Complete** (PR #11) | Phase 2 |
-| **2.5b** | Credential broker | Next up | 2.5a |
-| **2.5c** | Consent flow + audit | Queued | 2.5b |
-| **2.5d** | Process isolation | Queued | 2.5a |
-| **2.5e** | Supply chain (npm publish + provenance) | Queued | 2.5d |
+| **2.5b** | Credential broker | **Complete** (PR #12) | 2.5a |
+| **2.5c** | Consent flow + audit | **Complete** (PR #13) | 2.5b |
+| **2.5d** | Process isolation | **Complete** | 2.5a |
+| **2.5e** | Supply chain (npm publish + provenance) | Next up | 2.5d |
 
 **2.5a — Manifest + Hardening** (complete)
 
