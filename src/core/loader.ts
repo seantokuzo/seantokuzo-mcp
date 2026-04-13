@@ -70,7 +70,7 @@ export class PluginLoader {
   private buildScopedCallTool(
     declaredDeps: Set<string>,
   ): PluginContext["callTool"] {
-    return (toolName, args) => {
+    return async (toolName, args) => {
       const entry = this.registry.findTool(toolName);
       if (!entry || !declaredDeps.has(entry.plugin.name)) {
         throw new Error(`Tool "${toolName}" not found`);
@@ -87,6 +87,8 @@ export class PluginLoader {
       allCaps
         .filter((c): c is CrossPluginCapability => c.kind === "cross-plugin")
         .map((c) => {
+          // TODO(2.5c): enforce per-tool granularity when consent flow lands.
+          // For now, "plugin:tool" targets grant access to all tools in the plugin.
           const pluginName = c.target.split(":")[0];
           return pluginName ?? c.target;
         }),

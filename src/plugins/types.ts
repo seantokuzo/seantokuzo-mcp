@@ -6,7 +6,7 @@
 import type { z } from "zod";
 
 // ---------------------------------------------------------------------------
-// Capability types — declared in plugin manifests, enforced by the loader
+// Capability types — declared in plugin manifests, enforced incrementally by the loader
 // ---------------------------------------------------------------------------
 
 /** How a plugin consumes a credential */
@@ -15,7 +15,7 @@ export type CredentialAccessMode = "client" | "authenticated-fetch" | "raw";
 /** Access to an environment variable / secret */
 export interface CredentialCapability {
   kind: "credentials";
-  /** Env var name or prefix pattern (e.g., "GITHUB_TOKEN" or "JIRA:*") */
+  /** Env var name (e.g., "GITHUB_TOKEN"). Prefix patterns like "JIRA:*" are reserved for future use. */
   env: string;
   /** How the plugin consumes this credential */
   access: CredentialAccessMode;

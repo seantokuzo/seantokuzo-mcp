@@ -117,14 +117,16 @@ export class PluginRegistry {
     for (const plugin of this.plugins.values()) {
       if (plugin.shutdown) {
         try {
+          let timeoutId: NodeJS.Timeout;
           await Promise.race([
-            plugin.shutdown(),
-            new Promise<never>((_, reject) =>
-              setTimeout(
+            plugin.shutdown().then(() => clearTimeout(timeoutId)),
+            new Promise<never>((_, reject) => {
+              timeoutId = setTimeout(
                 () => reject(new Error("shutdown timeout")),
                 SHUTDOWN_TIMEOUT,
-              ),
-            ),
+              );
+              timeoutId.unref();
+            }),
           ]);
           this.logger.info(`Plugin "${plugin.name}" shut down`);
         } catch (err) {
