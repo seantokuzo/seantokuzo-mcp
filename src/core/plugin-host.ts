@@ -119,9 +119,12 @@ async function main(): Promise<void> {
       auditLogger,
     });
 
-    // Build IPC-backed callTool (routes through parent's registry)
+    // Build IPC-backed callTool (routes through parent's registry).
+    // Use 120s timeout to match parent-side TOOL_CALL_TIMEOUT_MS — default 30s
+    // would cause spurious timeouts on cross-plugin calls to slow tools.
+    const CROSS_PLUGIN_TIMEOUT_MS = 120_000;
     const callTool = async (toolNameArg: string, argsArg: Record<string, unknown>): Promise<unknown> => {
-      return ch.request("callTool", { toolName: toolNameArg, args: argsArg });
+      return ch.request("callTool", { toolName: toolNameArg, args: argsArg }, CROSS_PLUGIN_TIMEOUT_MS);
     };
 
     // Build PluginContext

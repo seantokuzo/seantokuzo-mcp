@@ -327,8 +327,9 @@ export class PluginLoader {
         return result;
       }
 
-      // Extract deps and capabilities for the child process
-      const deps = this.extractCrossPluginDeps(plugin);
+      // Extract deps and capabilities for the child process.
+      // V1 plugins get null deps (unrestricted callTool). V2 gets scoped set.
+      const deps = isV2Plugin(plugin) ? this.extractCrossPluginDeps(plugin) : null;
       const capabilities = this.extractCredentialCapabilities(plugin);
       const pluginLogger = createPluginLogger(plugin.name);
 

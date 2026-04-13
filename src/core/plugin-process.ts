@@ -87,6 +87,9 @@ export class PluginProcess {
   // Heartbeat
   private heartbeatTimer: NodeJS.Timeout | null = null;
 
+  // In-flight tool calls — heartbeat skips while > 0 (sync work blocks pong)
+  private inFlightCalls = 0;
+
   // Pending callers waiting for spawn
   private spawnPromise: Promise<void> | null = null;
 
@@ -95,7 +98,8 @@ export class PluginProcess {
     private readonly pluginPath: string,
     private readonly scopedEnv: Record<string, string>,
     private readonly capabilities: CredentialCapability[],
-    private readonly declaredDeps: Set<string>,
+    /** Cross-plugin deps. null = unrestricted (V1 legacy). Set = scoped to declared deps (V2). */
+    private readonly declaredDeps: Set<string> | null,
     private readonly logger: KuzoLogger,
     private readonly registry: PluginRegistry,
     private readonly auditLogger: AuditLogger,
@@ -170,13 +174,16 @@ export class PluginProcess {
     // Create IPC channel
     this.channel = new IpcChannel(this.child);
 
-    // Handle cross-plugin callTool requests from child (scoped to declared deps)
+    // Handle cross-plugin callTool requests from child.
+    // V2 plugins: scoped to declared deps. V1 (declaredDeps=null): unrestricted.
     this.channel.onRequest(async (method, params) => {
       if (method === "callTool") {
         const { toolName, args } = params as { toolName: string; args: Record<string, unknown> };
-        // Enforce cross-plugin scoping — child can only call tools in declared deps
         const entry = this.registry.findTool(toolName);
-        if (!entry || !this.declaredDeps.has(entry.plugin.name)) {
+        if (!entry) {
+          throw new Error(`Tool "${toolName}" not found`);
+        }
+        if (this.declaredDeps !== null && !this.declaredDeps.has(entry.plugin.name)) {
           throw new Error(`Tool "${toolName}" not found`);
         }
         return this.registry.callTool(toolName, args);
@@ -255,7 +262,12 @@ export class PluginProcess {
       throw new Error(`No IPC channel for "${this.pluginName}"`);
     }
 
-    return this.channel.request("callTool", { toolName, args }, TOOL_CALL_TIMEOUT_MS);
+    this.inFlightCalls++;
+    try {
+      return await this.channel.request("callTool", { toolName, args }, TOOL_CALL_TIMEOUT_MS);
+    } finally {
+      this.inFlightCalls--;
+    }
   }
 
   /** Forward a resource read to the child process */
@@ -290,6 +302,10 @@ export class PluginProcess {
 
   private async ping(): Promise<void> {
     if (!this.channel || this.state !== "ready") return;
+
+    // Skip heartbeat while tool calls are in-flight — sync work (e.g. execSync
+    // in git-context) blocks the child event loop, preventing pong responses.
+    if (this.inFlightCalls > 0) return;
 
     try {
       await this.channel.request("ping", undefined, HEARTBEAT_TIMEOUT_MS);
