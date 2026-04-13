@@ -34,6 +34,12 @@ import {
   addCommentInteractive,
   searchTicketsInteractive,
 } from "./commands/jira.js";
+import {
+  consentInteractive,
+  permissionsInteractive,
+  revokeInteractive,
+  auditInteractive,
+} from "./commands/consent.js";
 import { showBanner, showGoodbye, showError } from "./ui/display.js";
 
 /** Inline replacement for the deleted `utils/config.ts` helper. */
@@ -50,9 +56,9 @@ program
   .hook("preAction", (thisCommand) => {
     // Check config before most commands (except setup and help)
     const commandName = thisCommand.args[0];
+    const noConfigCommands = ["setup", "config", "consent", "permissions", "revoke", "audit"];
     if (
-      commandName !== "setup" &&
-      commandName !== "config" &&
+      !noConfigCommands.includes(commandName ?? "") &&
       !thisCommand.opts()["help"]
     ) {
       if (!isConfigured()) {
@@ -275,6 +281,44 @@ jiraCmd
   });
 
 // ============================================
+// Security & Consent Commands
+// ============================================
+program
+  .command("consent")
+  .description("Review and grant plugin permissions")
+  .action(async () => {
+    await consentInteractive();
+    showGoodbye();
+  });
+
+program
+  .command("permissions")
+  .alias("perms")
+  .description("List all plugin permission grants")
+  .action(async () => {
+    await permissionsInteractive();
+    showGoodbye();
+  });
+
+program
+  .command("revoke")
+  .description("Revoke consent for a plugin")
+  .argument("[plugin]", "Plugin name to revoke")
+  .action(async (pluginArg?: string) => {
+    await revokeInteractive(pluginArg);
+    showGoodbye();
+  });
+
+program
+  .command("audit")
+  .description("View the security audit log")
+  .option("-s, --since <duration>", "Time range (e.g., 7d, 24h, 2026-04-01)")
+  .action(async (options: { since?: string }) => {
+    await auditInteractive(options.since);
+    showGoodbye();
+  });
+
+// ============================================
 // Interactive Mode (default)
 // ============================================
 program
@@ -331,6 +375,11 @@ program
           { name: "🔒 Toggle Visibility", value: "repo-visibility" },
           { name: "🐛 Check Issues", value: "repo-issues" },
           { name: "📚 List My Repos", value: "repo-list" },
+          new inquirer.default.Separator("─── Security ───"),
+          { name: "🔐 Review Plugin Consent", value: "consent" },
+          { name: "📋 View Permissions", value: "permissions" },
+          { name: "🚫 Revoke Plugin Consent", value: "revoke" },
+          { name: "📜 View Audit Log", value: "audit" },
           new inquirer.default.Separator("─── Settings ───"),
           { name: "⚙️  Check Config", value: "config" },
           { name: "🔧 Run Setup", value: "setup" },
@@ -392,6 +441,19 @@ program
         break;
       case "repo-list":
         await listReposInteractive();
+        break;
+      // Security commands
+      case "consent":
+        await consentInteractive();
+        break;
+      case "permissions":
+        await permissionsInteractive();
+        break;
+      case "revoke":
+        await revokeInteractive();
+        break;
+      case "audit":
+        await auditInteractive();
         break;
       // Config commands
       case "config":

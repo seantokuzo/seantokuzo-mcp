@@ -16,6 +16,8 @@ import { PluginRegistry } from "./registry.js";
 import { PluginLoader } from "./loader.js";
 import { ConfigManager } from "./config.js";
 import { KuzoLogger } from "./logger.js";
+import { ConsentStore } from "./consent.js";
+import { AuditLogger } from "./audit.js";
 
 /** Convert a Zod schema to MCP-compatible JSON Schema */
 function zodToMcpInputSchema(
@@ -68,10 +70,14 @@ async function main(): Promise<void> {
   // Initialize core systems
   const configManager = new ConfigManager();
   const registry = new PluginRegistry(new KuzoLogger("registry"));
+  const consentStore = new ConsentStore();
+  const auditLogger = new AuditLogger({ logger: new KuzoLogger("audit") });
   const loader = new PluginLoader(
     registry,
     configManager,
     new KuzoLogger("loader"),
+    consentStore,
+    auditLogger,
   );
 
   // Load plugins

@@ -7,3 +7,4 @@ export * from "./config.js";
 export * from "./repo.js";
 export * from "./review.js";
 export * from "./jira.js";
+export * from "./consent.js";

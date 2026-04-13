@@ -14,6 +14,7 @@ import type {
   CredentialCapability,
   PluginLogger,
 } from "../plugins/types.js";
+import type { AuditLogger } from "./audit.js";
 import { GitHubClient } from "../plugins/github/client.js";
 import { JiraClient } from "../plugins/jira/client.js";
 
@@ -80,6 +81,8 @@ export interface CredentialBrokerOptions {
   capabilities: CredentialCapability[];
   /** Plugin-scoped logger */
   logger: PluginLogger;
+  /** Structured audit logger (file + stderr) */
+  auditLogger?: AuditLogger;
 }
 
 export class DefaultCredentialBroker implements CredentialBroker {
@@ -87,6 +90,7 @@ export class DefaultCredentialBroker implements CredentialBroker {
   private readonly config: Map<string, string>;
   private readonly capabilities: CredentialCapability[];
   private readonly logger: PluginLogger;
+  private readonly auditLogger: AuditLogger | undefined;
   private readonly clientCache = new Map<string, unknown>();
 
   constructor(options: CredentialBrokerOptions) {
@@ -94,6 +98,7 @@ export class DefaultCredentialBroker implements CredentialBroker {
     this.config = options.config;
     this.capabilities = options.capabilities;
     this.logger = options.logger;
+    this.auditLogger = options.auditLogger;
   }
 
   getClient<T>(service: string): T | undefined {
@@ -136,9 +141,14 @@ export class DefaultCredentialBroker implements CredentialBroker {
     if (client === undefined) return undefined;
 
     this.clientCache.set(service, client);
-    this.logger.debug(
-      `credential broker: created "${service}" client for plugin "${this.pluginName}"`,
-    );
+
+    this.auditLogger?.log({
+      plugin: this.pluginName,
+      action: "credential.client_created",
+      outcome: "allowed",
+      details: { service },
+    });
+
     return client as T;
   }
 
@@ -162,6 +172,13 @@ export class DefaultCredentialBroker implements CredentialBroker {
 
     const urlPattern = cap.urlPattern;
     const authScheme = cap.authScheme ?? "bearer";
+
+    this.auditLogger?.log({
+      plugin: this.pluginName,
+      action: "credential.fetch_created",
+      outcome: "allowed",
+      details: { credentialKey, authScheme, urlPattern: urlPattern ?? "*" },
+    });
 
     return async (url: string | URL, init?: RequestInit): Promise<Response> => {
       const urlStr = url.toString();
@@ -204,6 +221,12 @@ export class DefaultCredentialBroker implements CredentialBroker {
       (cap) => cap.env === key && cap.access === "raw",
     );
     if (!hasRawAccess) {
+      this.auditLogger?.log({
+        plugin: this.pluginName,
+        action: "credential.raw_denied",
+        outcome: "denied",
+        details: { credentialKey: key },
+      });
       this.logger.warn(
         `credential broker: DENIED raw access to "${key}" for plugin "${this.pluginName}" ` +
           `— not declared with access: "raw"`,
@@ -213,11 +236,12 @@ export class DefaultCredentialBroker implements CredentialBroker {
 
     const value = this.config.get(key);
 
-    // Audit log every raw credential access
-    this.logger.info(
-      `credential broker: [AUDIT] plugin "${this.pluginName}" accessed raw credential "${key}" ` +
-        `(${value !== undefined ? "found" : "not found"})`,
-    );
+    this.auditLogger?.log({
+      plugin: this.pluginName,
+      action: "credential.raw_access",
+      outcome: "allowed",
+      details: { credentialKey: key, found: value !== undefined },
+    });
 
     return value;
   }

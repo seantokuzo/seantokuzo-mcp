@@ -1,5 +1,12 @@
 /**
  * Plugin loader — discovers, validates, and initializes plugins.
+ *
+ * Consent flow (Phase 2.5c):
+ *   - V1 plugins blocked unless KUZO_TRUST_LEGACY=true
+ *   - V2 plugins require stored consent OR trust override
+ *   - KUZO_TRUST_PLUGINS=name1,name2 — bypass consent for listed plugins
+ *   - KUZO_TRUST_ALL=true — bypass consent for all (dev only)
+ *   - KUZO_STRICT=true — only stored consent, no trust overrides
  */
 
 import { pathToFileURL, fileURLToPath } from "url";
@@ -19,16 +26,43 @@ import type { PluginRegistry } from "./registry.js";
 import type { ConfigManager } from "./config.js";
 import { createPluginLogger, type KuzoLogger } from "./logger.js";
 import { DefaultCredentialBroker } from "./credentials.js";
+import { ConsentStore } from "./consent.js";
+import { AuditLogger } from "./audit.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 export class PluginLoader {
+  private readonly trustPlugins: Set<string>;
+  private readonly trustAll: boolean;
+  private readonly strict: boolean;
+  private readonly trustLegacy: boolean;
+
   constructor(
     private registry: PluginRegistry,
     private configManager: ConfigManager,
     private logger: KuzoLogger,
-  ) {}
+    private consentStore: ConsentStore,
+    private auditLogger: AuditLogger,
+  ) {
+    // Parse trust env vars once at construction
+    this.trustPlugins = new Set(
+      (process.env["KUZO_TRUST_PLUGINS"] ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    );
+    this.trustAll = process.env["KUZO_TRUST_ALL"] === "true";
+    this.strict = process.env["KUZO_STRICT"] === "true";
+    this.trustLegacy = process.env["KUZO_TRUST_LEGACY"] === "true";
+
+    if (this.trustAll) {
+      this.logger.warn("KUZO_TRUST_ALL=true — all plugins trusted without consent (dev mode)");
+    }
+    if (this.strict) {
+      this.logger.info("KUZO_STRICT=true — only stored consent honored, trust overrides ignored");
+    }
+  }
 
   /** Load all enabled plugins from config */
   async loadAll(): Promise<LoadResult> {
@@ -64,6 +98,54 @@ export class PluginLoader {
     return result;
   }
 
+  // -------------------------------------------------------------------------
+  // Consent + trust
+  // -------------------------------------------------------------------------
+
+  /**
+   * Check whether a plugin is trusted (via consent or override).
+   * Returns undefined if trusted, or a reason string if not.
+   */
+  private checkConsent(plugin: KuzoPlugin): string | undefined {
+    const name = plugin.name;
+
+    // Strict mode: only stored consent
+    if (this.strict) {
+      if (!isV2Plugin(plugin)) {
+        return "V1 plugin not allowed in strict mode";
+      }
+      if (!this.consentStore.hasConsent(name)) {
+        return `no stored consent — run: kuzo consent`;
+      }
+      if (this.consentStore.isConsentStale(plugin)) {
+        return `consent is stale (version or capabilities changed) — run: kuzo consent`;
+      }
+      return undefined;
+    }
+
+    // Trust overrides (non-strict)
+    if (this.trustAll) return undefined;
+    if (this.trustPlugins.has(name)) return undefined;
+
+    // V2 check stored consent
+    if (isV2Plugin(plugin)) {
+      if (this.consentStore.hasConsent(name)) {
+        if (this.consentStore.isConsentStale(plugin)) {
+          return `consent is stale (version or capabilities changed) — run: kuzo consent`;
+        }
+        return undefined;
+      }
+      return `no consent — run: kuzo consent`;
+    }
+
+    // V1 legacy gate
+    return "V1 plugin requires KUZO_TRUST_LEGACY=true or migrate to V2";
+  }
+
+  // -------------------------------------------------------------------------
+  // Scoped callTool
+  // -------------------------------------------------------------------------
+
   /**
    * Build a scoped callTool for V2 plugins.
    * Only allows calls to tools owned by plugins declared in cross-plugin capabilities.
@@ -89,13 +171,17 @@ export class PluginLoader {
       allCaps
         .filter((c): c is CrossPluginCapability => c.kind === "cross-plugin")
         .map((c) => {
-          // TODO(2.5c): enforce per-tool granularity when consent flow lands.
+          // TODO(2.5d): enforce per-tool granularity when process isolation lands.
           // For now, "plugin:tool" targets grant access to all tools in the plugin.
           const pluginName = c.target.split(":")[0];
           return pluginName ?? c.target;
         }),
     );
   }
+
+  // -------------------------------------------------------------------------
+  // Credential broker
+  // -------------------------------------------------------------------------
 
   /** Extract credential capabilities from a V2 plugin's manifest */
   private extractCredentialCapabilities(plugin: KuzoPlugin): CredentialCapability[] {
@@ -107,9 +193,7 @@ export class PluginLoader {
   /**
    * Build a credential broker for a plugin.
    * V2 plugins get a fully-functional broker scoped to their declared capabilities.
-   * V1 plugins still receive the default broker, but with no declared credential
-   * capabilities; credential access remains denied, and they should use the
-   * deprecated config map instead.
+   * V1 plugins (behind KUZO_TRUST_LEGACY) receive an empty-capabilities broker.
    */
   private buildCredentialBroker(
     plugin: KuzoPlugin,
@@ -122,36 +206,13 @@ export class PluginLoader {
       config,
       capabilities,
       logger,
+      auditLogger: this.auditLogger,
     });
   }
 
-  /**
-   * Wrap a config Map in a Proxy that logs a deprecation warning on first access.
-   * V1 plugins use config freely (no warning). V2 plugins get the warning.
-   */
-  private wrapConfigWithDeprecation(
-    config: Map<string, string>,
-    pluginName: string,
-    logger: ReturnType<typeof createPluginLogger>,
-    isV2: boolean,
-  ): Map<string, string> {
-    if (!isV2) return config;
-    let warned = false;
-    return new Proxy(config, {
-      get(target, prop) {
-        if (!warned && typeof prop === "string") {
-          warned = true;
-          logger.warn(
-            `plugin "${pluginName}" is using deprecated context.config — migrate to context.credentials`,
-          );
-        }
-        // Bind to target, not the Proxy — Map methods throw TypeError
-        // if `this` is not the actual Map instance.
-        const value = Reflect.get(target, prop, target);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
-  }
+  // -------------------------------------------------------------------------
+  // Config extraction
+  // -------------------------------------------------------------------------
 
   /** Extract required env var names from V2 credential capabilities */
   private extractV2Config(plugin: KuzoPlugin): { required: string[]; optional: string[] } {
@@ -165,6 +226,10 @@ export class PluginLoader {
       optional: toEnvVars(plugin.optionalCapabilities ?? []),
     };
   }
+
+  // -------------------------------------------------------------------------
+  // Plugin load
+  // -------------------------------------------------------------------------
 
   /** Load a single plugin by name */
   async loadPlugin(name: string): Promise<LoadResult> {
@@ -196,14 +261,40 @@ export class PluginLoader {
       }
 
       // Reject unknown permission model versions.
-      // Cast to unknown: TS narrows the union to only undefined|1, but a
-      // dynamically loaded JS plugin could export any value at runtime.
       const pm = plugin.permissionModel as unknown;
       if (pm !== undefined && pm !== 1) {
         result.failed.push({
           name,
           error: `unsupported permissionModel: ${String(pm)} (this server supports: 1)`,
         });
+        return result;
+      }
+
+      // V1 legacy gate — must be checked before consent
+      if (!isV2Plugin(plugin) && !this.trustLegacy) {
+        this.auditLogger.log({
+          plugin: name,
+          action: "plugin.skipped",
+          outcome: "denied",
+          details: { reason: "V1 plugin blocked — set KUZO_TRUST_LEGACY=true to allow" },
+        });
+        result.skipped.push({
+          name,
+          reason: "V1 plugin blocked — set KUZO_TRUST_LEGACY=true or migrate to V2",
+        });
+        return result;
+      }
+
+      // Consent check
+      const consentDenial = this.checkConsent(plugin);
+      if (consentDenial) {
+        this.auditLogger.log({
+          plugin: name,
+          action: "plugin.skipped",
+          outcome: "denied",
+          details: { reason: consentDenial },
+        });
+        result.skipped.push({ name, reason: consentDenial });
         return result;
       }
 
@@ -216,7 +307,7 @@ export class PluginLoader {
         return result;
       }
 
-      // Extract config — V2 derives from capabilities, V1 uses requiredConfig/optionalConfig
+      // Extract config — V2 derives from capabilities, V1 gets nothing
       let config: Map<string, string>;
       let missing: string[];
 
@@ -227,10 +318,9 @@ export class PluginLoader {
           v2Config.optional,
         ));
       } else {
-        ({ config, missing } = this.configManager.extractPluginConfig(
-          plugin.requiredConfig ?? [],
-          plugin.optionalConfig ?? [],
-        ));
+        // V1 plugins (behind KUZO_TRUST_LEGACY) get an empty config — no config declarations
+        config = new Map();
+        missing = [];
       }
 
       if (missing.length > 0) {
@@ -248,15 +338,12 @@ export class PluginLoader {
         : (toolName: string, args: Record<string, unknown>) =>
             this.registry.callTool(toolName, args);
 
-      // Build credential broker + deprecation-wrapped config
+      // Build credential broker
       const pluginLogger = createPluginLogger(plugin.name);
-      const v2 = isV2Plugin(plugin);
       const credentials = this.buildCredentialBroker(plugin, config, pluginLogger);
-      const wrappedConfig = this.wrapConfigWithDeprecation(config, name, pluginLogger, v2);
 
-      // Build PluginContext
+      // Build PluginContext (no more config map — V2 uses broker, V1 is legacy)
       const context: PluginContext = {
-        config: wrappedConfig,
         credentials,
         logger: pluginLogger,
         callTool,
@@ -268,9 +355,27 @@ export class PluginLoader {
       // Register in registry
       this.registry.register(plugin, context);
 
+      // Audit: plugin loaded
+      this.auditLogger.log({
+        plugin: name,
+        action: "plugin.loaded",
+        outcome: "allowed",
+        details: {
+          version: plugin.version,
+          permissionModel: isV2Plugin(plugin) ? "v2" : "v1",
+          toolCount: plugin.tools.length,
+        },
+      });
+
       result.loaded.push(name);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      this.auditLogger.log({
+        plugin: name,
+        action: "plugin.failed",
+        outcome: "error",
+        details: { error: message },
+      });
       result.failed.push({ name, error: message });
     }
 
