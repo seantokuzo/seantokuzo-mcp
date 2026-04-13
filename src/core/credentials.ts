@@ -111,17 +111,22 @@ export class DefaultCredentialBroker implements CredentialBroker {
       return undefined;
     }
 
-    // Verify the plugin declared "client" access for the service's credentials
+    // Verify the plugin declared "client" access for ALL of the service's credentials
     const serviceEnvs = serviceEnvMapping[service];
     if (!serviceEnvs) return undefined;
 
-    const hasClientAccess = this.capabilities.some(
-      (cap) => cap.access === "client" && serviceEnvs.includes(cap.env),
+    const clientAccessibleEnvs = new Set(
+      this.capabilities
+        .filter((cap) => cap.access === "client")
+        .map((cap) => cap.env),
+    );
+    const hasClientAccess = serviceEnvs.every((env) =>
+      clientAccessibleEnvs.has(env),
     );
     if (!hasClientAccess) {
       this.logger.warn(
         `credential broker: plugin "${this.pluginName}" requested client for "${service}" ` +
-          `but did not declare access: "client" for its credentials`,
+          `but did not declare access: "client" for all required credentials`,
       );
       return undefined;
     }

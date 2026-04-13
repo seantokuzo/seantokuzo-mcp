@@ -107,7 +107,9 @@ export class PluginLoader {
   /**
    * Build a credential broker for a plugin.
    * V2 plugins get a fully-functional broker scoped to their declared capabilities.
-   * V1 plugins get a no-op broker (they use the deprecated config map).
+   * V1 plugins still receive the default broker, but with no declared credential
+   * capabilities; credential access remains denied, and they should use the
+   * deprecated config map instead.
    */
   private buildCredentialBroker(
     plugin: KuzoPlugin,
@@ -137,7 +139,7 @@ export class PluginLoader {
     let warned = false;
     return new Proxy(config, {
       get(target, prop, receiver) {
-        if (!warned && (prop === "get" || prop === "has" || prop === "forEach")) {
+        if (!warned && typeof prop === "string") {
           warned = true;
           logger.warn(
             `plugin "${pluginName}" is using deprecated context.config — migrate to context.credentials`,
