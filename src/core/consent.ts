@@ -58,7 +58,7 @@ export class ConsentStore {
 
   /** Check if a plugin has stored consent */
   hasConsent(pluginName: string): boolean {
-    return pluginName in this.data.plugins;
+    return Object.hasOwn(this.data.plugins, pluginName);
   }
 
   /**
@@ -72,12 +72,17 @@ export class ConsentStore {
     // Version changed → re-consent required (open question #6: refuse to load)
     if (record.pluginVersion !== plugin.version) return true;
 
-    // Capabilities changed → re-consent required
-    const currentCaps = capabilityKeys(plugin.capabilities);
-    const grantedCaps = capabilityKeys(record.granted);
-    // New capabilities that weren't in the granted set
+    // Capabilities changed → re-consent required.
+    // Include optional capabilities too — they're part of the permission
+    // surface the user reviewed during consent. Compare against the full
+    // set (granted + denied) so new capabilities trigger re-consent.
+    const currentCaps = capabilityKeys([
+      ...plugin.capabilities,
+      ...(plugin.optionalCapabilities ?? []),
+    ]);
+    const consentedCaps = capabilityKeys([...record.granted, ...record.denied]);
     for (const cap of currentCaps) {
-      if (!grantedCaps.has(cap)) return true;
+      if (!consentedCaps.has(cap)) return true;
     }
 
     return false;
@@ -101,7 +106,7 @@ export class ConsentStore {
 
   /** Revoke all consent for a plugin */
   revokeConsent(pluginName: string): boolean {
-    if (!(pluginName in this.data.plugins)) return false;
+    if (!Object.hasOwn(this.data.plugins, pluginName)) return false;
     delete this.data.plugins[pluginName];
     this.save();
     return true;
@@ -149,9 +154,13 @@ export class ConsentStore {
       if (parsed.version !== 1) {
         throw new Error(`Unsupported consent schema version: ${String(parsed.version)}`);
       }
+      // Guard against valid JSON with unexpected shape (e.g., plugins: null)
+      if (!parsed.plugins || typeof parsed.plugins !== "object" || Array.isArray(parsed.plugins)) {
+        throw new Error("Invalid consent.json: plugins must be an object");
+      }
       return parsed;
     } catch {
-      // Corrupted file — start fresh
+      // Corrupted or malformed file — start fresh
       return { version: 1, plugins: {} };
     }
   }

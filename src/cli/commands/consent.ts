@@ -13,6 +13,11 @@ import { resolve, dirname } from "path";
 import { existsSync } from "fs";
 import { ConsentStore } from "../../core/consent.js";
 import { AuditLogger, type AuditEvent } from "../../core/audit.js";
+
+/** Shared audit logger for CLI consent commands */
+function getAuditLogger(): AuditLogger {
+  return new AuditLogger();
+}
 import {
   isV2Plugin,
   type Capability,
@@ -93,6 +98,7 @@ function formatAuditEvent(event: AuditEvent): string {
 export async function consentInteractive(): Promise<void> {
   const inquirer = await import("inquirer");
   const store = new ConsentStore();
+  const audit = getAuditLogger();
   const pluginNames = await discoverPlugins();
 
   if (pluginNames.length === 0) {
@@ -173,6 +179,12 @@ export async function consentInteractive(): Promise<void> {
     if (decision === "yes") {
       const allCaps = [...plugin.capabilities, ...(plugin.optionalCapabilities ?? [])];
       store.grantConsent(plugin, allCaps);
+      audit.log({
+        plugin: name,
+        action: "consent.granted",
+        outcome: "allowed",
+        details: { version: plugin.version, capabilityCount: allCaps.length },
+      });
       showSuccess(`Consent granted for "${name}".`);
       grantedCount++;
     } else {
@@ -259,6 +271,13 @@ export async function revokeInteractive(pluginName?: string): Promise<void> {
   if (confirm) {
     const revoked = store.revokeConsent(pluginName);
     if (revoked) {
+      const audit = getAuditLogger();
+      audit.log({
+        plugin: pluginName,
+        action: "consent.revoked",
+        outcome: "allowed",
+        details: { revokedBy: "cli" },
+      });
       showSuccess(`Consent revoked for "${pluginName}".`);
     } else {
       showWarning(`No consent record found for "${pluginName}".`);

@@ -138,7 +138,8 @@ export class PluginLoader {
       return `no consent — run: kuzo consent`;
     }
 
-    // V1 legacy gate
+    // V1 legacy gate — if trustLegacy is set, V1 plugins are allowed through
+    if (this.trustLegacy) return undefined;
     return "V1 plugin requires KUZO_TRUST_LEGACY=true or migrate to V2";
   }
 
