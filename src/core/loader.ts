@@ -138,14 +138,17 @@ export class PluginLoader {
     if (!isV2) return config;
     let warned = false;
     return new Proxy(config, {
-      get(target, prop, receiver) {
+      get(target, prop) {
         if (!warned && typeof prop === "string") {
           warned = true;
           logger.warn(
             `plugin "${pluginName}" is using deprecated context.config — migrate to context.credentials`,
           );
         }
-        return Reflect.get(target, prop, receiver);
+        // Bind to target, not the Proxy — Map methods throw TypeError
+        // if `this` is not the actual Map instance.
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
       },
     });
   }

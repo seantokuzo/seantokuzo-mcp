@@ -121,11 +121,11 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 **Phase 2.5b — Credential Broker** (complete — PR #12, 2026-04-12)
 - `CredentialBroker` interface + `DefaultCredentialBroker` in `src/core/credentials.ts` — three access modes: `getClient<T>()` (pre-auth clients), `createAuthenticatedFetch()` (URL-scoped fetch), `getRawCredential()` (audit-logged escape hatch)
 - Hardcoded client factories for first-party services: `"github"` → `GitHubClient`, `"jira"` → `JiraClient`. Core imports plugin clients directly (Option A — accepted coupling for first-party)
-- Broker injected into `PluginContext` by loader alongside deprecated `config: Map`. V1 plugins get no-op broker (empty capabilities). V2 plugins get fully scoped broker
-- `context.config` wrapped in Proxy for V2 plugins — logs one-time deprecation warning on `get`/`has`/`forEach` access
+- Broker injected into `PluginContext` by loader alongside deprecated `config: Map`. V1 plugins receive `DefaultCredentialBroker` with empty capabilities (deny-by-default; `createAuthenticatedFetch()` throws). V2 plugins get fully scoped broker
+- `context.config` wrapped in Proxy for V2 plugins — logs a one-time deprecation warning on any string property access
 - GitHub plugin: `GITHUB_TOKEN` capability `access: "raw"` → `access: "client"`. `initialize()` calls `context.credentials.getClient<GitHubClient>("github")`. `GITHUB_USERNAME` stays `access: "raw"` (flows through factory automatically)
 - Jira plugin: all 3 credential capabilities switched to `access: "client"`. `initialize()` calls `context.credentials.getClient<JiraClient>("jira")`
-- git-context plugin unchanged — no credential capabilities, gets no-op broker
+- git-context plugin unchanged — no credential capabilities, receives `DefaultCredentialBroker` with empty capabilities
 - Capability enforcement: `getClient()` requires `access: "client"`, `getRawCredential()` requires `access: "raw"`, mismatches return `undefined` with warning log
 
 **Next up: Phase 2.5c — Consent Flow + Audit** (next session)
@@ -349,7 +349,7 @@ These decisions affect scope significantly — the executing session should conf
 - Credential broker: `DefaultCredentialBroker` with `getClient<T>()`, `createAuthenticatedFetch()`, `getRawCredential()`. First-party factories for GitHub + Jira
 
 ### Plugins (Phase 2 + 2.5a + 2.5b)
-- `src/plugins/git-context/` — 1 tool, 1 resource. V2 manifest: filesystem + system:exec:git. No credentials (no-op broker)
+- `src/plugins/git-context/` — 1 tool, 1 resource. V2 manifest: filesystem + system:exec:git. No credentials (empty-capabilities broker)
 - `src/plugins/github/` — 23 tools across pulls/reviews/repos/branches. V2 manifest: credentials(client) + network + cross-plugin:git-context. Initialized via `credentials.getClient<GitHubClient>("github")`
 - `src/plugins/jira/` — 11 tools across tickets/transitions/subtasks/comments. V2 manifest: credentials(client) + network. Initialized via `credentials.getClient<JiraClient>("jira")`
 
