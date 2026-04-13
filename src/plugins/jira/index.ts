@@ -9,11 +9,11 @@
  *
  * No cross-plugin concerns — Jira↔GitHub workflows are deferred to Phase 5.
  *
- * Required config: JIRA_HOST, JIRA_EMAIL, JIRA_API_TOKEN
+ * Credentials: JIRA_HOST, JIRA_EMAIL, JIRA_API_TOKEN via credential broker (access: "client")
  */
 
 import type { KuzoPluginV2 } from "../types.js";
-import { JiraClient } from "./client.js";
+import type { JiraClient } from "./client.js";
 import { setClient, resetClient } from "./state.js";
 import { ticketTools } from "./tools/tickets.js";
 import { transitionTools } from "./tools/transitions.js";
@@ -30,19 +30,19 @@ const plugin: KuzoPluginV2 = {
     {
       kind: "credentials",
       env: "JIRA_HOST",
-      access: "raw",
+      access: "client",
       reason: "Jira Cloud instance hostname for API base URL",
     },
     {
       kind: "credentials",
       env: "JIRA_EMAIL",
-      access: "raw",
+      access: "client",
       reason: "Email address for Basic auth with the Jira API",
     },
     {
       kind: "credentials",
       env: "JIRA_API_TOKEN",
-      access: "raw",
+      access: "client",
       reason: "API token for Basic auth with the Jira API",
     },
     {
@@ -58,22 +58,14 @@ const plugin: KuzoPluginV2 = {
     ...commentTools,
   ],
   async initialize(context) {
-    const host = context.config.get("JIRA_HOST");
-    const email = context.config.get("JIRA_EMAIL");
-    const token = context.config.get("JIRA_API_TOKEN");
-
-    if (!host || !email || !token) {
+    // Get pre-authenticated client from the credential broker.
+    // The factory reads JIRA_HOST, JIRA_EMAIL, JIRA_API_TOKEN and constructs JiraClient.
+    const client = context.credentials.getClient<JiraClient>("jira");
+    if (!client) {
       throw new Error(
-        "JIRA_HOST, JIRA_EMAIL, and JIRA_API_TOKEN are all required. Set them in your .env file or environment.",
+        "Failed to create Jira client — JIRA_HOST, JIRA_EMAIL, and JIRA_API_TOKEN may be missing. Set them in your .env file or environment.",
       );
     }
-
-    const client = new JiraClient({
-      host,
-      email,
-      token,
-      logger: context.logger,
-    });
 
     const { valid, displayName, error } = await client.verifyConnection();
     if (!valid) {

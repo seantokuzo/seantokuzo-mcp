@@ -5,12 +5,12 @@
  * and file content. Cross-plugin: calls `get_git_context` from the git-context
  * plugin to auto-detect repo and branch on PR operations.
  *
- * Required config: GITHUB_TOKEN
- * Optional config: GITHUB_USERNAME (used as default owner for short repo names)
+ * Credentials: GITHUB_TOKEN via credential broker (access: "client")
+ * Optional: GITHUB_USERNAME via credential broker (access: "raw")
  */
 
 import type { KuzoPluginV2 } from "../types.js";
-import { GitHubClient } from "./client.js";
+import type { GitHubClient } from "./client.js";
 import { setClient, resetClient } from "./state.js";
 import { pullRequestTools } from "./tools/pulls.js";
 import { reviewTools } from "./tools/reviews.js";
@@ -27,8 +27,7 @@ const plugin: KuzoPluginV2 = {
     {
       kind: "credentials",
       env: "GITHUB_TOKEN",
-      // TODO(2.5b): switch to "client" when credential broker provides pre-auth Octokit
-      access: "raw",
+      access: "client",
       reason: "Authenticates with the GitHub API for all operations",
     },
     {
@@ -57,19 +56,14 @@ const plugin: KuzoPluginV2 = {
     ...branchTools,
   ],
   async initialize(context) {
-    const token = context.config.get("GITHUB_TOKEN");
-    if (!token) {
+    // Get pre-authenticated client from the credential broker.
+    // The factory reads GITHUB_TOKEN + GITHUB_USERNAME and constructs GitHubClient.
+    const client = context.credentials.getClient<GitHubClient>("github");
+    if (!client) {
       throw new Error(
-        "GITHUB_TOKEN is required. Set it in your .env file or environment.",
+        "Failed to create GitHub client — GITHUB_TOKEN may be missing. Set it in your .env file or environment.",
       );
     }
-
-    const username = context.config.get("GITHUB_USERNAME");
-    const client = new GitHubClient({
-      token,
-      username,
-      logger: context.logger,
-    });
 
     const { valid, username: authedUser, error } = await client.verifyConnection();
     if (!valid) {

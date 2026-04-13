@@ -86,13 +86,64 @@ export interface PluginLogger {
 }
 
 // ---------------------------------------------------------------------------
+// Credential broker
+// ---------------------------------------------------------------------------
+
+/** Fetch wrapper with auto-injected auth headers */
+export type AuthenticatedFetch = (
+  url: string | URL,
+  init?: RequestInit,
+) => Promise<Response>;
+
+/**
+ * Secure credential access for plugins.
+ * Plugins receive pre-authenticated clients or scoped fetch wrappers
+ * instead of raw tokens. Raw access is an audited escape hatch.
+ */
+export interface CredentialBroker {
+  /**
+   * Pre-authenticated client for known services.
+   * Plugin never sees the raw token.
+   *
+   * Known services: "github" → GitHubClient, "jira" → JiraClient
+   *
+   * Returns undefined if the service is not configured or not authorized.
+   */
+  getClient<T>(service: string): T | undefined;
+
+  /**
+   * Fetch wrapper with auto-injected auth headers.
+   * Plugin never sees the raw token. Enforces URL pattern from manifest.
+   * Throws if the plugin didn't declare this credential with "authenticated-fetch" access.
+   */
+  createAuthenticatedFetch(credentialKey: string): AuthenticatedFetch;
+
+  /**
+   * Raw credential value. LAST RESORT.
+   * - Plugin must declare "raw" access in manifest
+   * - Every call is audit-logged
+   * Returns undefined if not configured or not authorized.
+   */
+  getRawCredential(key: string): string | undefined;
+
+  /** Check availability without accessing the value */
+  hasCredential(key: string): boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Plugin context
 // ---------------------------------------------------------------------------
 
 /** Context provided to each plugin at initialization */
 export interface PluginContext {
-  /** Config values for this plugin (env var name -> value) */
+  /**
+   * Config values for this plugin (env var name -> value).
+   * @deprecated Use `credentials` broker instead. Will be removed when V1 plugins are dropped.
+   */
   config: Map<string, string>;
+
+  /** Credential broker — secure way to access secrets without raw env var access */
+  credentials: CredentialBroker;
 
   /** Plugin-scoped logger (prefixed with plugin name) */
   logger: PluginLogger;
