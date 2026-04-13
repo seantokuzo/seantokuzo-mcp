@@ -12,7 +12,7 @@
  * Required config: JIRA_HOST, JIRA_EMAIL, JIRA_API_TOKEN
  */
 
-import type { KuzoPlugin } from "../types.js";
+import type { KuzoPluginV2 } from "../types.js";
 import { JiraClient } from "./client.js";
 import { setClient, resetClient } from "./state.js";
 import { ticketTools } from "./tools/tickets.js";
@@ -20,12 +20,37 @@ import { transitionTools } from "./tools/transitions.js";
 import { subtaskTools } from "./tools/subtasks.js";
 import { commentTools } from "./tools/comments.js";
 
-const plugin: KuzoPlugin = {
+const plugin: KuzoPluginV2 = {
   name: "jira",
   description:
     "Jira Cloud integration — tickets, workflow transitions, subtasks, and comments. Uses the Atlassian REST API v3 with Basic auth.",
   version: "1.0.0",
-  requiredConfig: ["JIRA_HOST", "JIRA_EMAIL", "JIRA_API_TOKEN"],
+  permissionModel: 1,
+  capabilities: [
+    {
+      kind: "credentials",
+      env: "JIRA_HOST",
+      access: "raw",
+      reason: "Jira Cloud instance hostname for API base URL",
+    },
+    {
+      kind: "credentials",
+      env: "JIRA_EMAIL",
+      access: "raw",
+      reason: "Email address for Basic auth with the Jira API",
+    },
+    {
+      kind: "credentials",
+      env: "JIRA_API_TOKEN",
+      access: "raw",
+      reason: "API token for Basic auth with the Jira API",
+    },
+    {
+      kind: "network",
+      domain: "*.atlassian.net",
+      reason: "All Jira Cloud API calls",
+    },
+  ],
   tools: [
     ...ticketTools,
     ...transitionTools,

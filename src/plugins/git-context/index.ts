@@ -5,16 +5,30 @@
  * `context.callTool()` to resolve repo/branch automatically.
  */
 
-import type { KuzoPlugin } from "../types.js";
+import type { KuzoPluginV2 } from "../types.js";
 import { getGitContextTool } from "./tools/context.js";
 import { gitContextResource } from "./resources/context.js";
 
-const plugin: KuzoPlugin = {
+const plugin: KuzoPluginV2 = {
   name: "git-context",
   description:
     "Detects the current git repository, branch, and working tree state from the local filesystem",
   version: "1.0.0",
-  requiredConfig: [],
+  permissionModel: 1,
+  capabilities: [
+    {
+      kind: "filesystem",
+      access: "read",
+      path: "$CWD/.git/**",
+      reason: "Read git metadata to detect repo, branch, and working tree state",
+    },
+    {
+      kind: "system",
+      operation: "exec",
+      command: "git",
+      reason: "Run git commands for branch, status, and remote detection",
+    },
+  ],
   tools: [getGitContextTool],
   resources: [gitContextResource],
   async initialize(context) {

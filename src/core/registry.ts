@@ -39,9 +39,9 @@ export class PluginRegistry {
 
     for (const tool of plugin.tools) {
       if (this.toolMap.has(tool.name)) {
-        const existing = this.toolMap.get(tool.name);
+        // Don't name the existing plugin — prevents probing which plugins are loaded
         throw new Error(
-          `Tool name collision: "${tool.name}" registered by both "${existing?.plugin.name}" and "${plugin.name}"`,
+          `Tool name collision: "${tool.name}" is already registered`,
         );
       }
       this.toolMap.set(tool.name, { plugin, tool, context });
@@ -50,9 +50,8 @@ export class PluginRegistry {
     if (plugin.resources) {
       for (const resource of plugin.resources) {
         if (this.resourceMap.has(resource.uri)) {
-          const existing = this.resourceMap.get(resource.uri);
           throw new Error(
-            `Resource URI collision: "${resource.uri}" registered by both "${existing?.plugin.name}" and "${plugin.name}"`,
+            `Resource URI collision: "${resource.uri}" is already registered`,
           );
         }
         this.resourceMap.set(resource.uri, { plugin, resource, context });
@@ -111,15 +110,33 @@ export class PluginRegistry {
     return entry.tool.handler(validated, entry.context);
   }
 
-  /** Shut down all plugins gracefully */
+  /** Shut down all plugins gracefully, with per-plugin timeout */
   async shutdownAll(): Promise<void> {
+    const SHUTDOWN_TIMEOUT = 5_000;
+
     for (const plugin of this.plugins.values()) {
       if (plugin.shutdown) {
         try {
-          await plugin.shutdown();
+          let timeoutId: NodeJS.Timeout;
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(
+              () => reject(new Error("shutdown timeout")),
+              SHUTDOWN_TIMEOUT,
+            );
+            timeoutId.unref();
+          });
+
+          try {
+            await Promise.race([plugin.shutdown(), timeoutPromise]);
+          } finally {
+            clearTimeout(timeoutId!);
+          }
           this.logger.info(`Plugin "${plugin.name}" shut down`);
         } catch (err) {
-          this.logger.error(`Plugin "${plugin.name}" shutdown failed`, err);
+          this.logger.error(
+            `Plugin "${plugin.name}" shutdown failed/timed out`,
+            err,
+          );
         }
       }
     }

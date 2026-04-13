@@ -33,9 +33,37 @@ function zodToMcpInputSchema(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Intrinsic hardening — runs before any plugin code loads
+// ---------------------------------------------------------------------------
+
+/** Stash the real process.exit for core shutdown paths */
+const realExit: (code?: number) => never = process.exit.bind(process);
+
+function hardenRuntime(logger: KuzoLogger): void {
+  // Freeze key prototypes to prevent pollution attacks
+  Object.freeze(Object.prototype);
+  Object.freeze(Array.prototype);
+  Object.freeze(Function.prototype);
+  Object.freeze(RegExp.prototype);
+  Object.freeze(String.prototype);
+  Object.freeze(Number.prototype);
+  Object.freeze(Boolean.prototype);
+
+  // Block plugins from killing the process
+  process.exit = ((code?: number) => {
+    logger.error(`Blocked process.exit(${code}) — a plugin tried to kill the server`);
+  }) as typeof process.exit;
+
+  logger.info("Runtime hardened: prototypes frozen, process.exit guarded");
+}
+
 async function main(): Promise<void> {
   const logger = new KuzoLogger("server");
   logger.info("Starting Kuzo MCP Server...");
+
+  // Harden BEFORE any plugin code runs
+  hardenRuntime(logger);
 
   // Initialize core systems
   const configManager = new ConfigManager();
@@ -133,14 +161,34 @@ async function main(): Promise<void> {
     }
   });
 
-  // Graceful shutdown
+  // Graceful shutdown with force-exit safety net
+  const FORCE_EXIT_MS = 10_000;
+  let shuttingDown = false;
+
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    // Safety net: if cleanup hangs, force-kill after timeout
+    const forceTimer = setTimeout(() => {
+      logger.error(`Shutdown timed out after ${FORCE_EXIT_MS}ms — forcing exit`);
+      realExit(1);
+    }, FORCE_EXIT_MS);
+    forceTimer.unref();
+
     logger.info("Shutting down...");
     await registry.shutdownAll();
-    process.exit(0);
+    await server.close();
+    realExit(0);
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => void shutdown().catch((err) => {
+    logger.error("Shutdown failed", err);
+    realExit(1);
+  }));
+  process.on("SIGTERM", () => void shutdown().catch((err) => {
+    logger.error("Shutdown failed", err);
+    realExit(1);
+  }));
 
   // Connect via stdio
   const transport = new StdioServerTransport();
@@ -152,5 +200,5 @@ async function main(): Promise<void> {
 main().catch((error) => {
   const logger = new KuzoLogger("server");
   logger.error("Failed to start MCP server", error);
-  process.exit(1);
+  realExit(1);
 });
