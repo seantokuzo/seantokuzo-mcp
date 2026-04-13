@@ -434,7 +434,7 @@ For `getClient<T>()` to work, the broker needs to know how to create clients. Th
 1. **Phase 2.5b:** Add `credentials: CredentialBroker` to `PluginContext` alongside existing `config: Map`. Both work. Broker reads from same env vars.
 2. **Phase 2.5b:** Migrate GitHub plugin: `context.credentials.getClient<Octokit>("github")` instead of `context.config.get("GITHUB_TOKEN")`.
 3. **Phase 2.5b:** Migrate Jira plugin: `context.credentials.getClient<JiraClient>("jira")`.
-4. **Phase 2.5c:** ~~Remove `config: Map` from `PluginContext`. Remove `requiredConfig`/`optionalConfig` from `KuzoPlugin`.~~ **DONE** — PR #TBD.
+4. **Phase 2.5c:** ~~Remove `config: Map` from `PluginContext`. Remove `requiredConfig`/`optionalConfig` from `KuzoPlugin`.~~ **DONE** — PR #13.
 
 ---
 

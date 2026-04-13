@@ -128,7 +128,7 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - git-context plugin unchanged — no credential capabilities, receives `DefaultCredentialBroker` with empty capabilities
 - Capability enforcement: `getClient()` requires `access: "client"`, `getRawCredential()` requires `access: "raw"`, mismatches return `undefined` with warning log
 
-**Phase 2.5c — Consent Flow + Audit** (complete — PR #TBD, 2026-04-12)
+**Phase 2.5c — Consent Flow + Audit** (complete — PR #13, 2026-04-12)
 - `ConsentStore` in `src/core/consent.ts` — read/write `~/.kuzo/consent.json`, grant/revoke per-plugin, stale detection (version or capability changes trigger re-consent per open question #6)
 - `AuditLogger` in `src/core/audit.ts` — dual-destination: JSON lines to `~/.kuzo/audit.log` + stderr via `KuzoLogger`. Events: `credential.client_created`, `credential.raw_access`, `credential.raw_denied`, `credential.fetch_created`, `plugin.loaded`, `plugin.skipped`, `plugin.failed`, `consent.granted`, `consent.revoked`, `consent.checked`. Query method with since/plugin/action filters
 - Loader consent check: plugins require stored consent OR trust override before loading. Flow: V1 legacy gate → consent check → config validation → initialize
