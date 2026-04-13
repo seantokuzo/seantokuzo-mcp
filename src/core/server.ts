@@ -181,8 +181,14 @@ async function main(): Promise<void> {
     await server.close();
     realExit(0);
   };
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown().catch((err) => {
+    logger.error("Shutdown failed", err);
+    realExit(1);
+  }));
+  process.on("SIGTERM", () => void shutdown().catch((err) => {
+    logger.error("Shutdown failed", err);
+    realExit(1);
+  }));
 
   // Connect via stdio
   const transport = new StdioServerTransport();

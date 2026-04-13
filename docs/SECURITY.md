@@ -1,7 +1,7 @@
 # Phase 2.5: Plugin Security & Open-Source Readiness
 
 > Design spec for hardening Kuzo MCP from trusted-only to untrusted third-party plugins.
-> Research completed 2026-04-12. No code yet — this doc captures decisions and interface sketches.
+> Research completed 2026-04-12. Phase 2.5a implemented — this doc captures the design, decisions, and interface sketches for the broader rollout.
 
 ---
 

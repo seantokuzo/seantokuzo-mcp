@@ -27,7 +27,8 @@ const plugin: KuzoPluginV2 = {
     {
       kind: "credentials",
       env: "GITHUB_TOKEN",
-      access: "client",
+      // TODO(2.5b): switch to "client" when credential broker provides pre-auth Octokit
+      access: "raw",
       reason: "Authenticates with the GitHub API for all operations",
     },
     {

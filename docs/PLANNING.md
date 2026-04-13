@@ -457,7 +457,7 @@ export default {
 
 **Goal:** Transform Kuzo MCP from a personal trusted-plugins architecture into a security-hardened platform capable of loading untrusted third-party plugins. This unlocks the open-source ecosystem vision — a single centralized MCP server loading plugins, replacing the wasteful server-per-integration pattern that dominates the current MCP ecosystem.
 
-**Status:** Research + design complete (2026-04-12). Phase 2.5a implementation merged (PR #11). See [`docs/SECURITY.md`](./SECURITY.md) for the full design spec.
+**Status:** Research + design complete (2026-04-12). Phase 2.5a implementation complete (PR #11). See [`docs/SECURITY.md`](./SECURITY.md) for the full design spec.
 
 **Why this phase exists:** The current MCP ecosystem is architecturally inefficient. Every integration ships as its own Node process with duplicated protocol code, lifecycle management, and zero composition. A centralized plugin-based server is strictly better — but the only blocker to open-sourcing it is security: how do you safely load plugins from untrusted sources?
 

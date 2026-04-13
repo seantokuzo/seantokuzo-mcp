@@ -137,6 +137,27 @@ export class PluginLoader {
         return result;
       }
 
+      // Reject unknown permission model versions.
+      // Cast to unknown: TS narrows the union to only undefined|1, but a
+      // dynamically loaded JS plugin could export any value at runtime.
+      const pm = plugin.permissionModel as unknown;
+      if (pm !== undefined && pm !== 1) {
+        result.failed.push({
+          name,
+          error: `unsupported permissionModel: ${String(pm)} (this server supports: 1)`,
+        });
+        return result;
+      }
+
+      // Runtime validation for V2 manifests
+      if (isV2Plugin(plugin) && !Array.isArray(plugin.capabilities)) {
+        result.failed.push({
+          name,
+          error: "V2 plugin must provide capabilities array",
+        });
+        return result;
+      }
+
       // Extract config — V2 derives from capabilities, V1 uses requiredConfig/optionalConfig
       let config: Map<string, string>;
       let missing: string[];
