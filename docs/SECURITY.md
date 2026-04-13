@@ -274,10 +274,8 @@ interface KuzoPluginV2 {
   /** Optional capabilities — plugin works without them */
   optionalCapabilities?: Capability[];
 
-  /** @deprecated Use capabilities with kind: "credentials" instead */
-  requiredConfig?: string[];
-  /** @deprecated Use optionalCapabilities with kind: "credentials" instead */
-  optionalConfig?: string[];
+  // Note: requiredConfig/optionalConfig exist only on KuzoPluginV1 (legacy).
+  // V2 plugins declare credential needs via capabilities with kind: "credentials".
 
   initialize(context: PluginContext): Promise<void>;
   shutdown?(): Promise<void>;
@@ -337,10 +335,10 @@ const githubPlugin: KuzoPluginV2 = {
 
 The loader detects manifest version via `permissionModel` field:
 
-- **Present (`permissionModel: 1`):** v2 capability model — full enforcement.
-- **Absent:** Legacy mode — `requiredConfig`/`optionalConfig` treated as implicit credential capabilities. Full network/fs/system access granted. Deprecation warning logged at startup. Allowed only when `KUZO_TRUST_LEGACY=true` (prevents accidentally running legacy third-party plugins without review).
+- **Present (`permissionModel: 1`):** v2 capability model. In Phase 2.5a, enforcement is partial: credential-derived config and cross-plugin `callTool` scoping are enforced, while broader capability enforcement is planned for later sub-phases.
+- **Absent:** Legacy mode. `requiredConfig`/`optionalConfig` treated as implicit credential capabilities. Legacy plugins do not yet require `KUZO_TRUST_LEGACY=true` — startup deprecation warnings and trust gates are planned for Phase 2.5c+.
 
-Existing Phase 2 plugins continue working during the migration period. Each is migrated to v2 manifest in Phase 2.5a.
+Existing Phase 2 plugins continue working during the migration period. Each is migrated to the v2 manifest incrementally as Phase 2.5 rolls out.
 
 ---
 

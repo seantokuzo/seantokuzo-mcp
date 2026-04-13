@@ -118,16 +118,19 @@ export class PluginRegistry {
       if (plugin.shutdown) {
         try {
           let timeoutId: NodeJS.Timeout;
-          await Promise.race([
-            plugin.shutdown().then(() => clearTimeout(timeoutId)),
-            new Promise<never>((_, reject) => {
-              timeoutId = setTimeout(
-                () => reject(new Error("shutdown timeout")),
-                SHUTDOWN_TIMEOUT,
-              );
-              timeoutId.unref();
-            }),
-          ]);
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(
+              () => reject(new Error("shutdown timeout")),
+              SHUTDOWN_TIMEOUT,
+            );
+            timeoutId.unref();
+          });
+
+          try {
+            await Promise.race([plugin.shutdown(), timeoutPromise]);
+          } finally {
+            clearTimeout(timeoutId!);
+          }
           this.logger.info(`Plugin "${plugin.name}" shut down`);
         } catch (err) {
           this.logger.error(
