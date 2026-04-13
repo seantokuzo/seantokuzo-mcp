@@ -457,95 +457,74 @@ export default {
 
 **Goal:** Transform Kuzo MCP from a personal trusted-plugins architecture into a security-hardened platform capable of loading untrusted third-party plugins. This unlocks the open-source ecosystem vision — a single centralized MCP server loading plugins, replacing the wasteful server-per-integration pattern that dominates the current MCP ecosystem.
 
-**Status:** Research + design complete (2026-04-12). See [`docs/SECURITY.md`](./SECURITY.md) for the full design spec. Implementation begins with Phase 2.5a.
+**Status:** Research + design complete (2026-04-12). Phase 2.5a implementation merged (PR #11). See [`docs/SECURITY.md`](./SECURITY.md) for the full design spec.
 
 **Why this phase exists:** The current MCP ecosystem is architecturally inefficient. Every integration ships as its own Node process with duplicated protocol code, lifecycle management, and zero composition. A centralized plugin-based server is strictly better — but the only blocker to open-sourcing it is security: how do you safely load plugins from untrusted sources?
 
-Phase 1-2 build the plugin architecture under a **trusted plugin** assumption (all plugins authored by the project owner). Phase 2.5 earns the right to drop that assumption.
+Phase 1-2 build the plugin architecture under a **trusted plugin** assumption (all plugins authored by the project owner). Phase 2.5 earns the right to drop that assumption. Our own first-party plugins (github, jira, git-context, and future ones) will be published as standalone npm packages — we eat our own dogfood on every security feature before anyone else touches it.
 
-#### Threat Model
+#### Implementation Sub-Phases
 
-Current Phase 1/2 architecture assumes trusted plugins. Under an open-source ecosystem, every assumption becomes a threat:
+| Sub-Phase | Scope | Status | Dependencies |
+|-----------|-------|--------|-------------|
+| **2.5a** | Manifest + hardening | **Complete** (PR #11) | Phase 2 |
+| **2.5b** | Credential broker | Next up | 2.5a |
+| **2.5c** | Consent flow + audit | Queued | 2.5b |
+| **2.5d** | Process isolation | Queued | 2.5a |
+| **2.5e** | Supply chain (npm publish + provenance) | Queued | 2.5d |
 
-| Threat | Current State | Why It's Exploitable |
-|--------|--------------|---------------------|
-| Credential exfiltration across plugins | All plugins share process-wide env var access via `ConfigManager` | A malicious `weather` plugin could read `GITHUB_TOKEN` |
-| Unauthorized API calls on behalf of another plugin | Any plugin can `callTool()` any registered tool | A malicious plugin could silently `github_create_pull_request` |
-| Filesystem escape | Plugins run in main Node process with full `fs` access | A plugin could read `~/.ssh/id_rsa` |
-| Network exfiltration | No network policy, plugins can `fetch()` arbitrary endpoints | A plugin could phone home with stolen data |
-| Supply chain compromise | No plugin signing or verification | A compromised plugin update could backdoor the whole server |
-| Information leaks via cross-plugin interaction | Plugin tool outputs flow freely through `callTool()` | A plugin could see data it shouldn't |
+**2.5a — Manifest + Hardening** (complete)
 
-#### Research Areas (before any code)
+Discriminated union plugin interfaces (`KuzoPluginV1`/`V2` with `permissionModel` discriminant), 5 capability types, scoped `callTool`, prototype freezing, `process.exit` guard, shutdown timeouts, collision message sanitization. All 3 plugins migrated to V2. See PR #11.
 
-1. **Capability-based security**
-   - Literature: E language, Capsicum, Fuchsia's Zircon, Principle of Least Authority
-   - Prior art: Deno permissions, WASI capabilities, Node's experimental Permission Model
-   - Question: Can system resources (env vars, network, fs) be exposed as capability tokens granted per-plugin by the core?
+**2.5b — Credential Broker**
 
-2. **Plugin sandboxing**
-   - Options with trade-offs:
-     - Worker threads — weak isolation, low overhead, shared memory concerns
-     - `vm` contexts — leaky boundaries, not a security boundary per Node docs
-     - Child processes — strong isolation, IPC cost, heavier startup
-     - WASM — strongest isolation, runtime constraints, limited ecosystem
-     - Firecracker microVMs (Vercel Sandbox style) — bulletproof, overkill for local MCP
-   - Prior art: VS Code extension host (separate process), Chrome extensions (sandboxed contexts), Figma plugins (iframes)
+`CredentialBroker` interface + `DefaultCredentialBroker` implementation. Hybrid model: pre-authenticated clients for known services (GitHub → Octokit, Jira → JiraClient), scoped `authenticatedFetch` for HTTP APIs, raw escape hatch with audit logging. Migrate plugins off `context.config.get()` to `context.credentials.getClient()`. Deprecation warnings on `context.config` usage. See `docs/SECURITY.md` §6 for interface design.
 
-3. **Credential management**
-   - Options: OS keychain, encrypted at rest, vault-style short-lived tokens, OAuth delegation
-   - Design question: Should plugins NEVER see raw credentials, only get pre-authenticated clients from the core? Pattern: `context.credentials.requestClient("github")` returns a ready Octokit, plugin never touches the token.
+**2.5c — Consent Flow + Audit**
 
-4. **Permission model**
-   - Declarative manifest (browser-extension style `permissions` field)
-   - Consent UX: install-time prompts vs runtime prompts
-   - Revocation & audit log of granted capabilities
-   - Inspiration: Android runtime permissions, iOS privacy prompts
+`kuzo consent` CLI command with interactive capability review UI. Consent storage at `~/.kuzo/consent.json`. Trust overrides via `KUZO_TRUST_PLUGINS` env var (for MCP server startup where stdout is transport). Structured audit log for capability usage events. Loader refuses unconsented plugins unless trust override is set. Per-tool `callTool` granularity enforcement (deferred from 2.5a). See `docs/SECURITY.md` §9.
 
-5. **Supply chain security**
-   - Plugin signing: Sigstore, npm provenance
-   - Source verification: trusted registry, git commit-hash locking
-   - Manifest integrity: hash-locked dependencies
-   - Update mechanism: how do plugins update without reintroducing trust?
+**2.5d — Process Isolation**
 
-6. **Cross-plugin isolation**
-   - Should plugin A discover which plugins are loaded? (info leak vector)
-   - Should `callTool()` require explicit dependency declarations in the manifest?
-   - Should plugin outputs be sanitized before flowing to other plugins?
+Child process per plugin via `child_process.fork()`. Each child gets only its declared env vars. JSON-RPC 2.0 envelope over Node IPC (`process.send`/`on('message')`). Core builds `ToolDefinition` proxy stubs from child's startup manifest.
 
-#### Architectural Changes (retrofitted from Phase 2)
+Key implementation decisions:
+- **IPC protocol:** JSON-RPC 2.0 over `process.send()`. Not MCP SDK `Transport` (too coupled to MCP session semantics). Core keeps `Map<id, {resolve, reject, timer}>` for pending calls.
+- **Plugin host:** Minimal `plugin-host.ts` — dynamic imports plugin, builds IPC-backed `PluginContext`, reports tool manifest on `ready` message, handles tool invocations.
+- **Lazy spawn:** Register tool names from manifests at startup (zero cost). Spawn child on first `callTool`. Cache for subsequent calls. First-call latency: ~200ms (invisible next to API round-trips).
+- **Startup cost:** ~150-250ms per plugin, ~500-750ms for 3 in parallel. ~40-50MB RSS per child. Noise on a dev machine.
+- **Node Permission Model:** `--permission --allow-fs-read=/path` per child as defense-in-depth. Experimental, no network restrictions, 3 CVEs in Jan 2026 — not sole protection.
+- **Error handling:** 4 modes: (a) clean shutdown via IPC + 5s timeout + SIGTERM + SIGKILL, (b) crash → restart with exponential backoff (0/500ms/2s/8s/30s cap, reset after 60s stable), (c) OOM → same as crash + `--max-old-space-size=256` per child, (d) hung → 30s heartbeat ping, kill if no pong.
+- **Credential injection:** `fork({env: scopedVars})` replaces entire env. Must include `PATH`, `LANG`, `TERM`, `NODE_ENV`. Omit `HOME` or sandbox it.
+- **Max restarts:** 5 in 5 minutes, then mark plugin `degraded` and surface in MCP responses.
 
-Current Phase 1 design choices that assume trusted plugins:
+See `docs/SECURITY.md` §3 for architecture diagram.
 
-| Current | Future |
-|---------|--------|
-| `PluginContext.config: Map<string, string>` — raw env var access | `PluginContext.credentials` — capability broker, no raw access |
-| `PluginContext.callTool` — unrestricted cross-plugin calls | Permission-checked, declared dependencies in manifest |
-| `PluginLoader` loads plugins into main process with full privileges | Plugins run in isolated contexts (worker/child process/WASM) |
-| `KuzoPlugin` manifest has no capability declarations | `KuzoPlugin.requiredCapabilities: Capability[]` |
-| Tool handlers have unrestricted `fs`/`net` access | Handlers run in sandbox with declared capabilities only |
+**2.5e — Supply Chain (npm publish + provenance)**
 
-The 3 Phase 2 plugins (git-context, github, jira) will be retrofitted against the new architecture. Each plugin has roughly one place where credentials are initialized — mechanical refactor, not a rewrite.
+Publish first-party plugins as standalone npm packages. `kuzo plugins install/update/rollback` CLI commands with Sigstore provenance verification.
 
-#### Design Deliverables (pre-code)
+Key implementation decisions:
+- **npm provenance:** GitHub Actions Trusted Publishing workflow. `npm publish --provenance` flag. Two attestations per publish: npm publish attestation + SLSA provenance. Still requires `NPM_TOKEN` secret (no tokenless yet).
+- **Verification:** `@sigstore/verify` to programmatically check provenance BEFORE `npm install`. Decode SLSA payload, verify `externalParameters.workflow.repository` matches allowed source org. Reject packages without provenance (override with `--trust-unsigned`).
+- **Monorepo restructure:** Current `src/plugins/` → Turborepo monorepo with `packages/` directory. Each plugin becomes its own npm package. `@changesets/cli` for version coordination and changelogs.
 
-- Detailed threat model doc
-- Capability taxonomy (the full list of capabilities a plugin can request)
-- Plugin manifest v2 spec (permissions, capabilities, metadata)
-- Sandbox architecture decision doc (which isolation mechanism wins and why)
-- Credential broker API design
-- Permission UX design (consent flows, revocation, audit)
-- Migration plan for Phase 2 plugins
+```
+packages/
+  types/              → @kuzo-mcp/types (peer dep for all plugins)
+  core/               → kuzo-mcp (the server + loader + CLI)
+  plugin-github/      → kuzo-mcp-plugin-github
+  plugin-jira/        → kuzo-mcp-plugin-jira
+  plugin-git-context/ → kuzo-mcp-plugin-git-context
+```
 
-#### Implementation Sub-Phases (within Phase 2.5)
-
-1. **Research + design docs** (no code)
-2. **Architectural hooks PR** — update `PluginContext`, `ToolDefinition`, `KuzoPlugin` interfaces with security-ready types
-3. **Credential broker** implementation
-4. **Sandbox layer** — start with Workers, escalate to child processes or WASM if needed
-5. **Permission manifest + consent flow**
-6. **Retrofit Phase 2 plugins** (git-context, github, jira) against new interfaces
-7. **Supply chain** — signing, registry, update mechanism
+- **Plugin package structure:** ESM, `"exports"` field, peer dep on `@kuzo-mcp/types`. `package.json` includes `kuzoPlugin` metadata field for capability summary.
+- **Version coordination:** Peer dep ranges (`^2.0.0`). Major type changes → new peer dep major. Loader supports V1+V2 simultaneously (already built). Changesets handles "which packages changed" in monorepo.
+- **Install flow:** `kuzo plugins install kuzo-mcp-plugin-github` → npm resolve → verify provenance → npm install into `~/.kuzo/plugins/` → parse manifest → consent flow → register in config.
+- **Install location:** `~/.kuzo/plugins/` with managed `node_modules` (isolated from core server deps). `npm install --prefix ~/.kuzo/plugins`.
+- **Provenance strictness:** First-party: pin to `github.com/seantokuzo/*`. Third-party: any repo with valid Sigstore provenance.
+- **Update model:** `kuzo plugins update` — manual, shows changelog + capability diff, requires re-consent if new capabilities. `kuzo plugins rollback` for instant revert. Never auto-update.
 
 #### Success Criteria
 
@@ -555,23 +534,131 @@ The 3 Phase 2 plugins (git-context, github, jira) will be retrofitted against th
 - [ ] Users have visibility into every capability each plugin requests before installing
 - [ ] Plugin authors have a clear, documented path for declaring required permissions
 - [ ] Existing Phase 2 plugins are migrated without functionality loss
+- [ ] First-party plugins published as standalone npm packages with Sigstore provenance
 - [ ] Threat model doc is public and reviewable
 
-#### Open Questions
+#### Decisions Made
 
-- Is Node.js sufficient for sandboxing, or do we need WASM / separate processes?
-- Is there a minimal viable security model that unblocks open-sourcing without the full research phase?
-- How much DX friction is acceptable? (Deno's permission prompts are clear but annoying.)
-- Does the plugin distribution mechanism need its own registry, or can npm + signing suffice?
-- What does the revocation story look like for a long-running server?
+| Decision | Date | Rationale |
+|----------|------|-----------|
+| Child process per plugin (not workers/vm/WASM) | 2026-04-12 | OS-level isolation, IPC is cheap vs API latency, production-proven (VS Code, Chrome). Workers share process, vm is repeatedly broken, WASM kills DX. |
+| Discriminated union for plugin manifests (V1/V2) | 2026-04-12 | Separate versioned interfaces > optional field accumulation. Chrome MV2→V3 and Terraform protocol v5→v6 prior art. Clean evolution for V3+. |
+| Hybrid credential broker | 2026-04-12 | Pre-auth clients for known services (safest) + scoped authenticated fetch + raw escape hatch. Single approach can't cover all cases. |
+| npm as plugin registry | 2026-04-12 | Sigstore provenance free + built-in. Zero hosting burden. `kuzo-mcp-plugin-*` naming convention (unscoped). |
+| Monorepo with Turborepo | 2026-04-12 | Atomic cross-cutting changes. Single CI pipeline. Changesets for version coordination. Already have plugins in `src/plugins/`. |
+| Own plugins as standalone npm packages | 2026-04-12 | Eat our own dogfood on the entire plugin ecosystem. Validates install/verify/consent flow before third-party plugins exist. |
 
-#### Blocking Dependencies
+---
 
-- Phase 2 must be complete (need real plugins to design against, not hypothetical ones)
+### Phase 2.6: Distribution & Packaging
 
-#### Why We're Deferring, Not Doing It Now
+**Goal:** Make Kuzo MCP installable and configurable for non-author users across all major MCP clients. Ship the `kuzo setup` command that makes first-time setup a 3-command experience.
 
-Doing this phase before Phase 2 would mean designing security for plugins that don't exist yet. The risk is over-engineering for imagined threats instead of real ones. By shipping Phase 2's 3 plugins first, we get concrete design targets for the security spike and avoid building abstractions we don't need. Retrofitting 3 plugins is cheap; retrofitting 10 (if we deferred further) would not be.
+**Status:** Planned. Depends on Phase 2.5e (supply chain) for npm packaging.
+
+#### Distribution Tiers
+
+| Tier | Method | Audience | Priority |
+|------|--------|----------|----------|
+| **1** | npm (`npx kuzo-mcp` / `npm install -g kuzo-mcp`) | Developers | Ship with open-source launch |
+| **1** | `.mcp.json` repo template | Teams | Ship alongside Tier 1 |
+| **2** | Homebrew formula | macOS devs | After initial users |
+| **3** | Docker image | Security-conscious / CI | After initial users |
+
+#### MCP Client Registration
+
+Each client has its own config format and location. `kuzo setup` handles all of them.
+
+| Client | Config Location | Root Key | One-liner |
+|--------|----------------|----------|-----------|
+| Claude Code CLI | `~/.claude.json` or `.mcp.json` (project) | `mcpServers` | `claude mcp add kuzo -- npx kuzo-mcp serve` |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | `mcpServers` | Manual / `kuzo setup` |
+| VS Code / Copilot | `.vscode/mcp.json` | `servers` | Manual / `kuzo setup` |
+| Cursor | `.cursor/mcp.json` | `mcpServers` | Manual / `kuzo setup` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `mcpServers` | Manual / `kuzo setup` |
+
+Note: Claude/Cursor use `mcpServers` root key; VS Code uses `servers`. No unified standard yet.
+
+#### `kuzo setup` Command
+
+Interactive wizard that handles everything from zero to working.
+
+```
+kuzo setup [--yes] [--plugins github,jira] [--skip-client-detection]
+```
+
+**Flow:**
+1. **Detect MCP clients** — scan for Claude Code, Desktop, VS Code, Cursor, Windsurf by checking known config directories
+2. **Plugin selection** — checkbox prompt: which integrations to enable
+3. **Credentials** — per-plugin prompts with inline help links, live API verification
+4. **Client registration** — write correct config format to each detected client (merge into existing, never clobber)
+
+Credentials stored at `~/.kuzo/.env` (user-level, not project-level — never accidentally committed). Future: `@napi-rs/keyring` for OS keychain.
+
+**Vibe coder path:** `npx kuzo-mcp setup` — zero-install wizard, same flow, no global install required.
+
+**Team onboarding:** Repo ships `kuzo.config.ts` declaring required plugins. New dev runs `kuzo setup`, auto-prompted for missing plugins + credentials.
+
+#### `kuzo doctor` Command
+
+Diagnostic command that verifies everything is working.
+
+```
+kuzo doctor [--fix] [--json]
+```
+
+**Checks:** Core version, Node.js compatibility, plugin load status, credential API verification (GitHub `GET /user`, Jira `GET /myself`), MCP client config validity.
+
+`--fix` auto-repairs what it can (re-register clients, reinstall declared plugins). `--json` for CI/scripts.
+
+#### `kuzo plugins` Commands
+
+```bash
+kuzo plugins add github jira          # shorthand for kuzo-mcp-plugin-{name}
+kuzo plugins remove jira
+kuzo plugins list                     # installed + available
+kuzo plugins update [--check]         # show/apply updates with changelog
+kuzo plugins rollback github          # instant revert to previous version
+```
+
+#### Package.json Setup
+
+```json
+{
+  "name": "kuzo-mcp",
+  "bin": {
+    "kuzo-mcp": "./dist/core/server.js",
+    "kuzo": "./dist/cli/index.js"
+  }
+}
+```
+
+Two binaries: `kuzo-mcp` for the MCP server (what clients invoke), `kuzo` for the CLI (setup, doctor, plugins, consent).
+
+#### `.mcp.json` Template
+
+Shipped in the repo for team auto-discovery:
+
+```json
+{
+  "mcpServers": {
+    "kuzo-mcp": {
+      "command": "npx",
+      "args": ["-y", "kuzo-mcp", "serve"]
+    }
+  }
+}
+```
+
+#### Acceptance Criteria
+
+- [ ] `npm install -g kuzo-mcp` installs both `kuzo` and `kuzo-mcp` binaries
+- [ ] `kuzo setup` detects and configures at least Claude Code + VS Code
+- [ ] `kuzo doctor` verifies plugins, credentials, and client configs
+- [ ] `npx kuzo-mcp serve` works as MCP server entry point
+- [ ] `.mcp.json` template auto-discovered by Claude Code
+- [ ] `kuzo plugins add/remove/list/update/rollback` manage standalone plugins
+- [ ] First-time setup from zero to working MCP server in under 3 minutes
 
 ---
 
@@ -620,7 +707,8 @@ See [GitHub Plugin Gap Analysis](#github-plugin-gap-analysis) below for the full
 **Priority order:** Confluence (shares Jira auth pattern) > Slack > Discord > Notion > Calendar > SMS > Browser
 
 **Acceptance criteria:**
-- [ ] Each plugin follows the `KuzoPlugin` interface exactly
+- [ ] Each plugin implements `KuzoPluginV2` with full capability declarations
+- [ ] Each plugin published as standalone npm package (`kuzo-mcp-plugin-*`)
 - [ ] Each plugin has its own types, client, and tool files
 - [ ] Plugins with missing config are gracefully skipped
 - [ ] Each plugin has a README in its directory with setup instructions
