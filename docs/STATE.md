@@ -141,8 +141,9 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - CLI interactive menu updated with Security section (consent, permissions, revoke, audit)
 - Consent/security commands bypass the GitHub config check (work without GITHUB_TOKEN)
 
-**Next up: Phase 2.5d — Process Isolation** (deferred until third-party plugins ship)
+**Next up: Phase 2.5d — Process Isolation** (next session)
 - Child process per plugin, IPC bridge, Node Permission Model flags
+- Our own 3 plugins are the first "third-party" consumers — eat our own dog food
 - See `docs/SECURITY.md` §10 for full spec
 
 ### Phase 2.b Decomposition
@@ -374,8 +375,8 @@ These decisions affect scope significantly — the executing session should conf
 All legacy code paths removed. No monolithic services, no flat type barrel, no webhook server, no legacy MCP entry. Directories `src/services/`, `src/mcp/`, `src/types/`, `src/utils/` no longer exist.
 
 ### Not Yet Built
-- Process isolation (Phase 2.5d — when third-party plugins ship)
-- Supply chain security (Phase 2.5e — when npm distribution ships)
+- Process isolation (Phase 2.5d — NEXT UP)
+- Supply chain security (Phase 2.5e — after 2.5d)
 - Phase 3+ GitHub plugin expansion (releases, actions, labels, issues, etc.)
 - New integrations (Phase 4: Confluence, Discord, SMS, Calendar, Notion, Slack)
 - Cross-plugin workflows (Phase 5)

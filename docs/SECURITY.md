@@ -702,7 +702,7 @@ kuzo audit --since 7d                        # Audit log of capability usage
 
 **Acceptance:** ✅ Fresh install skips all plugins with "run: kuzo consent". ✅ `KUZO_TRUST_ALL=true` loads all. ✅ `KUZO_TRUST_PLUGINS=x,y` loads selectively. ✅ Audit log captures credential access events to `~/.kuzo/audit.log` + stderr.
 
-### Phase 2.5d — Process Isolation (defer until third-party plugins)
+### Phase 2.5d — Process Isolation
 
 **Scope:** Child process per plugin, IPC bridge, Node Permission Model flags.
 
@@ -717,7 +717,7 @@ kuzo audit --since 7d                        # Audit log of capability usage
 
 **Acceptance:** Each plugin runs in its own process. Plugin crash doesn't kill the server. `GITHUB_TOKEN` is not in the jira plugin's `process.env`.
 
-### Phase 2.5e — Supply Chain (defer until npm distribution)
+### Phase 2.5e — Supply Chain
 
 **Scope:** npm provenance verification, plugin install/update CLI, rollback.
 
