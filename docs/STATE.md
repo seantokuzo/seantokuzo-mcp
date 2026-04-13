@@ -118,11 +118,15 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - All 3 plugins migrated to `KuzoPluginV2` with full capability declarations (git-context: filesystem+exec:git, github: credentials+network+cross-plugin, jira: credentials+network)
 - V2 config extraction derives env vars from `CredentialCapability.env` instead of flat `requiredConfig`
 
-**Next up: Phase 2.5b — Credential Broker**
-- `CredentialBroker` interface + `DefaultCredentialBroker` implementation in `src/core/credentials.ts`
-- Client factories for GitHub (Octokit) and Jira (JiraClient)
-- Migrate plugins off `context.config.get()` to `context.credentials.getClient()`
-- Deprecation warnings on `context.config` usage
+**Next up: Phase 2.5b — Credential Broker** (implementation session)
+- `CredentialBroker` interface + `DefaultCredentialBroker` implementation in `src/core/credentials.ts` (new file)
+- Client factory registry: `getClient<T>(service)` returns pre-authenticated clients — `Octokit` for GitHub, `JiraClient` for Jira. Plugin never sees raw token.
+- `createAuthenticatedFetch(credentialKey)` for HTTP APIs — auto-injects auth headers, enforces URL pattern from manifest
+- `getRawCredential(key)` escape hatch — requires `access: "raw"` in manifest, audit-logged
+- Inject broker into `PluginContext` alongside existing `config: Map` (both work during migration)
+- Migrate `github/index.ts` from `context.config.get("GITHUB_TOKEN")` → `context.credentials.getClient<Octokit>("github")`
+- Migrate `jira/index.ts` from `context.config.get("JIRA_*")` → `context.credentials.getClient<JiraClient>("jira")`
+- Deprecation warnings on `context.config` usage (logged once per plugin at startup)
 - See `docs/SECURITY.md` §6 + §10 for full spec
 
 ### Phase 2.b Decomposition
