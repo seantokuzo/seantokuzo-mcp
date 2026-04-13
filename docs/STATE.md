@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-04-12
+**Last Updated:** 2026-04-13
 
 ---
 
@@ -128,13 +128,22 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - git-context plugin unchanged — no credential capabilities, receives `DefaultCredentialBroker` with empty capabilities
 - Capability enforcement: `getClient()` requires `access: "client"`, `getRawCredential()` requires `access: "raw"`, mismatches return `undefined` with warning log
 
-**Next up: Phase 2.5c — Consent Flow + Audit** (next session)
-- Consent storage (`~/.kuzo/consent.json`) + `kuzo consent` CLI command
-- Loader checks consent before plugin load — unconsented plugins blocked without trust override
-- Trust override via `KUZO_TRUST_PLUGINS` env var
-- Structured audit log for credential access events
-- Remove `config: Map` from `PluginContext` (V2 plugins fully migrated to broker)
-- See `docs/SECURITY.md` §9 + §10 for full spec
+**Phase 2.5c — Consent Flow + Audit** (complete — PR #TBD, 2026-04-12)
+- `ConsentStore` in `src/core/consent.ts` — read/write `~/.kuzo/consent.json`, grant/revoke per-plugin, stale detection (version or capability changes trigger re-consent per open question #6)
+- `AuditLogger` in `src/core/audit.ts` — dual-destination: JSON lines to `~/.kuzo/audit.log` + stderr via `KuzoLogger`. Events: `credential.client_created`, `credential.raw_access`, `credential.raw_denied`, `credential.fetch_created`, `plugin.loaded`, `plugin.skipped`, `plugin.failed`, `consent.granted`, `consent.revoked`, `consent.checked`. Query method with since/plugin/action filters
+- Loader consent check: plugins require stored consent OR trust override before loading. Flow: V1 legacy gate → consent check → config validation → initialize
+- Trust overrides: `KUZO_TRUST_PLUGINS=name1,name2` (selective), `KUZO_TRUST_ALL=true` (dev mode, logged warning), `KUZO_STRICT=true` (stored consent only, no overrides)
+- V1 legacy gate: `KUZO_TRUST_LEGACY=true` required to load V1 plugins. Without it, V1 plugins are hard-blocked with clear upgrade message
+- `context.config` removed from `PluginContext` — all V2 plugins use credential broker exclusively. Deprecation proxy deleted
+- `requiredConfig`/`optionalConfig` removed from `KuzoPluginV1` interface — V1 plugins behind legacy gate get empty config
+- Audit wired into `DefaultCredentialBroker`: `getClient()`, `createAuthenticatedFetch()`, `getRawCredential()` all emit structured audit events. Replaces inline `logger.info` audit lines
+- 4 new CLI commands: `kuzo consent` (interactive review), `kuzo permissions` (list grants), `kuzo revoke [plugin]` (revoke consent), `kuzo audit [--since 7d]` (query audit log)
+- CLI interactive menu updated with Security section (consent, permissions, revoke, audit)
+- Consent/security commands bypass the GitHub config check (work without GITHUB_TOKEN)
+
+**Next up: Phase 2.5d — Process Isolation** (deferred until third-party plugins ship)
+- Child process per plugin, IPC bridge, Node Permission Model flags
+- See `docs/SECURITY.md` §10 for full spec
 
 ### Phase 2.b Decomposition
 
@@ -341,14 +350,16 @@ These decisions affect scope significantly — the executing session should conf
 
 ## What Exists Today
 
-### Core (Phase 1 + 2.5a + 2.5b)
-- Plugin system core (`src/core/` — server, registry, loader, config, logger, credentials)
+### Core (Phase 1 + 2.5a + 2.5b + 2.5c)
+- Plugin system core (`src/core/` — server, registry, loader, config, logger, credentials, consent, audit)
 - Plugin type definitions (`src/plugins/types.ts`) — `KuzoPluginV1`/`V2` discriminated union, 5 capability types, `CredentialBroker` interface, `defineTool<S>()` helper, `isV2Plugin()` type guard
 - Runtime hardening: prototype freezing, `process.exit` guard, per-plugin shutdown timeouts, force-exit safety net
 - V2 scoped `callTool`: plugins can only call declared cross-plugin dependencies
-- Credential broker: `DefaultCredentialBroker` with `getClient<T>()`, `createAuthenticatedFetch()`, `getRawCredential()`. First-party factories for GitHub + Jira
+- Credential broker: `DefaultCredentialBroker` with `getClient<T>()`, `createAuthenticatedFetch()`, `getRawCredential()`. First-party factories for GitHub + Jira. All access audit-logged
+- Consent flow: `ConsentStore` manages `~/.kuzo/consent.json`. Loader checks consent before plugin load. Trust overrides via env vars. V1 plugins gated behind `KUZO_TRUST_LEGACY`
+- Audit log: `AuditLogger` writes JSON lines to `~/.kuzo/audit.log` + stderr. Covers credential access, plugin lifecycle, consent changes
 
-### Plugins (Phase 2 + 2.5a + 2.5b)
+### Plugins (Phase 2 + 2.5a–c)
 - `src/plugins/git-context/` — 1 tool, 1 resource. V2 manifest: filesystem + system:exec:git. No credentials (empty-capabilities broker)
 - `src/plugins/github/` — 23 tools across pulls/reviews/repos/branches. V2 manifest: credentials(client) + network + cross-plugin:git-context. Initialized via `credentials.getClient<GitHubClient>("github")`
 - `src/plugins/jira/` — 11 tools across tickets/transitions/subtasks/comments. V2 manifest: credentials(client) + network. Initialized via `credentials.getClient<JiraClient>("jira")`
@@ -363,7 +374,6 @@ These decisions affect scope significantly — the executing session should conf
 All legacy code paths removed. No monolithic services, no flat type barrel, no webhook server, no legacy MCP entry. Directories `src/services/`, `src/mcp/`, `src/types/`, `src/utils/` no longer exist.
 
 ### Not Yet Built
-- Consent flow + audit (Phase 2.5c — NEXT UP)
 - Process isolation (Phase 2.5d — when third-party plugins ship)
 - Supply chain security (Phase 2.5e — when npm distribution ships)
 - Phase 3+ GitHub plugin expansion (releases, actions, labels, issues, etc.)

@@ -434,7 +434,7 @@ For `getClient<T>()` to work, the broker needs to know how to create clients. Th
 1. **Phase 2.5b:** Add `credentials: CredentialBroker` to `PluginContext` alongside existing `config: Map`. Both work. Broker reads from same env vars.
 2. **Phase 2.5b:** Migrate GitHub plugin: `context.credentials.getClient<Octokit>("github")` instead of `context.config.get("GITHUB_TOKEN")`.
 3. **Phase 2.5b:** Migrate Jira plugin: `context.credentials.getClient<JiraClient>("jira")`.
-4. **Phase 2.5c:** Remove `config: Map` from `PluginContext`. Remove `requiredConfig`/`optionalConfig` from `KuzoPlugin`.
+4. **Phase 2.5c:** ~~Remove `config: Map` from `PluginContext`. Remove `requiredConfig`/`optionalConfig` from `KuzoPlugin`.~~ **DONE** — PR #TBD.
 
 ---
 
@@ -684,20 +684,23 @@ kuzo audit --since 7d                        # Audit log of capability usage
 
 **Acceptance:** Plugins load and function identically. GitHub plugin creates Octokit via broker, not raw token. `context.config` still works but logs deprecation.
 
-### Phase 2.5c — Consent Flow + Audit
+### Phase 2.5c — Consent Flow + Audit ✅ COMPLETE
 
-**Scope:** `kuzo consent` CLI command, consent storage, audit log, trust overrides.
+**Scope:** `kuzo consent` CLI command, consent storage, audit log, trust overrides. Also: `context.config` removal, `requiredConfig`/`optionalConfig` removal, V1 legacy gate.
 
 | Task | Files | LOC |
 |------|-------|-----|
-| Consent storage read/write (`~/.kuzo/consent.json`) | `src/core/consent.ts` (new) | ~100 |
-| `kuzo consent` CLI command with interactive UI | `src/cli/commands/consent.ts` (new) | ~150 |
-| `kuzo permissions` / `kuzo revoke` / `kuzo audit` commands | `src/cli/commands/consent.ts` | ~100 |
-| Loader integration: check consent before plugin load | `src/core/loader.ts` | ~30 |
-| Trust override env vars (`KUZO_TRUST_PLUGINS`, etc.) | `src/core/loader.ts` | ~20 |
-| Structured audit log (capability usage events) | `src/core/audit.ts` (new) | ~80 |
+| Consent storage read/write (`~/.kuzo/consent.json`) | `src/core/consent.ts` (new) | ~140 |
+| `kuzo consent` CLI command with interactive UI | `src/cli/commands/consent.ts` (new) | ~200 |
+| `kuzo permissions` / `kuzo revoke` / `kuzo audit` commands | `src/cli/commands/consent.ts` | (above) |
+| Loader integration: check consent before plugin load | `src/core/loader.ts` | ~50 |
+| Trust override env vars (`KUZO_TRUST_PLUGINS`, etc.) | `src/core/loader.ts` | (above) |
+| Structured audit log (capability usage events) | `src/core/audit.ts` (new) | ~110 |
+| Wire audit into credential broker | `src/core/credentials.ts` | ~20 |
+| Remove `context.config` + V1 config fields | `src/plugins/types.ts`, `src/core/loader.ts` | ~-60 |
+| V1 legacy gate (`KUZO_TRUST_LEGACY`) | `src/core/loader.ts` | (above) |
 
-**Acceptance:** Fresh install of a plugin triggers consent flow. Server refuses to load unconsented plugins without trust override. Audit log captures credential access events.
+**Acceptance:** ✅ Fresh install skips all plugins with "run: kuzo consent". ✅ `KUZO_TRUST_ALL=true` loads all. ✅ `KUZO_TRUST_PLUGINS=x,y` loads selectively. ✅ Audit log captures credential access events to `~/.kuzo/audit.log` + stderr.
 
 ### Phase 2.5d — Process Isolation (defer until third-party plugins)
 
@@ -757,23 +760,17 @@ The broker interface is the same either way — storage backend is an implementa
 
 SES is battle-tested but adds a dependency and has DX implications (frozen `Error.stack`, frozen `Date.now()`). Worth evaluating for 2.5d when process isolation makes most of it redundant anyway.
 
-### 4. Audit Log Destination
+### 4. Audit Log Destination — RESOLVED (2.5c)
 
-**Options:**
-- (a) Existing `KuzoLogger` (stderr, mixed with other logs)
-- (b) Separate structured file (`~/.kuzo/audit.log`)
-- (c) Both *(recommended)*
+**Decision:** (c) Both — JSON lines to `~/.kuzo/audit.log` + real-time echo to stderr via `KuzoLogger`.
 
-### 5. `requiredConfig` / `optionalConfig` Removal Timeline
+### 5. `requiredConfig` / `optionalConfig` Removal Timeline — RESOLVED (2.5c)
 
-**Proposal:** Deprecated in 2.5a (warning logged), removed in 2.5c (after all first-party plugins are migrated). Third-party plugins using deprecated fields are blocked unless `KUZO_TRUST_LEGACY=true`.
+**Decision:** Removed in 2.5c. `context.config` stripped from `PluginContext`. `requiredConfig`/`optionalConfig` stripped from `KuzoPluginV1`. V1 plugins blocked by default, `KUZO_TRUST_LEGACY=true` to allow.
 
-### 6. Permission Escalation on Plugin Update
+### 6. Permission Escalation on Plugin Update — RESOLVED (2.5c)
 
-When a plugin update declares new capabilities, the plugin should:
-- (a) Refuse to load until user re-consents via `kuzo consent` *(recommended)*
-- (b) Load in degraded mode with only previously-consented capabilities
-- (c) Auto-grant if the new capabilities are "reasonable" (subjective, dangerous)
+**Decision:** (a) Refuse to load until user re-consents. `ConsentStore.isConsentStale()` detects version or capability changes and marks consent stale. Loader skips with "consent is stale — run: kuzo consent".
 
 ---
 

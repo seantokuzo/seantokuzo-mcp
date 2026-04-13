@@ -136,12 +136,6 @@ export interface CredentialBroker {
 
 /** Context provided to each plugin at initialization */
 export interface PluginContext {
-  /**
-   * Config values for this plugin (env var name -> value).
-   * @deprecated Use `credentials` broker instead. Will be removed when V1 plugins are dropped.
-   */
-  config: Map<string, string>;
-
   /** Credential broker — secure way to access secrets without raw env var access */
   credentials: CredentialBroker;
 
@@ -240,19 +234,13 @@ interface KuzoPluginBase {
 
 /**
  * V1 plugin manifest — legacy, pre-capability model.
- * Uses flat requiredConfig/optionalConfig for env var access.
  * Unrestricted callTool, network, filesystem.
+ * Blocked by default — requires KUZO_TRUST_LEGACY=true to load.
  * @deprecated Migrate to V2 with capability declarations.
  */
 export interface KuzoPluginV1 extends KuzoPluginBase {
   /** Absent or undefined — identifies this as a V1 manifest */
   permissionModel?: undefined;
-
-  /** Environment variables this plugin requires to function */
-  requiredConfig?: string[];
-
-  /** Environment variables this plugin can optionally use */
-  optionalConfig?: string[];
 }
 
 /**
