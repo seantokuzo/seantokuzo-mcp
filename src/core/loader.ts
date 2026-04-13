@@ -261,10 +261,9 @@ export class PluginLoader {
       const pluginPath = resolve(__dirname, "..", "plugins", name, "index.js");
 
       if (!existsSync(pluginPath)) {
-        result.skipped.push({
-          name,
-          reason: `module not found at plugins/${name}/index.js`,
-        });
+        const reason = `module not found at plugins/${name}/index.js`;
+        this.auditLogger.log({ plugin: name, action: "plugin.skipped", outcome: "denied", details: { reason } });
+        result.skipped.push({ name, reason });
         return result;
       }
 
@@ -274,20 +273,18 @@ export class PluginLoader {
       const plugin = module["default"] as KuzoPlugin | undefined;
 
       if (!plugin?.name || !plugin.tools || !plugin.initialize) {
-        result.failed.push({
-          name,
-          error: "invalid plugin: must export default KuzoPlugin with name, tools, and initialize",
-        });
+        const error = "invalid plugin: must export default KuzoPlugin with name, tools, and initialize";
+        this.auditLogger.log({ plugin: name, action: "plugin.failed", outcome: "error", details: { error } });
+        result.failed.push({ name, error });
         return result;
       }
 
       // Reject unknown permission model versions.
       const pm = plugin.permissionModel as unknown;
       if (pm !== undefined && pm !== 1) {
-        result.failed.push({
-          name,
-          error: `unsupported permissionModel: ${String(pm)} (this server supports: 1)`,
-        });
+        const error = `unsupported permissionModel: ${String(pm)} (this server supports: 1)`;
+        this.auditLogger.log({ plugin: name, action: "plugin.failed", outcome: "error", details: { error } });
+        result.failed.push({ name, error });
         return result;
       }
 
@@ -325,10 +322,9 @@ export class PluginLoader {
 
       // Runtime validation for V2 manifests
       if (isV2Plugin(plugin) && !Array.isArray(plugin.capabilities)) {
-        result.failed.push({
-          name,
-          error: "V2 plugin must provide capabilities array",
-        });
+        const error = "V2 plugin must provide capabilities array";
+        this.auditLogger.log({ plugin: name, action: "plugin.failed", outcome: "error", details: { error } });
+        result.failed.push({ name, error });
         return result;
       }
 
@@ -349,10 +345,9 @@ export class PluginLoader {
       }
 
       if (missing.length > 0) {
-        result.skipped.push({
-          name,
-          reason: `missing required config: ${missing.join(", ")}`,
-        });
+        const reason = `missing required config: ${missing.join(", ")}`;
+        this.auditLogger.log({ plugin: name, action: "plugin.skipped", outcome: "denied", details: { reason } });
+        result.skipped.push({ name, reason });
         return result;
       }
 

@@ -158,6 +158,14 @@ export class ConsentStore {
       if (!parsed.plugins || typeof parsed.plugins !== "object" || Array.isArray(parsed.plugins)) {
         throw new Error("Invalid consent.json: plugins must be an object");
       }
+      // Sanitize per-plugin records — drop entries with missing/invalid fields
+      // so isConsentStale() doesn't throw when spreading granted/denied
+      for (const [name, record] of Object.entries(parsed.plugins)) {
+        const r = record as ConsentRecord;
+        if (!Array.isArray(r.granted) || !Array.isArray(r.denied)) {
+          delete parsed.plugins[name];
+        }
+      }
       return parsed;
     } catch {
       // Corrupted or malformed file — start fresh

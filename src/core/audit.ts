@@ -93,7 +93,13 @@ export class AuditLogger {
   } = {}): AuditEvent[] {
     if (!existsSync(this.logPath)) return [];
 
-    const raw = readFileSync(this.logPath, "utf-8");
+    let raw: string;
+    try {
+      raw = readFileSync(this.logPath, "utf-8");
+    } catch {
+      this.logger?.error(`Failed to read audit log from ${this.logPath}`);
+      return [];
+    }
     const lines = raw.trim().split("\n").filter(Boolean);
     let events: AuditEvent[] = [];
 
