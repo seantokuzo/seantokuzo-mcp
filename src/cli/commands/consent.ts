@@ -13,17 +13,17 @@ import { resolve, dirname } from "path";
 import { existsSync } from "fs";
 import { ConsentStore } from "../../core/consent.js";
 import { AuditLogger, type AuditEvent } from "../../core/audit.js";
-
-/** Shared audit logger for CLI consent commands */
-function getAuditLogger(): AuditLogger {
-  return new AuditLogger();
-}
 import {
   isV2Plugin,
   type Capability,
   type KuzoPlugin,
 } from "../../plugins/types.js";
 import { showSuccess, showWarning, showError, showInfo } from "../ui/display.js";
+
+/** Shared audit logger for CLI consent commands */
+function getAuditLogger(): AuditLogger {
+  return new AuditLogger();
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -38,7 +38,13 @@ function pluginsDir(): string {
   return resolve(__dirname, "..", "..", "plugins");
 }
 
-/** Load a plugin module by name (for manifest inspection, not initialization) */
+/**
+ * Load a plugin module by name (for manifest inspection, not initialization).
+ *
+ * TODO(2.5d): Dynamic import executes the module, which is fine for first-party
+ * plugins but could run untrusted code for third-party. When third-party plugins
+ * ship, switch to a side-effect-free manifest artifact (e.g., generated JSON).
+ */
 async function loadPluginManifest(name: string): Promise<KuzoPlugin | undefined> {
   const pluginPath = resolve(pluginsDir(), name, "index.js");
   if (!existsSync(pluginPath)) return undefined;

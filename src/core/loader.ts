@@ -105,42 +105,62 @@ export class PluginLoader {
   /**
    * Check whether a plugin is trusted (via consent or override).
    * Returns undefined if trusted, or a reason string if not.
+   * Emits consent.checked audit events for every decision.
    */
   private checkConsent(plugin: KuzoPlugin): string | undefined {
     const name = plugin.name;
 
+    const allow = (reason: string): undefined => {
+      this.auditLogger.log({
+        plugin: name,
+        action: "consent.checked",
+        outcome: "allowed",
+        details: { reason },
+      });
+      return undefined;
+    };
+    const deny = (reason: string): string => {
+      this.auditLogger.log({
+        plugin: name,
+        action: "consent.checked",
+        outcome: "denied",
+        details: { reason },
+      });
+      return reason;
+    };
+
     // Strict mode: only stored consent
     if (this.strict) {
       if (!isV2Plugin(plugin)) {
-        return "V1 plugin not allowed in strict mode";
+        return deny("V1 plugin not allowed in strict mode");
       }
       if (!this.consentStore.hasConsent(name)) {
-        return `no stored consent — run: kuzo consent`;
+        return deny("no stored consent — run: kuzo consent");
       }
       if (this.consentStore.isConsentStale(plugin)) {
-        return `consent is stale (version or capabilities changed) — run: kuzo consent`;
+        return deny("consent is stale (version or capabilities changed) — run: kuzo consent");
       }
-      return undefined;
+      return allow("stored consent valid (strict mode)");
     }
 
     // Trust overrides (non-strict)
-    if (this.trustAll) return undefined;
-    if (this.trustPlugins.has(name)) return undefined;
+    if (this.trustAll) return allow("KUZO_TRUST_ALL");
+    if (this.trustPlugins.has(name)) return allow("KUZO_TRUST_PLUGINS");
 
     // V2 check stored consent
     if (isV2Plugin(plugin)) {
       if (this.consentStore.hasConsent(name)) {
         if (this.consentStore.isConsentStale(plugin)) {
-          return `consent is stale (version or capabilities changed) — run: kuzo consent`;
+          return deny("consent is stale (version or capabilities changed) — run: kuzo consent");
         }
-        return undefined;
+        return allow("stored consent valid");
       }
-      return `no consent — run: kuzo consent`;
+      return deny("no consent — run: kuzo consent");
     }
 
     // V1 legacy gate — if trustLegacy is set, V1 plugins are allowed through
-    if (this.trustLegacy) return undefined;
-    return "V1 plugin requires KUZO_TRUST_LEGACY=true or migrate to V2";
+    if (this.trustLegacy) return allow("KUZO_TRUST_LEGACY");
+    return deny("V1 plugin requires KUZO_TRUST_LEGACY=true or migrate to V2");
   }
 
   // -------------------------------------------------------------------------
@@ -271,19 +291,23 @@ export class PluginLoader {
         return result;
       }
 
-      // V1 legacy gate — must be checked before consent
-      if (!isV2Plugin(plugin) && !this.trustLegacy) {
-        this.auditLogger.log({
-          plugin: name,
-          action: "plugin.skipped",
-          outcome: "denied",
-          details: { reason: "V1 plugin blocked — set KUZO_TRUST_LEGACY=true to allow" },
-        });
-        result.skipped.push({
-          name,
-          reason: "V1 plugin blocked — set KUZO_TRUST_LEGACY=true or migrate to V2",
-        });
-        return result;
+      // V1 legacy gate — must be checked before consent.
+      // In strict mode, trust overrides are ignored so suggesting KUZO_TRUST_LEGACY is misleading.
+      if (!isV2Plugin(plugin)) {
+        const blocked = this.strict || !this.trustLegacy;
+        if (blocked) {
+          const reason = this.strict
+            ? "V1 plugin blocked in strict mode — trust overrides are ignored; migrate to V2"
+            : "V1 plugin blocked — set KUZO_TRUST_LEGACY=true or migrate to V2";
+          this.auditLogger.log({
+            plugin: name,
+            action: "plugin.skipped",
+            outcome: "denied",
+            details: { reason },
+          });
+          result.skipped.push({ name, reason });
+          return result;
+        }
       }
 
       // Consent check
