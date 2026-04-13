@@ -15,19 +15,20 @@ import { existsSync } from "fs";
 import {
   isV2Plugin,
   type Capability,
-  type CredentialBroker,
   type CredentialCapability,
   type CrossPluginCapability,
   type KuzoPlugin,
   type LoadResult,
   type PluginContext,
+  type ResourceDefinition,
+  type ToolDefinition,
 } from "../plugins/types.js";
 import type { PluginRegistry } from "./registry.js";
 import type { ConfigManager } from "./config.js";
 import { createPluginLogger, type KuzoLogger } from "./logger.js";
-import { DefaultCredentialBroker } from "./credentials.js";
 import { ConsentStore } from "./consent.js";
 import { AuditLogger } from "./audit.js";
+import { PluginProcess } from "./plugin-process.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -37,6 +38,7 @@ export class PluginLoader {
   private readonly trustAll: boolean;
   private readonly strict: boolean;
   private readonly trustLegacy: boolean;
+  private readonly pluginProcesses = new Map<string, PluginProcess>();
 
   constructor(
     private registry: PluginRegistry,
@@ -96,6 +98,17 @@ export class PluginLoader {
     }
 
     return result;
+  }
+
+  /** Shut down all plugin child processes */
+  async shutdownAll(): Promise<void> {
+    const shutdowns = Array.from(this.pluginProcesses.values()).map((pp) =>
+      pp.shutdown().catch((err) => {
+        this.logger.error(`Shutdown failed for plugin process`, err instanceof Error ? err.message : err);
+      }),
+    );
+    await Promise.all(shutdowns);
+    this.pluginProcesses.clear();
   }
 
   // -------------------------------------------------------------------------
@@ -164,25 +177,8 @@ export class PluginLoader {
   }
 
   // -------------------------------------------------------------------------
-  // Scoped callTool
+  // Cross-plugin deps
   // -------------------------------------------------------------------------
-
-  /**
-   * Build a scoped callTool for V2 plugins.
-   * Only allows calls to tools owned by plugins declared in cross-plugin capabilities.
-   * Undeclared targets get "not found" — don't leak existence with "permission denied".
-   */
-  private buildScopedCallTool(
-    declaredDeps: Set<string>,
-  ): PluginContext["callTool"] {
-    return async (toolName, args) => {
-      const entry = this.registry.findTool(toolName);
-      if (!entry || !declaredDeps.has(entry.plugin.name)) {
-        throw new Error(`Tool "${toolName}" not found`);
-      }
-      return this.registry.callTool(toolName, args);
-    };
-  }
 
   /** Extract declared cross-plugin dependency names from V2 capabilities */
   private extractCrossPluginDeps(plugin: KuzoPlugin): Set<string> {
@@ -201,7 +197,7 @@ export class PluginLoader {
   }
 
   // -------------------------------------------------------------------------
-  // Credential broker
+  // Capability extraction
   // -------------------------------------------------------------------------
 
   /** Extract credential capabilities from a V2 plugin's manifest */
@@ -209,26 +205,6 @@ export class PluginLoader {
     if (!isV2Plugin(plugin)) return [];
     const allCaps = [...plugin.capabilities, ...(plugin.optionalCapabilities ?? [])];
     return allCaps.filter((c): c is CredentialCapability => c.kind === "credentials");
-  }
-
-  /**
-   * Build a credential broker for a plugin.
-   * V2 plugins get a fully-functional broker scoped to their declared capabilities.
-   * V1 plugins (behind KUZO_TRUST_LEGACY) receive an empty-capabilities broker.
-   */
-  private buildCredentialBroker(
-    plugin: KuzoPlugin,
-    config: Map<string, string>,
-    logger: ReturnType<typeof createPluginLogger>,
-  ): CredentialBroker {
-    const capabilities = this.extractCredentialCapabilities(plugin);
-    return new DefaultCredentialBroker({
-      pluginName: plugin.name,
-      config,
-      capabilities,
-      logger,
-      auditLogger: this.auditLogger,
-    });
   }
 
   // -------------------------------------------------------------------------
@@ -351,31 +327,77 @@ export class PluginLoader {
         return result;
       }
 
-      // Build callTool — V2 gets scoped, V1 gets unrestricted
+      // Extract deps and capabilities for the child process
       const deps = this.extractCrossPluginDeps(plugin);
-      const callTool = isV2Plugin(plugin)
-        ? this.buildScopedCallTool(deps)
-        : (toolName: string, args: Record<string, unknown>) =>
-            this.registry.callTool(toolName, args);
-
-      // Build credential broker
+      const capabilities = this.extractCredentialCapabilities(plugin);
       const pluginLogger = createPluginLogger(plugin.name);
-      const credentials = this.buildCredentialBroker(plugin, config, pluginLogger);
 
-      // Build PluginContext (no more config map — V2 uses broker, V1 is legacy)
-      const context: PluginContext = {
-        credentials,
-        logger: pluginLogger,
-        callTool,
+      // Create PluginProcess — lazy, doesn't spawn until first tool call
+      const pluginProcess = new PluginProcess(
+        plugin.name,
+        pluginPath,
+        Object.fromEntries(config),
+        capabilities,
+        deps,
+        new (await import("./logger.js")).KuzoLogger(plugin.name),
+        this.registry,
+        this.auditLogger,
+      );
+      this.pluginProcesses.set(plugin.name, pluginProcess);
+
+      // Build proxy tools — real Zod schemas for listing, handlers proxy to child
+      const proxyTools: ToolDefinition[] = plugin.tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        handler: async (args: unknown) =>
+          pluginProcess.callTool(tool.name, args as Record<string, unknown>),
+      }));
+
+      // Build proxy resources
+      const proxyResources: ResourceDefinition[] | undefined = plugin.resources?.map((resource) => ({
+        uri: resource.uri,
+        name: resource.name,
+        description: resource.description,
+        mimeType: resource.mimeType,
+        handler: async () => pluginProcess.readResource(resource.uri),
+      }));
+
+      // Create proxy plugin for registry (same manifest, proxy handlers)
+      const proxyBase = {
+        name: plugin.name,
+        description: plugin.description,
+        version: plugin.version,
+        tools: proxyTools,
+        resources: proxyResources,
+        initialize: async () => { /* Handled by child process */ },
+        shutdown: async () => { /* Handled by loader.shutdownAll() */ },
       };
 
-      // Initialize plugin
-      await plugin.initialize(context);
+      const proxyPlugin: KuzoPlugin = isV2Plugin(plugin)
+        ? {
+            ...proxyBase,
+            permissionModel: plugin.permissionModel,
+            capabilities: plugin.capabilities,
+            optionalCapabilities: plugin.optionalCapabilities,
+          }
+        : proxyBase;
 
-      // Register in registry
-      this.registry.register(plugin, context);
+      // Minimal context for registry — proxy tools don't use it
+      const proxyContext: PluginContext = {
+        credentials: {
+          getClient: () => undefined,
+          createAuthenticatedFetch: () => { throw new Error("Proxy context"); },
+          getRawCredential: () => undefined,
+          hasCredential: () => false,
+        },
+        logger: pluginLogger,
+        callTool: async () => { throw new Error("Proxy context — use PluginProcess"); },
+      };
 
-      // Audit: plugin loaded
+      this.registry.register(proxyPlugin, proxyContext);
+
+      // Audit: plugin registered (will be initialized lazily on first tool call)
       this.auditLogger.log({
         plugin: name,
         action: "plugin.loaded",
@@ -384,6 +406,8 @@ export class PluginLoader {
           version: plugin.version,
           permissionModel: isV2Plugin(plugin) ? "v2" : "v1",
           toolCount: plugin.tools.length,
+          isolated: true,
+          lazySpawn: true,
         },
       });
 

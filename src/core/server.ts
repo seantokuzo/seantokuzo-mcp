@@ -183,6 +183,7 @@ async function main(): Promise<void> {
     forceTimer.unref();
 
     logger.info("Shutting down...");
+    await loader.shutdownAll();
     await registry.shutdownAll();
     await server.close();
     realExit(0);
