@@ -118,16 +118,23 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - All 3 plugins migrated to `KuzoPluginV2` with full capability declarations (git-context: filesystem+exec:git, github: credentials+network+cross-plugin, jira: credentials+network)
 - V2 config extraction derives env vars from `CredentialCapability.env` instead of flat `requiredConfig`
 
-**Next up: Phase 2.5b — Credential Broker** (implementation session)
-- `CredentialBroker` interface + `DefaultCredentialBroker` implementation in `src/core/credentials.ts` (new file)
-- Client factory registry: `getClient<T>(service)` returns pre-authenticated clients — `Octokit` for GitHub, `JiraClient` for Jira. Plugin never sees raw token.
-- `createAuthenticatedFetch(credentialKey)` for HTTP APIs — auto-injects auth headers, enforces URL pattern from manifest
-- `getRawCredential(key)` escape hatch — requires `access: "raw"` in manifest, audit-logged
-- Inject broker into `PluginContext` alongside existing `config: Map` (both work during migration)
-- Migrate `github/index.ts` from `context.config.get("GITHUB_TOKEN")` → `context.credentials.getClient<Octokit>("github")`
-- Migrate `jira/index.ts` from `context.config.get("JIRA_*")` → `context.credentials.getClient<JiraClient>("jira")`
-- Deprecation warnings on `context.config` usage (logged once per plugin at startup)
-- See `docs/SECURITY.md` §6 + §10 for full spec
+**Phase 2.5b — Credential Broker** (complete — PR #12, 2026-04-12)
+- `CredentialBroker` interface + `DefaultCredentialBroker` in `src/core/credentials.ts` — three access modes: `getClient<T>()` (pre-auth clients), `createAuthenticatedFetch()` (URL-scoped fetch), `getRawCredential()` (audit-logged escape hatch)
+- Hardcoded client factories for first-party services: `"github"` → `GitHubClient`, `"jira"` → `JiraClient`. Core imports plugin clients directly (Option A — accepted coupling for first-party)
+- Broker injected into `PluginContext` by loader alongside deprecated `config: Map`. V1 plugins get no-op broker (empty capabilities). V2 plugins get fully scoped broker
+- `context.config` wrapped in Proxy for V2 plugins — logs one-time deprecation warning on `get`/`has`/`forEach` access
+- GitHub plugin: `GITHUB_TOKEN` capability `access: "raw"` → `access: "client"`. `initialize()` calls `context.credentials.getClient<GitHubClient>("github")`. `GITHUB_USERNAME` stays `access: "raw"` (flows through factory automatically)
+- Jira plugin: all 3 credential capabilities switched to `access: "client"`. `initialize()` calls `context.credentials.getClient<JiraClient>("jira")`
+- git-context plugin unchanged — no credential capabilities, gets no-op broker
+- Capability enforcement: `getClient()` requires `access: "client"`, `getRawCredential()` requires `access: "raw"`, mismatches return `undefined` with warning log
+
+**Next up: Phase 2.5c — Consent Flow + Audit** (next session)
+- Consent storage (`~/.kuzo/consent.json`) + `kuzo consent` CLI command
+- Loader checks consent before plugin load — unconsented plugins blocked without trust override
+- Trust override via `KUZO_TRUST_PLUGINS` env var
+- Structured audit log for credential access events
+- Remove `config: Map` from `PluginContext` (V2 plugins fully migrated to broker)
+- See `docs/SECURITY.md` §9 + §10 for full spec
 
 ### Phase 2.b Decomposition
 
@@ -334,16 +341,17 @@ These decisions affect scope significantly — the executing session should conf
 
 ## What Exists Today
 
-### Core (Phase 1 + 2.5a)
-- Plugin system core (`src/core/` — server, registry, loader, config, logger)
-- Plugin type definitions (`src/plugins/types.ts`) — `KuzoPluginV1`/`V2` discriminated union, 5 capability types, `defineTool<S>()` helper, `isV2Plugin()` type guard
+### Core (Phase 1 + 2.5a + 2.5b)
+- Plugin system core (`src/core/` — server, registry, loader, config, logger, credentials)
+- Plugin type definitions (`src/plugins/types.ts`) — `KuzoPluginV1`/`V2` discriminated union, 5 capability types, `CredentialBroker` interface, `defineTool<S>()` helper, `isV2Plugin()` type guard
 - Runtime hardening: prototype freezing, `process.exit` guard, per-plugin shutdown timeouts, force-exit safety net
 - V2 scoped `callTool`: plugins can only call declared cross-plugin dependencies
+- Credential broker: `DefaultCredentialBroker` with `getClient<T>()`, `createAuthenticatedFetch()`, `getRawCredential()`. First-party factories for GitHub + Jira
 
-### Plugins (Phase 2 + 2.5a)
-- `src/plugins/git-context/` — 1 tool, 1 resource. V2 manifest: filesystem + system:exec:git
-- `src/plugins/github/` — 23 tools across pulls/reviews/repos/branches. V2 manifest: credentials + network + cross-plugin:git-context
-- `src/plugins/jira/` — 11 tools across tickets/transitions/subtasks/comments. V2 manifest: credentials + network
+### Plugins (Phase 2 + 2.5a + 2.5b)
+- `src/plugins/git-context/` — 1 tool, 1 resource. V2 manifest: filesystem + system:exec:git. No credentials (no-op broker)
+- `src/plugins/github/` — 23 tools across pulls/reviews/repos/branches. V2 manifest: credentials(client) + network + cross-plugin:git-context. Initialized via `credentials.getClient<GitHubClient>("github")`
+- `src/plugins/jira/` — 11 tools across tickets/transitions/subtasks/comments. V2 manifest: credentials(client) + network. Initialized via `credentials.getClient<JiraClient>("jira")`
 
 ### CLI (Phase 2.d)
 - Interactive CLI with PR, repo, review, jira, config commands (`src/cli/`)
@@ -355,8 +363,7 @@ These decisions affect scope significantly — the executing session should conf
 All legacy code paths removed. No monolithic services, no flat type barrel, no webhook server, no legacy MCP entry. Directories `src/services/`, `src/mcp/`, `src/types/`, `src/utils/` no longer exist.
 
 ### Not Yet Built
-- Credential broker (Phase 2.5b — NEXT UP)
-- Consent flow + audit (Phase 2.5c)
+- Consent flow + audit (Phase 2.5c — NEXT UP)
 - Process isolation (Phase 2.5d — when third-party plugins ship)
 - Supply chain security (Phase 2.5e — when npm distribution ships)
 - Phase 3+ GitHub plugin expansion (releases, actions, labels, issues, etc.)
