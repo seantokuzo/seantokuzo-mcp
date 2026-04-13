@@ -11,6 +11,9 @@ Kuzo MCP is a **plugin-based MCP server** where each integration (GitHub, Jira, 
 **Key docs:**
 - `docs/PLANNING.md` — Architecture spec and migration roadmap
 - `docs/STATE.md` — Current phase and session state
+- `docs/SECURITY.md` — Phase 2.5 security model, threat model, implementation plan
+
+**Current phase:** 2.5d complete (process isolation, PR #14). Next: **2.5e** (supply chain — monorepo restructure, npm provenance, plugin install CLI). See STATE.md for full context.
 
 ---
 

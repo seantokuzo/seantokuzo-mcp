@@ -151,9 +151,20 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - Smoke tested: 3 plugins register at startup with zero child processes, first `get_git_context` call spawns child (pid visible in logs), tool returns real data through full IPC round-trip, graceful shutdown terminates all children.
 
 **Next up: Phase 2.5e — Supply Chain** (next session)
-- Monorepo restructure with Turborepo, npm provenance via Sigstore
-- `kuzo plugins install/update/rollback` CLI commands
-- Each plugin becomes its own npm package
+
+Monorepo restructure + npm provenance + plugin install CLI. Full spec in `docs/PLANNING.md` (line ~504) and `docs/SECURITY.md` (line ~720).
+
+Key deliverables:
+1. **Monorepo restructure** — Turborepo + Changesets. Move `src/plugins/` → `packages/` directory. Each plugin becomes its own npm package (`kuzo-mcp-plugin-github`, etc.). Shared types become `@kuzo-mcp/types` peer dep. Core becomes `kuzo-mcp`.
+2. **Provenance verification** — `@sigstore/verify` to check npm provenance BEFORE install. Reject unsigned packages (override: `--trust-unsigned`). First-party pinned to `github.com/seantokuzo/*`.
+3. **Plugin install CLI** — `kuzo plugins install/update/rollback` commands. Install to `~/.kuzo/plugins/` with managed `node_modules`. Update shows changelog + capability diff, re-consent if new capabilities. Never auto-update.
+4. **npm publish automation** — GitHub Actions Trusted Publishing workflow. `npm publish --provenance`. Changesets for version coordination + changelogs.
+
+Open questions to resolve during implementation:
+- Tool name prefixing strategy (SECURITY.md §11 Q1 — keep flat or prefix with plugin name?)
+- Plugin registry schema in `kuzo.config.ts` (track installed third-party plugins)
+- `turbo.json` structure and workspace config
+- Exact `@sigstore/verify` API usage for SLSA payload validation
 
 ### Phase 2.b Decomposition
 
