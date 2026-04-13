@@ -8,6 +8,7 @@ import { existsSync } from "fs";
 import {
   isV2Plugin,
   type Capability,
+  type CredentialBroker,
   type CredentialCapability,
   type CrossPluginCapability,
   type KuzoPlugin,
@@ -17,6 +18,7 @@ import {
 import type { PluginRegistry } from "./registry.js";
 import type { ConfigManager } from "./config.js";
 import { createPluginLogger, type KuzoLogger } from "./logger.js";
+import { DefaultCredentialBroker } from "./credentials.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -93,6 +95,57 @@ export class PluginLoader {
           return pluginName ?? c.target;
         }),
     );
+  }
+
+  /** Extract credential capabilities from a V2 plugin's manifest */
+  private extractCredentialCapabilities(plugin: KuzoPlugin): CredentialCapability[] {
+    if (!isV2Plugin(plugin)) return [];
+    const allCaps = [...plugin.capabilities, ...(plugin.optionalCapabilities ?? [])];
+    return allCaps.filter((c): c is CredentialCapability => c.kind === "credentials");
+  }
+
+  /**
+   * Build a credential broker for a plugin.
+   * V2 plugins get a fully-functional broker scoped to their declared capabilities.
+   * V1 plugins get a no-op broker (they use the deprecated config map).
+   */
+  private buildCredentialBroker(
+    plugin: KuzoPlugin,
+    config: Map<string, string>,
+    logger: ReturnType<typeof createPluginLogger>,
+  ): CredentialBroker {
+    const capabilities = this.extractCredentialCapabilities(plugin);
+    return new DefaultCredentialBroker({
+      pluginName: plugin.name,
+      config,
+      capabilities,
+      logger,
+    });
+  }
+
+  /**
+   * Wrap a config Map in a Proxy that logs a deprecation warning on first access.
+   * V1 plugins use config freely (no warning). V2 plugins get the warning.
+   */
+  private wrapConfigWithDeprecation(
+    config: Map<string, string>,
+    pluginName: string,
+    logger: ReturnType<typeof createPluginLogger>,
+    isV2: boolean,
+  ): Map<string, string> {
+    if (!isV2) return config;
+    let warned = false;
+    return new Proxy(config, {
+      get(target, prop, receiver) {
+        if (!warned && (prop === "get" || prop === "has" || prop === "forEach")) {
+          warned = true;
+          logger.warn(
+            `plugin "${pluginName}" is using deprecated context.config — migrate to context.credentials`,
+          );
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
   }
 
   /** Extract required env var names from V2 credential capabilities */
@@ -190,10 +243,17 @@ export class PluginLoader {
         : (toolName: string, args: Record<string, unknown>) =>
             this.registry.callTool(toolName, args);
 
+      // Build credential broker + deprecation-wrapped config
+      const pluginLogger = createPluginLogger(plugin.name);
+      const v2 = isV2Plugin(plugin);
+      const credentials = this.buildCredentialBroker(plugin, config, pluginLogger);
+      const wrappedConfig = this.wrapConfigWithDeprecation(config, name, pluginLogger, v2);
+
       // Build PluginContext
       const context: PluginContext = {
-        config,
-        logger: createPluginLogger(plugin.name),
+        config: wrappedConfig,
+        credentials,
+        logger: pluginLogger,
         callTool,
       };
 
