@@ -7,7 +7,7 @@ import { config as dotenvConfig } from "dotenv";
 import { existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import type { KuzoConfig } from "../plugins/types.js";
+import type { KuzoConfig } from "@kuzo-mcp/types";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

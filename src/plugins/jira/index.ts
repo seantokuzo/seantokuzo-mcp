@@ -12,7 +12,7 @@
  * Credentials: JIRA_HOST, JIRA_EMAIL, JIRA_API_TOKEN via credential broker (access: "client")
  */
 
-import type { KuzoPluginV2 } from "../types.js";
+import type { KuzoPluginV2 } from "@kuzo-mcp/types";
 import type { JiraClient } from "./client.js";
 import { setClient, resetClient } from "./state.js";
 import { ticketTools } from "./tools/tickets.js";

@@ -506,7 +506,7 @@ See `docs/SECURITY.md` §3 for architecture diagram.
 Publish first-party plugins as standalone npm packages. `kuzo plugins install/update/rollback` CLI commands with Sigstore provenance verification.
 
 Key implementation decisions:
-- **npm provenance:** GitHub Actions Trusted Publishing workflow. `npm publish --provenance` flag. Two attestations per publish: npm publish attestation + SLSA provenance. Still requires `NPM_TOKEN` secret (no tokenless yet).
+- **npm provenance:** GitHub Actions Trusted Publishing (GA July 2025 — tokenless via OIDC, no `NPM_TOKEN` secret needed). Set `NPM_CONFIG_PROVENANCE=true` in the publish job. Two attestations per publish: npm publish attestation + SLSA provenance. Requires npm CLI ≥ 11.5.1, `id-token: write` permission on the job, `repository` field in `package.json`, and Trusted Publisher configured on npmjs.com pointing at the workflow file.
 - **Verification:** `@sigstore/verify` to programmatically check provenance BEFORE `npm install`. Decode SLSA payload, verify `externalParameters.workflow.repository` matches allowed source org. Reject packages without provenance (override with `--trust-unsigned`).
 - **Monorepo restructure:** Current `src/plugins/` → Turborepo monorepo with `packages/` directory. Each plugin becomes its own npm package. `@changesets/cli` for version coordination and changelogs.
 

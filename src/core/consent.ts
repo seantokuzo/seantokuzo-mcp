@@ -10,7 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
-import type { Capability, KuzoPluginV2 } from "../plugins/types.js";
+import type { Capability, KuzoPluginV2 } from "@kuzo-mcp/types";
 
 // ---------------------------------------------------------------------------
 // Types

@@ -22,7 +22,7 @@ import {
   type PluginContext,
   type ResourceDefinition,
   type ToolDefinition,
-} from "../plugins/types.js";
+} from "@kuzo-mcp/types";
 import type { PluginRegistry } from "./registry.js";
 import type { ConfigManager } from "./config.js";
 import { createPluginLogger, type KuzoLogger } from "./logger.js";

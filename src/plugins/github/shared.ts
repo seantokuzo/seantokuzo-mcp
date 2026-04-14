@@ -6,7 +6,7 @@
  * repository. This is the first real use of the Phase 1 cross-plugin API.
  */
 
-import type { PluginContext } from "../types.js";
+import type { PluginContext } from "@kuzo-mcp/types";
 import type { GitContextResult, GitHubRepo } from "./types.js";
 
 /**

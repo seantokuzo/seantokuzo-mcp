@@ -3,7 +3,7 @@
  */
 
 import { z } from "zod";
-import { defineTool } from "../../types.js";
+import { defineTool } from "@kuzo-mcp/types";
 import { getGitContext, getGitContextSummary } from "../git.js";
 
 export const getGitContextTool = defineTool({

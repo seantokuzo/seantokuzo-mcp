@@ -8,7 +8,7 @@
  * https://developer.atlassian.com/cloud/jira/platform/basic-auth-for-rest-apis/
  */
 
-import type { PluginLogger } from "../types.js";
+import type { PluginLogger } from "@kuzo-mcp/types";
 import { extractTextFromADF, textToADF } from "./adf.js";
 import type {
   JiraTicket,

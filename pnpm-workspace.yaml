@@ -1,0 +1,8 @@
+packages:
+  - "packages/*"
+
+# Catalog keeps versions in sync across packages. Optional — recommended deferred.
+# catalog:
+#   zod: ^3.25.76
+#   "@modelcontextprotocol/sdk": ^1.0.0
+#   "@octokit/rest": ^21.0.0

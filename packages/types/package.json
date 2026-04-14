@@ -1,0 +1,40 @@
+{
+  "name": "@kuzo-mcp/types",
+  "version": "0.0.1",
+  "description": "Shared TypeScript types and zod-based tool helpers for Kuzo MCP plugins.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seantokuzo/seantokuzo-mcp.git",
+    "directory": "packages/types"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.ts.map"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "zod": "^3.25.76"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

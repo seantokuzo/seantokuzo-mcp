@@ -19,7 +19,7 @@ import {
   type PluginContext,
   type PluginLogger,
   type ToolDefinition,
-} from "../plugins/types.js";
+} from "@kuzo-mcp/types";
 
 // ---------------------------------------------------------------------------
 // IPC-backed logger — relays log messages to parent process

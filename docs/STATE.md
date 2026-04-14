@@ -150,21 +150,60 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - Env var scoping: each child receives ONLY its declared credential env vars + system essentials (PATH, LANG, TERM, NODE_ENV, HOME, DEBUG). Jira child cannot read `GITHUB_TOKEN`.
 - Smoke tested: 3 plugins register at startup with zero child processes, first `get_git_context` call spawns child (pid visible in logs), tool returns real data through full IPC round-trip, graceful shutdown terminates all children.
 
-**Next up: Phase 2.5e — Supply Chain** (next session)
+**Phase 2.5e — Supply Chain** (spec complete, 2026-04-13 — implementation starts next session)
 
-Monorepo restructure + npm provenance + plugin install CLI. Full spec in `docs/PLANNING.md` (line ~504) and `docs/SECURITY.md` (line ~720).
+### ⏭️ Fresh-session handoff — when user says "next"
 
-Key deliverables:
-1. **Monorepo restructure** — Turborepo + Changesets. Move `src/plugins/` → `packages/` directory. Each plugin becomes its own npm package (`kuzo-mcp-plugin-github`, etc.). Shared types become `@kuzo-mcp/types` peer dep. Core becomes `kuzo-mcp`.
-2. **Provenance verification** — `@sigstore/verify` to check npm provenance BEFORE install. Reject unsigned packages (override: `--trust-unsigned`). First-party pinned to `github.com/seantokuzo/*`.
-3. **Plugin install CLI** — `kuzo plugins install/update/rollback` commands. Install to `~/.kuzo/plugins/` with managed `node_modules`. Update shows changelog + capability diff, re-consent if new capabilities. Never auto-update.
-4. **npm publish automation** — GitHub Actions Trusted Publishing workflow. `npm publish --provenance`. Changesets for version coordination + changelogs.
+1. **Read `docs/2.5e-spec.md` §0** (exec summary + build order) and **§A.1** (10-step migration plan).
+2. **Begin Part A Step 1: tooling prereqs.** No code moves — just:
+   - Add `packageManager: "pnpm@10.x"` to root `package.json` (look up exact via `npm view pnpm version`)
+   - Add `.npmrc` at repo root with `strict-peer-dependencies=true`, `auto-install-peers=false`, `link-workspace-packages=deep`, `prefer-workspace-packages=true`
+   - Replace `package-lock.json` with `pnpm-lock.yaml` via `pnpm import` + `pnpm install`
+   - Verify: `pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm start:mcp` all green
+   - Commit: `chore(core): 2.5e A.1 — pnpm prereqs (no code moves)`
+3. **Proceed through Steps 2–10** in order, one commit per step. Step 4+5 may merge if the compat shim is ugly (spec recommends merging — implementer's call).
+4. After Part A: continue with Parts B → C → D per `docs/2.5e-spec.md` §0 Build Order.
 
-Open questions to resolve during implementation:
-- Tool name prefixing strategy (SECURITY.md §11 Q1 — keep flat or prefix with plugin name?)
-- Plugin registry schema in `kuzo.config.ts` (track installed third-party plugins)
-- `turbo.json` structure and workspace config
-- Exact `@sigstore/verify` API usage for SLSA payload validation
+### Source of truth
+
+**`docs/2.5e-spec.md`** — 1405 lines, four-part spec:
+- **Part A:** Monorepo restructure (10-step migration, pnpm workspaces, TS project references, loader rewrite)
+- **Part B:** Release workflow + Trusted Publishing (copy-paste `release.yml`, Changesets config, npmjs.com setup, 12 gotchas)
+- **Part C:** Pre-install provenance verification (sigstore@4 + pacote, trust policy, failure mode table, caching)
+- **Part D:** Plugin install CLI (install/update/rollback commands, state files, locking, config mutation)
+- **Part E:** Acceptance criteria + 10 open questions with recommended defaults
+
+### Locked decisions (supersede older docs)
+
+1. **pnpm workspaces only** — NOT Turborepo. Archetype: `modelcontextprotocol/typescript-sdk`. Turbo is a ~30 min add-later if CI pain emerges.
+2. **Scoped `@kuzo-mcp/*` package names** — NOT unscoped `kuzo-mcp-plugin-*`. Enables friendly-name resolution (`install github` → `@kuzo-mcp/plugin-github`).
+3. **Option A verification:** pre-install attestation fetch via npm registry API + `sigstore.verify()` (meta-package, NOT `@sigstore/verify` directly). There is no `npm install --require-provenance` flag in 2026 — we roll our own.
+4. **Exact-name install for MVP.** No `kuzo plugins search` — deferred.
+5. **Tokenless Trusted Publishing (OIDC) from day one** — no `NPM_TOKEN` secret. GA since July 2025.
+6. **Retain last 3 versions per plugin** for rollback.
+
+### Branch state
+
+- **Branch:** `phase-2.5e/supply-chain` (checked out, 2 commits ahead of main, clean working tree)
+- **Commits:**
+  - `5986054 docs(core): correct 2.5e Trusted Publishing — tokenless OIDC, not NPM_TOKEN`
+  - `25f2033 docs(core): 2.5e spec — monorepo + release workflow + provenance + install CLI`
+
+### Stale docs to expect (don't fix in isolation)
+
+- **`docs/PLANNING.md` §2.5e (lines ~504-527):** still references Turborepo and unscoped `kuzo-mcp-plugin-*` names. Fix lands naturally as Part A progresses — do not touch these in a separate docs commit.
+- **`docs/SECURITY.md` §5 (supply chain):** review + update at phase close per spec §E.1.
+
+### PR strategy
+
+Recommended: **4 PRs (one per Part A/B/C/D)** against `main` for reviewability. Part A is largest (~8-10 commits). Single mega-PR acceptable but harder to review.
+
+### Do NOT
+
+- Start with Part B, C, or D before Part A completes — packages must exist before publishing or installation logic can land.
+- Rewrite `PLANNING.md` / `SECURITY.md` in isolation — those updates land at phase close (§E.1).
+- Open cross-session debate on spec §E.2 questions unless you actually hit them — use recommended defaults.
+- Skip the parity test (§A.8) — it's the only gate that catches silent dual-mode resolution breakage.
 
 ### Phase 2.b Decomposition
 

@@ -7,12 +7,12 @@
     "kuzo": "./dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -b",
     "dev:cli": "tsx src/cli/index.ts",
     "start:mcp": "node dist/core/server.js",
     "cli": "tsx src/cli/index.ts",
-    "lint": "eslint src/",
-    "typecheck": "tsc --noEmit"
+    "lint": "eslint .",
+    "typecheck": "tsc -b"
   },
   "keywords": [
     "mcp",
@@ -24,6 +24,7 @@
   "author": "Sean Tokuzo",
   "license": "MIT",
   "dependencies": {
+    "@kuzo-mcp/types": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@octokit/rest": "^21.0.0",
     "boxen": "^8.0.1",
@@ -50,5 +51,12 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "peerDependencyRules": {
+      "ignoreMissing": ["hono"]
+    },
+    "onlyBuiltDependencies": ["esbuild"]
   }
 }

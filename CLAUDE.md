@@ -9,11 +9,12 @@
 Kuzo MCP is a **plugin-based MCP server** where each integration (GitHub, Jira, Calendar, SMS, etc.) is a self-contained plugin. The core handles MCP protocol, plugin lifecycle, config, and logging. Plugins register tools, resources, and optionally CLI commands.
 
 **Key docs:**
-- `docs/PLANNING.md` — Architecture spec and migration roadmap
-- `docs/STATE.md` — Current phase and session state
+- `docs/PLANNING.md` — Architecture spec and migration roadmap (note: §2.5e has stale Turborepo/unscoped-naming refs — `docs/2.5e-spec.md` supersedes)
+- `docs/STATE.md` — Current phase, session state, and fresh-session handoff block
 - `docs/SECURITY.md` — Phase 2.5 security model, threat model, implementation plan
+- `docs/2.5e-spec.md` — **Active spec.** Phase 2.5e implementation north star (monorepo + provenance + install CLI)
 
-**Current phase:** 2.5d complete (process isolation, PR #14). Next: **2.5e** (supply chain — monorepo restructure, npm provenance, plugin install CLI). See STATE.md for full context.
+**Current phase:** 2.5d complete (process isolation, PR #14). **2.5e spec committed** on branch `phase-2.5e/supply-chain`; implementation not yet started. On a fresh session, if user says "next" (or similar kickoff), read `docs/STATE.md` → "Fresh-session handoff" section → execute Part A Step 1 of `docs/2.5e-spec.md`.
 
 ---
 

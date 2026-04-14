@@ -6,7 +6,7 @@
  */
 
 import { Octokit } from "@octokit/rest";
-import type { PluginLogger } from "../types.js";
+import type { PluginLogger } from "@kuzo-mcp/types";
 import type {
   GitHubRepo,
   PullRequestConfig,
