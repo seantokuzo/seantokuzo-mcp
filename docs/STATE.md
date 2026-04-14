@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-04-13
+**Last Updated:** 2026-04-14
 
 ---
 
@@ -150,19 +150,33 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - Env var scoping: each child receives ONLY its declared credential env vars + system essentials (PATH, LANG, TERM, NODE_ENV, HOME, DEBUG). Jira child cannot read `GITHUB_TOKEN`.
 - Smoke tested: 3 plugins register at startup with zero child processes, first `get_git_context` call spawns child (pid visible in logs), tool returns real data through full IPC round-trip, graceful shutdown terminates all children.
 
-**Phase 2.5e — Supply Chain** (spec complete, 2026-04-13 — implementation starts next session)
+**Phase 2.5e — Supply Chain** (A.1–A.3 complete — PR #15 merged as `9c15d7d`, 2026-04-14; A.4+ next session)
+
+- **A.1 — pnpm prereqs** (`9b0b11c`): `packageManager: "pnpm@10.33.0"`, `.npmrc` with `strict-peer-dependencies=true`, `auto-install-peers=false`, `link-workspace-packages=deep`, `prefer-workspace-packages=true`; `pnpm import` → `pnpm-lock.yaml`.
+- **A.2 — workspace shell** (`554c495`): `pnpm-workspace.yaml` (`packages/*`) + dormant `tsconfig.base.json` (composite, shared compiler opts).
+- **A.3 — extract `@kuzo-mcp/types`** (`47c1aac`): `git mv src/plugins/types.ts → packages/types/src/index.ts`, scaffold workspace package with exports map, rewrite 25 importers from relative `../plugins/types.js` → `@kuzo-mcp/types`, switch root build/typecheck to `tsc -b` with reference to types, `.gitignore *.tsbuildinfo`.
+- **CI fix** (`361c205`): workflow migrated npm → pnpm — `pnpm/action-setup@v4` before setup-node, `cache: pnpm`, `pnpm install --frozen-lockfile`, `pnpm run X`. Pulls in the CI piece of spec §A.1 Step 9 early.
+- **Lint scope fix** (`dfb5d33`): `eslint src/` → `eslint .` per Copilot review. Flat config ignores (`dist/`, `node_modules/`) already exclude build output; packages/types/src now linted.
+
+Two pnpm-config additions in root `package.json` beyond the literal spec, both forced by existing deps:
+- `pnpm.peerDependencyRules.ignoreMissing: ["hono"]` — MCP SDK pulls `@hono/node-server` which peer-requires `hono@^4`; we only use stdio transport. Keeps `strict-peer-dependencies=true` honest for our own code.
+- `pnpm.onlyBuiltDependencies: ["esbuild"]` — pnpm 10 blocks postinstall scripts by default; esbuild needs its postinstall to fetch its native binary for tsx.
 
 ### ⏭️ Fresh-session handoff — when user says "next"
 
-1. **Read `docs/2.5e-spec.md` §0** (exec summary + build order) and **§A.1** (10-step migration plan).
-2. **Begin Part A Step 1: tooling prereqs.** No code moves — just:
-   - Add `packageManager: "pnpm@10.x"` to root `package.json` (look up exact via `npm view pnpm version`)
-   - Add `.npmrc` at repo root with `strict-peer-dependencies=true`, `auto-install-peers=false`, `link-workspace-packages=deep`, `prefer-workspace-packages=true`
-   - Replace `package-lock.json` with `pnpm-lock.yaml` via `pnpm import` + `pnpm install`
-   - Verify: `pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm start:mcp` all green
-   - Commit: `chore(core): 2.5e A.1 — pnpm prereqs (no code moves)`
-3. **Proceed through Steps 2–10** in order, one commit per step. Step 4+5 may merge if the compat shim is ugly (spec recommends merging — implementer's call).
-4. After Part A: continue with Parts B → C → D per `docs/2.5e-spec.md` §0 Build Order.
+1. **Read `docs/2.5e-spec.md` §A.1 Step 4 + Step 5** and **§A.5 (loader rewrite — the crux)**. Skim §A.2 core blueprint and §A.2 plugin-github template.
+2. **Branch off fresh main** as `phase-2.5e/step-4-5-core-plugins` (or similar). A.1–A.3 merged to main in PR #15; everything in `packages/types/` is already wired and passing CI.
+3. **Land Step 4+5 as ONE commit** — spec recommends merging them, implementer confirmed during A.3 that the stacked compat shim between 4 and 5 is messy enough to justify. If split into two commits the tree does not build between them (loader references paths the plugins no longer live at); the combined commit must end green.
+4. **What Step 4+5 does:**
+   - Create `packages/core/` and move `src/core/**` → `packages/core/src/**` (11 files as of A.3: `audit`, `config`, `consent`, `credentials`, `ipc`, `loader`, `logger`, `plugin-host`, `plugin-process`, `registry`, `server`).
+   - Create `packages/plugin-{github,jira,git-context}/` in parallel and move `src/plugins/<name>/**` → `packages/plugin-<name>/src/**`.
+   - **Loader rewrite per §A.5:** switch from `const pluginPath = resolve(__dirname, "..", "plugins", name, "index.js"); await import(pathToFileURL(pluginPath).href)` to package-name resolution: `await import("@kuzo-mcp/plugin-<name>")` via a friendly-name → scoped-package-name map (`"github"` → `"@kuzo-mcp/plugin-github"`). Plus the `plugin-host.js` path fix: `import.meta.resolve("@kuzo-mcp/core/plugin-host")` + `fileURLToPath()`.
+   - Each plugin package declares `@kuzo-mcp/types` as a **peerDependency** (not dep — see §A.7).
+   - Each plugin package gets a `kuzoPlugin` metadata field in its `package.json` (§A.2).
+   - Update root `tsconfig.json` references: add core + 3 plugins alongside existing types reference.
+5. **Verify green in the same commit:** `pnpm install`, `pnpm -r build`, `pnpm typecheck`, `pnpm lint`, `pnpm start:mcp` — and confirm all 3 `plugin.loaded` audit rows (or `plugin.skipped` consent rows in environments without consent) fire for `git-context`, `github`, `jira`.
+6. **Commit message suggestion:** `feat(core): 2.5e A.4+5 — extract @kuzo-mcp/core + 3 plugin packages, rewrite loader to package-name resolution`.
+7. **Continue sequentially with Steps 6–10** (CLI, legacy-src cleanup, project refs, CI+eslint cross-plugin rule, parity test). Then Parts B → C → D per `docs/2.5e-spec.md` §0 Build Order.
 
 ### Source of truth
 
@@ -176,32 +190,41 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 ### Locked decisions (supersede older docs)
 
 1. **pnpm workspaces only** — NOT Turborepo. Archetype: `modelcontextprotocol/typescript-sdk`. Turbo is a ~30 min add-later if CI pain emerges.
-2. **Scoped `@kuzo-mcp/*` package names** — NOT unscoped `kuzo-mcp-plugin-*`. Enables friendly-name resolution (`install github` → `@kuzo-mcp/plugin-github`).
-3. **Option A verification:** pre-install attestation fetch via npm registry API + `sigstore.verify()` (meta-package, NOT `@sigstore/verify` directly). There is no `npm install --require-provenance` flag in 2026 — we roll our own.
-4. **Exact-name install for MVP.** No `kuzo plugins search` — deferred.
-5. **Tokenless Trusted Publishing (OIDC) from day one** — no `NPM_TOKEN` secret. GA since July 2025.
-6. **Retain last 3 versions per plugin** for rollback.
+2. **Scoped `@kuzo-mcp/*` package names** — NOT unscoped `kuzo-mcp-plugin-*`. Enables friendly-name resolution (`install github` → `@kuzo-mcp/plugin-github`). Already applied via `@kuzo-mcp/types`.
+3. **`tsc -b` is both build AND typecheck** — `tsc -b --noEmit` is not an option (TS6310: referenced composite projects may not disable emit). Accept the redundancy; tsbuildinfo makes subsequent runs near-free. Do not re-suggest this cleanup.
+4. **Option A verification:** pre-install attestation fetch via npm registry API + `sigstore.verify()` (meta-package, NOT `@sigstore/verify` directly). There is no `npm install --require-provenance` flag in 2026 — we roll our own.
+5. **Exact-name install for MVP.** No `kuzo plugins search` — deferred.
+6. **Tokenless Trusted Publishing (OIDC) from day one** — no `NPM_TOKEN` secret. GA since July 2025.
+7. **Retain last 3 versions per plugin** for rollback.
+8. **Step 4+5 lands as one commit** (decided during A.3 planning — stacked compat shim too ugly; spec agreed as fallback).
 
-### Branch state
+### Branch state (post-A.3)
 
-- **Branch:** `phase-2.5e/supply-chain` (checked out, 2 commits ahead of main, clean working tree)
-- **Commits:**
-  - `5986054 docs(core): correct 2.5e Trusted Publishing — tokenless OIDC, not NPM_TOKEN`
-  - `25f2033 docs(core): 2.5e spec — monorepo + release workflow + provenance + install CLI`
+- **main** at `9c15d7d Phase 2.5e A.1–A.3: pnpm monorepo prereqs + @kuzo-mcp/types (#15)`
+- `phase-2.5e/supply-chain` deleted on both local + remote after squash-merge.
+- Fresh session should branch off main.
+
+### Known tactical detail from A.1–A.3 session
+
+- `pnpm dev:cli` now requires a prior `pnpm build` because `@kuzo-mcp/types` resolves via `exports["."].import → ./dist/index.js`. Adding a `"development": "./src/index.ts"` exports condition is a post-2.5e cleanup, acknowledged in spec §A.3.
+- Plugin-local `types.ts` files (`src/plugins/github/types.ts` etc.) are untouched — those hold plugin-specific types. Only the SHARED `src/plugins/types.ts` moved to `@kuzo-mcp/types`. When extracting plugins in Step 5, plugin-local `../types.js` / `./types.js` imports from files like `src/plugins/github/tools/pulls.ts` stay as-is (they still resolve within the new `packages/plugin-github/` tree).
+- Root `tsconfig.json` is still non-composite with `include: ["src/**/*"]` + one `references` entry. Step 7 finally flips it to solution-style (`files: []` + refs only).
+- All `src/core/**` files currently use `@kuzo-mcp/types` imports already — moving them to `packages/core/src/**` in Step 4 requires zero import changes to those files.
 
 ### Stale docs to expect (don't fix in isolation)
 
-- **`docs/PLANNING.md` §2.5e (lines ~504-527):** still references Turborepo and unscoped `kuzo-mcp-plugin-*` names. Fix lands naturally as Part A progresses — do not touch these in a separate docs commit.
+- **`docs/PLANNING.md` §2.5e (lines ~504-527):** still references Turborepo and unscoped `kuzo-mcp-plugin-*` names. Fix lands naturally as Part A progresses — do not touch in a separate docs commit.
 - **`docs/SECURITY.md` §5 (supply chain):** review + update at phase close per spec §E.1.
 
 ### PR strategy
 
-Recommended: **4 PRs (one per Part A/B/C/D)** against `main` for reviewability. Part A is largest (~8-10 commits). Single mega-PR acceptable but harder to review.
+Updated: A.1–A.3 shipped as PR #15. Remaining Part A (Steps 4–10) could be one PR or split further — recommend one PR covering Steps 4+5 (the big one) and a second PR for Steps 6–10 (CLI + cleanup + refs + CI + parity test). Parts B → C → D each get their own PR per original plan.
 
 ### Do NOT
 
 - Start with Part B, C, or D before Part A completes — packages must exist before publishing or installation logic can land.
 - Rewrite `PLANNING.md` / `SECURITY.md` in isolation — those updates land at phase close (§E.1).
+- Re-suggest `tsc -b --noEmit` for `typecheck` — blocked by TS6310 with composite projects; already evaluated in A.3.
 - Open cross-session debate on spec §E.2 questions unless you actually hit them — use recommended defaults.
 - Skip the parity test (§A.8) — it's the only gate that catches silent dual-mode resolution breakage.
 
