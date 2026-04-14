@@ -152,7 +152,7 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 
 **Phase 2.5e — Supply Chain** (A.1–A.3 complete — PR #15 merged as `9c15d7d`, 2026-04-14; A.4+ next session)
 
-- **A.1 — pnpm prereqs** (`9b0b11c`): `packageManager: "pnpm@10.33.0"`, `.npmrc` with strict peer / no auto-install / link-workspace=deep / prefer-workspace, `pnpm import` → `pnpm-lock.yaml`.
+- **A.1 — pnpm prereqs** (`9b0b11c`): `packageManager: "pnpm@10.33.0"`, `.npmrc` with `strict-peer-dependencies=true`, `auto-install-peers=false`, `link-workspace-packages=deep`, `prefer-workspace-packages=true`; `pnpm import` → `pnpm-lock.yaml`.
 - **A.2 — workspace shell** (`554c495`): `pnpm-workspace.yaml` (`packages/*`) + dormant `tsconfig.base.json` (composite, shared compiler opts).
 - **A.3 — extract `@kuzo-mcp/types`** (`47c1aac`): `git mv src/plugins/types.ts → packages/types/src/index.ts`, scaffold workspace package with exports map, rewrite 25 importers from relative `../plugins/types.js` → `@kuzo-mcp/types`, switch root build/typecheck to `tsc -b` with reference to types, `.gitignore *.tsbuildinfo`.
 - **CI fix** (`361c205`): workflow migrated npm → pnpm — `pnpm/action-setup@v4` before setup-node, `cache: pnpm`, `pnpm install --frozen-lockfile`, `pnpm run X`. Pulls in the CI piece of spec §A.1 Step 9 early.
@@ -166,9 +166,9 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 
 1. **Read `docs/2.5e-spec.md` §A.1 Step 4 + Step 5** and **§A.5 (loader rewrite — the crux)**. Skim §A.2 core blueprint and §A.2 plugin-github template.
 2. **Branch off fresh main** as `phase-2.5e/step-4-5-core-plugins` (or similar). A.1–A.3 merged to main in PR #15; everything in `packages/types/` is already wired and passing CI.
-3. **Land Step 4+5 as ONE commit** — spec recommends merging them, implementer confirmed during A.3 that the stacked compat shim between 4 and 5 is messy enough to justify. Between moving src/core/ and rewriting the loader + extracting the 3 plugins, the tree intentionally will not build. Land green in one atomic commit.
+3. **Land Step 4+5 as ONE commit** — spec recommends merging them, implementer confirmed during A.3 that the stacked compat shim between 4 and 5 is messy enough to justify. If split into two commits the tree does not build between them (loader references paths the plugins no longer live at); the combined commit must end green.
 4. **What Step 4+5 does:**
-   - Create `packages/core/` and move `src/core/**` → `packages/core/src/**` (9 files: server, loader, plugin-process, plugin-host, ipc, consent, audit, credentials, registry, config, logger).
+   - Create `packages/core/` and move `src/core/**` → `packages/core/src/**` (11 files as of A.3: `audit`, `config`, `consent`, `credentials`, `ipc`, `loader`, `logger`, `plugin-host`, `plugin-process`, `registry`, `server`).
    - Create `packages/plugin-{github,jira,git-context}/` in parallel and move `src/plugins/<name>/**` → `packages/plugin-<name>/src/**`.
    - **Loader rewrite per §A.5:** switch from `const pluginPath = resolve(__dirname, "..", "plugins", name, "index.js"); await import(pathToFileURL(pluginPath).href)` to package-name resolution: `await import("@kuzo-mcp/plugin-<name>")` via a friendly-name → scoped-package-name map (`"github"` → `"@kuzo-mcp/plugin-github"`). Plus the `plugin-host.js` path fix: `import.meta.resolve("@kuzo-mcp/core/plugin-host")` + `fileURLToPath()`.
    - Each plugin package declares `@kuzo-mcp/types` as a **peerDependency** (not dep — see §A.7).
