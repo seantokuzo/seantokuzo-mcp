@@ -7,7 +7,7 @@ import type {
   ToolDefinition,
   ResourceDefinition,
   PluginContext,
-} from "../plugins/types.js";
+} from "@kuzo-mcp/types";
 import type { KuzoLogger } from "./logger.js";
 
 export interface RegisteredTool {

@@ -9,7 +9,7 @@
  * Optional: GITHUB_USERNAME via credential broker (access: "raw")
  */
 
-import type { KuzoPluginV2 } from "../types.js";
+import type { KuzoPluginV2 } from "@kuzo-mcp/types";
 import type { GitHubClient } from "./client.js";
 import { setClient, resetClient } from "./state.js";
 import { pullRequestTools } from "./tools/pulls.js";

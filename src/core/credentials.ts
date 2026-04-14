@@ -13,7 +13,7 @@ import type {
   CredentialBroker,
   CredentialCapability,
   PluginLogger,
-} from "../plugins/types.js";
+} from "@kuzo-mcp/types";
 import type { AuditLogger } from "./audit.js";
 import { GitHubClient } from "../plugins/github/client.js";
 import { JiraClient } from "../plugins/jira/client.js";

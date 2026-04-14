@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import { defineTool, type ToolDefinition } from "../../types.js";
+import { defineTool, type ToolDefinition } from "@kuzo-mcp/types";
 import { getClient } from "../state.js";
 
 // ============================================================================

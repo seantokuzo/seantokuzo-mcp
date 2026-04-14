@@ -2,7 +2,7 @@
  * git://context resource — JSON snapshot of the current git state.
  */
 
-import type { ResourceDefinition } from "../../types.js";
+import type { ResourceDefinition } from "@kuzo-mcp/types";
 import { getGitContext } from "../git.js";
 
 export const gitContextResource: ResourceDefinition = {

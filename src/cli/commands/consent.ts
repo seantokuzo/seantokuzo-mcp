@@ -17,7 +17,7 @@ import {
   isV2Plugin,
   type Capability,
   type KuzoPlugin,
-} from "../../plugins/types.js";
+} from "@kuzo-mcp/types";
 import { showSuccess, showWarning, showError, showInfo } from "../ui/display.js";
 
 /** Shared audit logger for CLI consent commands */

@@ -5,7 +5,7 @@
  * `context.callTool()` to resolve repo/branch automatically.
  */
 
-import type { KuzoPluginV2 } from "../types.js";
+import type { KuzoPluginV2 } from "@kuzo-mcp/types";
 import { getGitContextTool } from "./tools/context.js";
 import { gitContextResource } from "./resources/context.js";
 

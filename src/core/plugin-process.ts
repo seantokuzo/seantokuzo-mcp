@@ -10,7 +10,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
 import { IpcChannel } from "./ipc.js";
-import type { CredentialCapability } from "../plugins/types.js";
+import type { CredentialCapability } from "@kuzo-mcp/types";
 import type { KuzoLogger } from "./logger.js";
 import type { PluginRegistry } from "./registry.js";
 import type { AuditLogger } from "./audit.js";

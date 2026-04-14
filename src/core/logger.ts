@@ -4,7 +4,7 @@
  */
 
 import chalk from "chalk";
-import type { PluginLogger } from "../plugins/types.js";
+import type { PluginLogger } from "@kuzo-mcp/types";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
