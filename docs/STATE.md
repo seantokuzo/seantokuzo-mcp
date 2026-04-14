@@ -209,7 +209,7 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - `pnpm dev:cli` now requires a prior `pnpm build` because `@kuzo-mcp/types` resolves via `exports["."].import → ./dist/index.js`. Adding a `"development": "./src/index.ts"` exports condition is a post-2.5e cleanup, acknowledged in spec §A.3.
 - Plugin-local `types.ts` files (`src/plugins/github/types.ts` etc.) are untouched — those hold plugin-specific types. Only the SHARED `src/plugins/types.ts` moved to `@kuzo-mcp/types`. When extracting plugins in Step 5, plugin-local `../types.js` / `./types.js` imports from files like `src/plugins/github/tools/pulls.ts` stay as-is (they still resolve within the new `packages/plugin-github/` tree).
 - Root `tsconfig.json` is still non-composite with `include: ["src/**/*"]` + one `references` entry. Step 7 finally flips it to solution-style (`files: []` + refs only).
-- All 9 `src/core/**` files currently use `@kuzo-mcp/types` imports already — moving them to `packages/core/src/**` in Step 4 requires zero import changes to those files.
+- All `src/core/**` files currently use `@kuzo-mcp/types` imports already — moving them to `packages/core/src/**` in Step 4 requires zero import changes to those files.
 
 ### Stale docs to expect (don't fix in isolation)
 
