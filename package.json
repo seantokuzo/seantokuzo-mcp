@@ -11,7 +11,7 @@
     "dev:cli": "tsx src/cli/index.ts",
     "start:mcp": "node dist/core/server.js",
     "cli": "tsx src/cli/index.ts",
-    "lint": "eslint src/",
+    "lint": "eslint .",
     "typecheck": "tsc -b"
   },
   "keywords": [
