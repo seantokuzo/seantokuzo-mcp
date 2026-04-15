@@ -7,7 +7,6 @@
  * Entry: node dist/core/plugin-host.js
  */
 
-import { pathToFileURL } from "url";
 import { IpcChannel } from "./ipc.js";
 import { DefaultCredentialBroker } from "./credentials.js";
 import { AuditLogger } from "./audit.js";
@@ -43,7 +42,8 @@ function createIpcLogger(pluginName: string, channel: IpcChannel): PluginLogger 
 
 interface InitParams {
   pluginName: string;
-  pluginPath: string;
+  /** file:// URL of the plugin's module entry — resolved by the parent's plugin-resolver */
+  pluginEntryUrl: string;
   env: Record<string, string>;
   capabilities: CredentialCapability[];
 }
@@ -93,7 +93,7 @@ async function main(): Promise<void> {
   // ── Initialize ──
 
   async function handleInitialize(initParams: InitParams, ch: IpcChannel): Promise<{ ok: true }> {
-    const { pluginName, pluginPath, env, capabilities } = initParams;
+    const { pluginName, pluginEntryUrl, env, capabilities } = initParams;
 
     // Inject scoped env vars (replaces whatever fork() passed)
     for (const [key, value] of Object.entries(env)) {
@@ -130,13 +130,12 @@ async function main(): Promise<void> {
     // Build PluginContext
     pluginContext = { credentials, logger, callTool };
 
-    // Dynamic import the plugin module
-    const pluginUrl = pathToFileURL(pluginPath).href;
-    const module = (await import(pluginUrl)) as Record<string, unknown>;
+    // Dynamic import the plugin module — URL already resolved by parent
+    const module = (await import(pluginEntryUrl)) as Record<string, unknown>;
     plugin = module["default"] as KuzoPlugin;
 
     if (!plugin?.name || !plugin.tools || !plugin.initialize) {
-      throw new Error(`Invalid plugin at ${pluginPath}: must export default KuzoPlugin`);
+      throw new Error(`Invalid plugin at ${pluginEntryUrl}: must export default KuzoPlugin`);
     }
 
     // Index tools

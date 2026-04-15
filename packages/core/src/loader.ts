@@ -9,9 +9,6 @@
  *   - KUZO_STRICT=true — only stored consent, no trust overrides
  */
 
-import { pathToFileURL, fileURLToPath } from "url";
-import { resolve, dirname } from "path";
-import { existsSync } from "fs";
 import {
   isV2Plugin,
   type Capability,
@@ -25,13 +22,11 @@ import {
 } from "@kuzo-mcp/types";
 import type { PluginRegistry } from "./registry.js";
 import type { ConfigManager } from "./config.js";
-import { createPluginLogger, type KuzoLogger } from "./logger.js";
+import { createPluginLogger, KuzoLogger } from "./logger.js";
 import { ConsentStore } from "./consent.js";
 import { AuditLogger } from "./audit.js";
 import { PluginProcess } from "./plugin-process.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import { resolvePluginEntry } from "./plugin-resolver.js";
 
 export class PluginLoader {
   private readonly trustPlugins: Set<string>;
@@ -233,19 +228,23 @@ export class PluginLoader {
     const result: LoadResult = { loaded: [], skipped: [], failed: [] };
 
     try {
-      // Resolve plugin module path relative to compiled output
-      const pluginPath = resolve(__dirname, "..", "plugins", name, "index.js");
-
-      if (!existsSync(pluginPath)) {
-        const reason = `module not found at plugins/${name}/index.js`;
+      // Resolve plugin entry via package name — works in both installed-mode
+      // (~/.kuzo/plugins/<name>/node_modules/<pkg>/) and dev-mode (workspace
+      // symlink via import.meta.resolve). See plugin-resolver.ts.
+      let pluginEntryUrl: string;
+      try {
+        pluginEntryUrl = resolvePluginEntry(name, this.configManager.getPluginConfig());
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
         this.auditLogger.log({ plugin: name, action: "plugin.skipped", outcome: "denied", details: { reason } });
         result.skipped.push({ name, reason });
         return result;
       }
 
-      // Dynamic import
-      const pluginUrl = pathToFileURL(pluginPath).href;
-      const module = (await import(pluginUrl)) as Record<string, unknown>;
+      // Dynamic import — read the plugin manifest in the parent to run consent
+      // checks + build the registry proxy. The child process independently
+      // imports the same URL and executes initialize().
+      const module = (await import(pluginEntryUrl)) as Record<string, unknown>;
       const plugin = module["default"] as KuzoPlugin | undefined;
 
       if (!plugin?.name || !plugin.tools || !plugin.initialize) {
@@ -336,11 +335,11 @@ export class PluginLoader {
       // Create PluginProcess — lazy, doesn't spawn until first tool call
       const pluginProcess = new PluginProcess(
         plugin.name,
-        pluginPath,
+        pluginEntryUrl,
         Object.fromEntries(config),
         capabilities,
         deps,
-        new (await import("./logger.js")).KuzoLogger(plugin.name),
+        new KuzoLogger(plugin.name),
         this.registry,
         this.auditLogger,
       );

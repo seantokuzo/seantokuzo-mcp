@@ -15,8 +15,8 @@ import type {
   PluginLogger,
 } from "@kuzo-mcp/types";
 import type { AuditLogger } from "./audit.js";
-import { GitHubClient } from "../plugins/github/client.js";
-import { JiraClient } from "../plugins/jira/client.js";
+import { GitHubClient } from "@kuzo-mcp/plugin-github/client";
+import { JiraClient } from "@kuzo-mcp/plugin-jira/client";
 
 // ---------------------------------------------------------------------------
 // Client factory registry — hardcoded for first-party services (Option A)

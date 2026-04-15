@@ -31,10 +31,13 @@ export class ConfigManager {
 
   /** Load .env file from multiple possible locations */
   private loadDotenv(): void {
+    // Dev layout: packages/core/dist/ → repo root is 3 levels up.
+    // Installed:  ~/.kuzo/plugins/<name>/node_modules/@kuzo-mcp/core/dist/
+    //             — no .env nearby, falls through to cwd.
     const possiblePaths = [
-      resolve(__dirname, "../../.env"), // dist/core -> project root
-      resolve(__dirname, "../../../.env"), // one more level
-      resolve(process.cwd(), ".env"), // cwd
+      resolve(__dirname, "../../../.env"),
+      resolve(__dirname, "../../../../.env"),
+      resolve(process.cwd(), ".env"),
     ];
 
     const envPath = possiblePaths.find((p) => existsSync(p));

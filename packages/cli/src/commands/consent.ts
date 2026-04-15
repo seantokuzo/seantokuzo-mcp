@@ -11,8 +11,8 @@ import chalk from "chalk";
 import { pathToFileURL, fileURLToPath } from "url";
 import { resolve, dirname } from "path";
 import { existsSync } from "fs";
-import { ConsentStore } from "../../core/consent.js";
-import { AuditLogger, type AuditEvent } from "../../core/audit.js";
+import { ConsentStore } from "@kuzo-mcp/core/consent";
+import { AuditLogger, type AuditEvent } from "@kuzo-mcp/core/audit";
 import {
   isV2Plugin,
   type Capability,

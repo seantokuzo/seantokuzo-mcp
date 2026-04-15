@@ -1,48 +1,29 @@
 {
   "name": "seantokuzo-mcp",
   "version": "1.0.0",
-  "description": "🔥 Kuzo MCP - PR automation, code reviews & JIRA integration",
+  "description": "🔥 Kuzo MCP - plugin-based personal MCP server",
   "type": "module",
-  "bin": {
-    "kuzo": "./dist/cli/index.js"
-  },
+  "private": true,
   "scripts": {
     "build": "tsc -b",
-    "dev:cli": "tsx src/cli/index.ts",
-    "start:mcp": "node dist/core/server.js",
-    "cli": "tsx src/cli/index.ts",
+    "typecheck": "tsc -b",
     "lint": "eslint .",
-    "typecheck": "tsc -b"
+    "clean": "pnpm -r run clean && rm -f tsconfig.tsbuildinfo",
+    "start:mcp": "node packages/core/dist/server.js",
+    "dev:cli": "pnpm --filter @kuzo-mcp/cli run dev",
+    "cli": "pnpm --filter @kuzo-mcp/cli run dev"
   },
   "keywords": [
     "mcp",
     "github",
+    "jira",
     "cli",
-    "automation",
-    "pull-request"
+    "plugin"
   ],
   "author": "Sean Tokuzo",
   "license": "MIT",
-  "dependencies": {
-    "@kuzo-mcp/types": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "@octokit/rest": "^21.0.0",
-    "boxen": "^8.0.1",
-    "chalk": "^5.3.0",
-    "commander": "^12.1.0",
-    "dotenv": "^16.4.5",
-    "figlet": "^1.7.0",
-    "gradient-string": "^3.0.0",
-    "inquirer": "^10.1.8",
-    "nanospinner": "^1.1.0",
-    "zod": "^3.25.76",
-    "zod-to-json-schema": "^3.25.2"
-  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/figlet": "^1.5.8",
-    "@types/gradient-string": "^1.1.6",
-    "@types/inquirer": "^9.0.7",
     "@types/node": "^22.5.0",
     "eslint": "^10.2.0",
     "tsx": "^4.19.0",

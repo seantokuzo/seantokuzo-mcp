@@ -12,7 +12,7 @@ import { getRandomMessage, type MessageType } from "./messages.js";
 import type {
   PullRequestInfo,
   RepoInfo,
-} from "../../plugins/github/types.js";
+} from "@kuzo-mcp/plugin-github/types";
 
 type Personality = "professional" | "chaotic" | "zen";
 

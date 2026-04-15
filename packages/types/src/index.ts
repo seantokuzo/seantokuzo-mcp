@@ -273,6 +273,13 @@ export function isV2Plugin(plugin: KuzoPlugin): plugin is KuzoPluginV2 {
 /** Per-plugin config entry */
 export interface PluginConfig {
   enabled: boolean;
+  /**
+   * Third-party plugin package name. Built-in plugins ("github", "jira",
+   * "git-context") are resolved by the loader's internal map and do not set
+   * this field. Setting it for third-party plugins is how `"my-plugin"` in
+   * config maps to `"@someone-else/kuzo-plugin-foo"` on disk.
+   */
+  packageName?: string;
 }
 
 /** Root configuration for plugin enable/disable */

@@ -5,8 +5,8 @@
 
 import inquirer from "inquirer";
 import chalk from "chalk";
-import { GitHubClient } from "../../plugins/github/client.js";
-import { parseRepoIdentifier } from "../../plugins/github/shared.js";
+import { GitHubClient } from "@kuzo-mcp/plugin-github/client";
+import { parseRepoIdentifier } from "@kuzo-mcp/plugin-github/shared";
 import {
   showBanner,
   showSuccess,
@@ -18,7 +18,7 @@ import {
   createStyledSpinner,
   showBox,
 } from "../ui/display.js";
-import type { GitHubRepo } from "../../plugins/github/types.js";
+import type { GitHubRepo } from "@kuzo-mcp/plugin-github/types";
 
 // Common gitignore templates
 const GITIGNORE_TEMPLATES = [

@@ -8,7 +8,7 @@ import chalk from "chalk";
 import { existsSync, writeFileSync, readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import { GitHubClient } from "../../plugins/github/client.js";
+import { GitHubClient } from "@kuzo-mcp/plugin-github/client";
 import {
   showBanner,
   showSuccess,
@@ -23,7 +23,8 @@ type Personality = "professional" | "chaotic" | "zen";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const envPath = resolve(__dirname, "../../../.env");
+// From packages/cli/{src,dist}/commands → repo root is 4 levels up.
+const envPath = resolve(__dirname, "../../../../.env");
 
 /**
  * Interactive setup wizard

@@ -9,9 +9,9 @@ import { spawn } from "child_process";
 import { writeFileSync, readFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { GitHubClient } from "../../plugins/github/client.js";
-import { parseRepoIdentifier } from "../../plugins/github/shared.js";
-import type { GitHubRepo } from "../../plugins/github/types.js";
+import { GitHubClient } from "@kuzo-mcp/plugin-github/client";
+import { parseRepoIdentifier } from "@kuzo-mcp/plugin-github/shared";
+import type { GitHubRepo } from "@kuzo-mcp/plugin-github/types";
 import {
   showBanner,
   showSuccess,
