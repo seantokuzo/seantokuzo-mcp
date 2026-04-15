@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-04-14
+**Last Updated:** 2026-04-15
 
 ---
 
@@ -150,7 +150,9 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - Env var scoping: each child receives ONLY its declared credential env vars + system essentials (PATH, LANG, TERM, NODE_ENV, HOME, DEBUG). Jira child cannot read `GITHUB_TOKEN`.
 - Smoke tested: 3 plugins register at startup with zero child processes, first `get_git_context` call spawns child (pid visible in logs), tool returns real data through full IPC round-trip, graceful shutdown terminates all children.
 
-**Phase 2.5e — Supply Chain** (A.1–A.3 complete — PR #15 merged as `9c15d7d`, 2026-04-14; A.4+ next session)
+**Phase 2.5e — Supply Chain** (A.1–A.7 complete — PR #17 in review as `7eca0bc`, 2026-04-15; A.9–A.10 next session, then Parts B/C/D)
+
+**A.1–A.3** (PR #15 merged as `9c15d7d`, 2026-04-14)
 
 - **A.1 — pnpm prereqs** (`9b0b11c`): `packageManager: "pnpm@10.33.0"`, `.npmrc` with `strict-peer-dependencies=true`, `auto-install-peers=false`, `link-workspace-packages=deep`, `prefer-workspace-packages=true`; `pnpm import` → `pnpm-lock.yaml`.
 - **A.2 — workspace shell** (`554c495`): `pnpm-workspace.yaml` (`packages/*`) + dormant `tsconfig.base.json` (composite, shared compiler opts).
@@ -162,21 +164,36 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - `pnpm.peerDependencyRules.ignoreMissing: ["hono"]` — MCP SDK pulls `@hono/node-server` which peer-requires `hono@^4`; we only use stdio transport. Keeps `strict-peer-dependencies=true` honest for our own code.
 - `pnpm.onlyBuiltDependencies: ["esbuild"]` — pnpm 10 blocks postinstall scripts by default; esbuild needs its postinstall to fetch its native binary for tsx.
 
+**A.4–A.7** (PR #17 open as `7eca0bc`, 2026-04-15 — extract `@kuzo-mcp/{core,plugin-*,cli}` + loader rewrite + legacy `src/` cleanup, landed as one commit)
+
+- **A.4 — extract `@kuzo-mcp/core`**: `git mv src/core/** → packages/core/src/**` (11 files). Scoped `@kuzo-mcp/core` package.json with subpath exports `.`, `./plugin-host`, `./loader`, `./consent`, `./audit`. Composite tsconfig with refs to `../types`, `../plugin-github`, `../plugin-jira` (for the credentials.ts client factory map + the plugin-resolver's dev-mode resolution scope).
+- **A.5 — loader rewrite**: new `packages/core/src/plugin-resolver.ts` holds `BUILTIN_PLUGINS` map (`"github"` → `"@kuzo-mcp/plugin-github"` etc.) — hardcoded, NOT config-driven (security property per spec §A.5). `resolvePluginEntry(name, kuzoConfig)` tries installed-mode (`~/.kuzo/plugins/<name>/node_modules/<pkg>/`, overridable via `KUZO_PLUGINS_DIR` for the parity test) then falls back to dev-mode via `import.meta.resolve(pkg)`. Third-party plugins declare `packageName` in PluginConfig (new optional field on `@kuzo-mcp/types`). `loader.ts` calls `resolvePluginEntry()` + passes the URL through the IPC chain as `pluginEntryUrl` (not `pluginPath`). `plugin-process.ts` resolves the fork host via `fileURLToPath(import.meta.resolve("@kuzo-mcp/core/plugin-host"))`. `plugin-host.ts` takes the URL directly — dropped the `pathToFileURL()` wrapping because it's already a `file://`.
+- **A.5 — extract 3 plugin packages**: `git mv src/plugins/<name>/** → packages/plugin-<name>/src/**` for all three. Each plugin declares `@kuzo-mcp/types` as BOTH `peerDependency` (publish-contract per §A.7 — avoids type-identity drift) AND `devDependency: workspace:*` (local dev — pnpm won't symlink peers with `strict-peer-deps=true` + `auto-install-peers=false`). `kuzoPlugin` metadata block on each (name, permissionModel, entry, minCoreVersion — inert until Part D).
+- **A.6 — extract `@kuzo-mcp/cli`**: `git mv src/cli/** → packages/cli/src/**`. bundled into this commit (not a separate Step 6) because CLI files reached into plugin internals via `../../plugins/<name>/<file>.js` relative paths that would break in the interim between 5 and 6. New `packages/cli/package.json` owns the `kuzo` bin; subpath imports `@kuzo-mcp/plugin-github/{client,shared,types}`, `@kuzo-mcp/plugin-jira/{client,types}`, `@kuzo-mcp/core/{consent,audit}` across 7 files (pr.ts, repo.ts, review.ts, config.ts, consent.ts, jira.ts, ui/display.ts). `postbuild: chmod +x dist/index.js`.
+- **A.7 — delete legacy `src/`**: gone after the moves. Root `tsconfig.json` flipped to solution-style (`{ files: [], references: [...] }` across all 6 packages). Root `package.json` stripped to dev-only deps + workspace scripts; dropped `bin`, dropped moved runtime deps (commander, inquirer, chalk, boxen, figlet, gradient-string, nanospinner, @octokit/rest, @modelcontextprotocol/sdk, zod-to-json-schema, dotenv, zod). `start:mcp` now `node packages/core/dist/server.js` (see tactical detail below).
+- **ESLint ignore fix**: `dist/` → `**/dist/`, same for node_modules. Plain `dist/` only matched root in flat config.
+- **Dotenv path depths** updated in `packages/core/src/config.ts` (repo root is 3 levels above `packages/core/dist/`) and `packages/cli/src/commands/config.ts` (4 levels above `packages/cli/{src,dist}/commands/`).
+
 ### ⏭️ Fresh-session handoff — when user says "next"
 
-1. **Read `docs/2.5e-spec.md` §A.1 Step 4 + Step 5** and **§A.5 (loader rewrite — the crux)**. Skim §A.2 core blueprint and §A.2 plugin-github template.
-2. **Branch off fresh main** as `phase-2.5e/step-4-5-core-plugins` (or similar). A.1–A.3 merged to main in PR #15; everything in `packages/types/` is already wired and passing CI.
-3. **Land Step 4+5 as ONE commit** — spec recommends merging them, implementer confirmed during A.3 that the stacked compat shim between 4 and 5 is messy enough to justify. If split into two commits the tree does not build between them (loader references paths the plugins no longer live at); the combined commit must end green.
-4. **What Step 4+5 does:**
-   - Create `packages/core/` and move `src/core/**` → `packages/core/src/**` (11 files as of A.3: `audit`, `config`, `consent`, `credentials`, `ipc`, `loader`, `logger`, `plugin-host`, `plugin-process`, `registry`, `server`).
-   - Create `packages/plugin-{github,jira,git-context}/` in parallel and move `src/plugins/<name>/**` → `packages/plugin-<name>/src/**`.
-   - **Loader rewrite per §A.5:** switch from `const pluginPath = resolve(__dirname, "..", "plugins", name, "index.js"); await import(pathToFileURL(pluginPath).href)` to package-name resolution: `await import("@kuzo-mcp/plugin-<name>")` via a friendly-name → scoped-package-name map (`"github"` → `"@kuzo-mcp/plugin-github"`). Plus the `plugin-host.js` path fix: `import.meta.resolve("@kuzo-mcp/core/plugin-host")` + `fileURLToPath()`.
-   - Each plugin package declares `@kuzo-mcp/types` as a **peerDependency** (not dep — see §A.7).
-   - Each plugin package gets a `kuzoPlugin` metadata field in its `package.json` (§A.2).
-   - Update root `tsconfig.json` references: add core + 3 plugins alongside existing types reference.
-5. **Verify green in the same commit:** `pnpm install`, `pnpm -r build`, `pnpm typecheck`, `pnpm lint`, `pnpm start:mcp` — and confirm all 3 `plugin.loaded` audit rows (or `plugin.skipped` consent rows in environments without consent) fire for `git-context`, `github`, `jira`.
-6. **Commit message suggestion:** `feat(core): 2.5e A.4+5 — extract @kuzo-mcp/core + 3 plugin packages, rewrite loader to package-name resolution`.
-7. **Continue sequentially with Steps 6–10** (CLI, legacy-src cleanup, project refs, CI+eslint cross-plugin rule, parity test). Then Parts B → C → D per `docs/2.5e-spec.md` §0 Build Order.
+**Gate before starting:** check that PR #17 is merged to main. If still open and not merged, ask the user first — do NOT start Steps 9+10 off the unmerged branch because they need to land on top of the A.4–A.7 tree.
+
+1. **Read `docs/2.5e-spec.md` §A.1 Steps 9 + 10** and **§A.8 (dev-to-install parity — non-negotiable gate)**. Skim §A.7 for the risks the parity test is meant to catch.
+2. **Branch off fresh main** as `phase-2.5e/step-9-10-ci-parity` (or similar). `packages/{types,core,plugin-github,plugin-jira,plugin-git-context,cli}/` are all wired and green as of PR #17.
+3. **Step 9 — CI + cross-plugin lint rule** (small — should be one commit):
+   - Verify `.github/workflows/*.yml` still pass post-extraction. The CI fix in PR #15 migrated npm→pnpm — confirm it still walks all packages. May need `pnpm -r build` (it already does) plus maybe `pnpm -r test` once a test runner lands (deferred — no test runner yet).
+   - Add an ESLint `no-restricted-imports` rule against cross-plugin imports between `packages/plugin-*`. Per spec §A.1 Step 9: "no cross-plugin imports between `packages/plugin-*`." The enforcement: any import path starting with `@kuzo-mcp/plugin-` from inside another `packages/plugin-*/` directory must error. Scope the rule via `files` globbed to `packages/plugin-*/src/**` so core/cli can still import plugin subpaths.
+   - Verify the rule actually fires with a synthetic test import (add, run lint, see error, remove).
+4. **Step 10 — dev-to-install parity test** (bigger — one commit, may get its own PR):
+   - New file `scripts/test-install-parity.mjs` per spec §A.8. Steps: (a) `pnpm --filter @kuzo-mcp/plugin-<name> pack` per plugin → produces tarballs; (b) `mkdir -p $TMPDIR/kuzo-install-test/<name> && cd <name> && npm init -y && npm install <tarball>`; (c) `KUZO_PLUGINS_DIR=$TMPDIR/kuzo-install-test node packages/core/dist/server.js` + pipe a `tools/call` for a fast tool on that plugin via MCP JSON-RPC stdio; (d) assert `plugin.loaded` audit row + non-error response; (e) repeat for all three plugins. Clean up tmpdir on exit.
+   - This is the contract test for §A.8 parity. **Non-negotiable per spec §A.9 "Do NOT skip".** It's the only thing that catches silent dual-mode resolution breakage — the dev branch works via pnpm symlinks, the installed branch exercises the tarball + `files` allowlist + `exports` subpaths + peerDep resolution + shebang bits.
+   - Add a root script: `"test:parity": "node scripts/test-install-parity.mjs"`.
+   - Wire into CI as a required gate when `packages/*/package.json` or `packages/core/src/{loader,plugin-resolver,plugin-process,plugin-host}.ts` change (per spec §A.8: "Run on every PR touching `packages/*/package.json` or the loader").
+   - Note: running this test requires `pnpm pack` to actually include everything needed. If any plugin is missing a dep (e.g. `@kuzo-mcp/types` is peer-only + not hoisted in npm install — check behavior), this is where it surfaces.
+5. **Verify green:** `pnpm install`, `pnpm build`, `pnpm typecheck`, `pnpm lint`, `pnpm test:parity`. Commit green.
+6. **Commit message suggestion:** `feat(core): 2.5e A.9–10 — cross-plugin ESLint rule + dev-to-install parity test` (or split into two commits within one PR).
+7. **Close Part A:** verify `docs/2.5e-spec.md` §E.1 acceptance criteria for Part A are satisfied. Also nudge the user about updating `docs/PLANNING.md` §2.5e (stale Turborepo/unscoped refs) and `docs/SECURITY.md` §5 per §E.1 — these land at phase close, not mid-Part.
+8. **Then Parts B → C → D** per `docs/2.5e-spec.md` §0 Build Order. Each is its own PR.
 
 ### Source of truth
 
@@ -190,43 +207,58 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 ### Locked decisions (supersede older docs)
 
 1. **pnpm workspaces only** — NOT Turborepo. Archetype: `modelcontextprotocol/typescript-sdk`. Turbo is a ~30 min add-later if CI pain emerges.
-2. **Scoped `@kuzo-mcp/*` package names** — NOT unscoped `kuzo-mcp-plugin-*`. Enables friendly-name resolution (`install github` → `@kuzo-mcp/plugin-github`). Already applied via `@kuzo-mcp/types`.
+2. **Scoped `@kuzo-mcp/*` package names** — NOT unscoped `kuzo-mcp-plugin-*`. Enables friendly-name resolution (`install github` → `@kuzo-mcp/plugin-github`). Applied across all 6 packages as of PR #17.
 3. **`tsc -b` is both build AND typecheck** — `tsc -b --noEmit` is not an option (TS6310: referenced composite projects may not disable emit). Accept the redundancy; tsbuildinfo makes subsequent runs near-free. Do not re-suggest this cleanup.
 4. **Option A verification:** pre-install attestation fetch via npm registry API + `sigstore.verify()` (meta-package, NOT `@sigstore/verify` directly). There is no `npm install --require-provenance` flag in 2026 — we roll our own.
 5. **Exact-name install for MVP.** No `kuzo plugins search` — deferred.
 6. **Tokenless Trusted Publishing (OIDC) from day one** — no `NPM_TOKEN` secret. GA since July 2025.
 7. **Retain last 3 versions per plugin** for rollback.
-8. **Step 4+5 lands as one commit** (decided during A.3 planning — stacked compat shim too ugly; spec agreed as fallback).
+8. **Step 4+5+6+7 landed as one commit** (PR #17 / `7eca0bc`). Step 6 was bundled because CLI reached into plugin internals via relative paths; Step 7 is janitorial after 6.
+9. **Subpath exports (not separate client packages)** — `@kuzo-mcp/plugin-github/client`, `@kuzo-mcp/core/consent` etc. Extracting clients into their own `@kuzo-mcp/clients-*` workspace packages ("Option C") was considered and deferred — proper decoupling but not 2.5e-blocking.
+10. **Plugin packages declare `@kuzo-mcp/types` BOTH peer AND devDep workspace:\***. Peer is the publish-contract (§A.7 — avoids type-identity drift). DevDep is required for local dev because `strict-peer-deps=true` + `auto-install-peers=false` means pnpm won't symlink peer-only deps into the plugin's `node_modules`. Do not remove the devDep entry thinking it's redundant — it is not.
+11. **`@kuzo-mcp/core` directly depends on all 3 plugin packages** — `plugin-github` + `plugin-jira` for the credentials.ts client factory map (Option A coupling, accepted in 2.5b); `plugin-git-context` purely so `import.meta.resolve("@kuzo-mcp/plugin-git-context")` can find it in core's resolution scope. Project refs in `packages/core/tsconfig.json` mirror this.
+12. **`start:mcp` runs `node packages/core/dist/server.js` from repo root**, NOT `pnpm --filter @kuzo-mcp/core exec node dist/server.js` (spec §A.6 suggestion). pnpm --filter changes cwd to the package dir, which breaks the dotenv cwd fallback. Direct node invocation keeps cwd at repo root so `.env` is found.
 
-### Branch state (post-A.3)
+### Branch state (post-A.7)
 
 - **main** at `9c15d7d Phase 2.5e A.1–A.3: pnpm monorepo prereqs + @kuzo-mcp/types (#15)`
-- `phase-2.5e/supply-chain` deleted on both local + remote after squash-merge.
-- Fresh session should branch off main.
+- **PR #17** open at `phase-2.5e/step-4-5-core-plugins` → `main` (commit `7eca0bc` — A.4–A.7). Fresh session must verify #17 is merged before branching for Steps 9+10.
+- Fresh session should branch off whichever commit main points to after the #17 merge.
 
-### Known tactical detail from A.1–A.3 session
+### Known tactical detail from A.4–A.7 session
 
-- `pnpm dev:cli` now requires a prior `pnpm build` because `@kuzo-mcp/types` resolves via `exports["."].import → ./dist/index.js`. Adding a `"development": "./src/index.ts"` exports condition is a post-2.5e cleanup, acknowledged in spec §A.3.
-- Plugin-local `types.ts` files (`src/plugins/github/types.ts` etc.) are untouched — those hold plugin-specific types. Only the SHARED `src/plugins/types.ts` moved to `@kuzo-mcp/types`. When extracting plugins in Step 5, plugin-local `../types.js` / `./types.js` imports from files like `src/plugins/github/tools/pulls.ts` stay as-is (they still resolve within the new `packages/plugin-github/` tree).
-- Root `tsconfig.json` is still non-composite with `include: ["src/**/*"]` + one `references` entry. Step 7 finally flips it to solution-style (`files: []` + refs only).
-- All `src/core/**` files currently use `@kuzo-mcp/types` imports already — moving them to `packages/core/src/**` in Step 4 requires zero import changes to those files.
+- **`@kuzo-mcp/types` peer + devDep**: see locked decision #10. This is the #1 gotcha to re-derive if the plugin packages ever get a clean-slate rewrite.
+- **Core's project refs**: `packages/core/tsconfig.json` has `references: [../types, ../plugin-github, ../plugin-jira]`. Without the plugin refs, `tsc -b` builds core before plugins, and the `@kuzo-mcp/plugin-github/client` subpath `.d.ts` files don't exist yet. If anyone adds a new plugin that core needs to factory-import, add the ref.
+- **ESLint flat-config glob**: `ignores: ["dist/", ...]` does NOT match `packages/*/dist/` — needs `**/dist/`. Same lesson for any new nested output dir.
+- **`git mv <dir> <target>/src/` nests by one level** (creates `<target>/src/<dir>/`). Flatten with `(cd <target>/src && for f in <dir>/*; do git mv "$f" .; done && rmdir <dir>)` per plugin. All 4 moves in this session needed the flatten step.
+- **`git mv` + subsequent edits = RM entries** (staged rename, unstaged modify). `git add -u` after mv picks up the modification half. Without it, the first commit includes the rename but not the edits — tree doesn't build at that commit. Caught this in A.4–A.7 via `git reset --soft HEAD~1 && git add -u` and a re-commit.
+- **Dotenv path depths**: `packages/core/dist/` is 3 levels below repo root; `packages/cli/{src,dist}/commands/` is 4 levels. If a new script in a different package needs `.env`, count the levels.
+- **MCP end-to-end smoke**: `printf '{"jsonrpc":"2.0","id":1,"method":"initialize",...}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_git_context","arguments":{}}}\n' | KUZO_TRUST_ALL=true node packages/core/dist/server.js` boots + spawns a child + returns real tool data. Useful parity test seed.
+- **pnpm dev:cli still requires a prior `pnpm build`** because `@kuzo-mcp/types` (and now core) resolve via `exports["."].import → ./dist/index.js`. Adding a `"development": "./src/index.ts"` exports condition is a post-2.5e cleanup.
+- **Root `tsconfig.json` is now solution-style** (`{ files: [], references: [...] }` across all 6 packages). Adding a new package means: create package dir + scaffold, add to root tsconfig `references`, add to `pnpm-workspace.yaml` (already `packages/*` so automatic), add dep from whoever imports it, run `pnpm install`.
 
 ### Stale docs to expect (don't fix in isolation)
 
-- **`docs/PLANNING.md` §2.5e (lines ~504-527):** still references Turborepo and unscoped `kuzo-mcp-plugin-*` names. Fix lands naturally as Part A progresses — do not touch in a separate docs commit.
+- **`docs/PLANNING.md` §2.5e (lines ~504-527):** still references Turborepo and unscoped `kuzo-mcp-plugin-*` names. Land at phase close per spec §E.1 — do not touch in a separate docs commit.
 - **`docs/SECURITY.md` §5 (supply chain):** review + update at phase close per spec §E.1.
 
 ### PR strategy
 
-Updated: A.1–A.3 shipped as PR #15. Remaining Part A (Steps 4–10) could be one PR or split further — recommend one PR covering Steps 4+5 (the big one) and a second PR for Steps 6–10 (CLI + cleanup + refs + CI + parity test). Parts B → C → D each get their own PR per original plan.
+- **PR #15 (merged)** — A.1–A.3: pnpm prereqs + `@kuzo-mcp/types`.
+- **PR #17 (in review)** — A.4–A.7: extract `@kuzo-mcp/{core,plugin-*,cli}` + loader rewrite + legacy src/ cleanup.
+- **Next PR** — A.9–A.10: CI no-cross-plugin ESLint rule + dev-to-install parity test. Could be one PR with two commits, or two small PRs — implementer's call but a single PR is fine.
+- **Then Parts B → C → D** each their own PR per `docs/2.5e-spec.md` §0 Build Order.
 
 ### Do NOT
 
-- Start with Part B, C, or D before Part A completes — packages must exist before publishing or installation logic can land.
+- Start with Part B, C, or D before Part A completes (Steps 9+10 still pending) — packages must exist AND the parity test must pass before publishing or installation logic can land.
 - Rewrite `PLANNING.md` / `SECURITY.md` in isolation — those updates land at phase close (§E.1).
 - Re-suggest `tsc -b --noEmit` for `typecheck` — blocked by TS6310 with composite projects; already evaluated in A.3.
 - Open cross-session debate on spec §E.2 questions unless you actually hit them — use recommended defaults.
-- Skip the parity test (§A.8) — it's the only gate that catches silent dual-mode resolution breakage.
+- Skip the parity test (§A.8) — it's the only gate that catches silent dual-mode resolution breakage. Non-negotiable per spec §A.9.
+- Remove `@kuzo-mcp/types` from plugin `devDependencies` thinking the peer entry is enough — see locked decision #10. This will silently break local workspace builds.
+- Change `start:mcp` back to `pnpm --filter @kuzo-mcp/core exec node dist/server.js` — see locked decision #12. Breaks dotenv cwd fallback.
+- Extract plugin clients into `@kuzo-mcp/clients-*` packages ("Option C") as part of 2.5e. Intentionally deferred — it is proper decoupling but not phase-blocking. Subpath exports are the 2.5e-era answer.
 
 ### Phase 2.b Decomposition
 

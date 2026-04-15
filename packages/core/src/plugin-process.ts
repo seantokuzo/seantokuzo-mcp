@@ -6,7 +6,6 @@
  */
 
 import { fork, type ChildProcess } from "child_process";
-import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
 import { IpcChannel } from "./ipc.js";
@@ -15,8 +14,12 @@ import type { KuzoLogger } from "./logger.js";
 import type { PluginRegistry } from "./registry.js";
 import type { AuditLogger } from "./audit.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+/**
+ * Child-process entry. Resolved through the core package's exports map so the
+ * path is correct in both dev (pnpm symlink) and installed mode. fork() wants
+ * a filesystem path, not a URL — fileURLToPath unwraps it.
+ */
+const HOST_PATH = fileURLToPath(import.meta.resolve("@kuzo-mcp/core/plugin-host"));
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -95,7 +98,8 @@ export class PluginProcess {
 
   constructor(
     private readonly pluginName: string,
-    private readonly pluginPath: string,
+    /** file:// URL of the plugin's module entry — resolved by plugin-resolver */
+    private readonly pluginEntryUrl: string,
     private readonly scopedEnv: Record<string, string>,
     private readonly capabilities: CredentialCapability[],
     /** Cross-plugin deps. null = unrestricted (V1 legacy). Set = scoped to declared deps (V2). */
@@ -142,7 +146,6 @@ export class PluginProcess {
     this.state = "spawning";
     this.logger.info(`Spawning child process for "${this.pluginName}"`);
 
-    const hostPath = resolve(__dirname, "plugin-host.js");
     const env: Record<string, string> = {
       ...getSystemEnv(),
       ...this.scopedEnv,
@@ -152,14 +155,15 @@ export class PluginProcess {
 
     // Optional Node Permission Model flags
     if (process.env["KUZO_NODE_PERMISSIONS"] === "true") {
+      const pluginFsPath = fileURLToPath(this.pluginEntryUrl);
       execArgv.push(
         "--experimental-permission",
-        `--allow-fs-read=${this.pluginPath},${homedir()}/.kuzo/`,
+        `--allow-fs-read=${pluginFsPath},${homedir()}/.kuzo/`,
       );
       this.logger.info(`Node Permission Model enabled for "${this.pluginName}"`);
     }
 
-    this.child = fork(hostPath, [], {
+    this.child = fork(HOST_PATH, [], {
       env,
       execArgv,
       serialization: "json",
@@ -221,7 +225,7 @@ export class PluginProcess {
         "initialize",
         {
           pluginName: this.pluginName,
-          pluginPath: this.pluginPath,
+          pluginEntryUrl: this.pluginEntryUrl,
           env,
           capabilities: this.capabilities,
         },

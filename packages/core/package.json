@@ -1,0 +1,64 @@
+{
+  "name": "@kuzo-mcp/core",
+  "version": "0.0.1",
+  "description": "Core MCP server, plugin registry, loader, IPC, and plugin-host for Kuzo MCP.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seantokuzo/seantokuzo-mcp.git",
+    "directory": "packages/core"
+  },
+  "main": "./dist/server.js",
+  "types": "./dist/server.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./plugin-host": {
+      "import": "./dist/plugin-host.js"
+    },
+    "./loader": {
+      "types": "./dist/loader.d.ts",
+      "import": "./dist/loader.js"
+    },
+    "./consent": {
+      "types": "./dist/consent.d.ts",
+      "import": "./dist/consent.js"
+    },
+    "./audit": {
+      "types": "./dist/audit.d.ts",
+      "import": "./dist/audit.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.js.map",
+    "dist/**/*.d.ts.map"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@kuzo-mcp/plugin-git-context": "workspace:*",
+    "@kuzo-mcp/plugin-github": "workspace:*",
+    "@kuzo-mcp/plugin-jira": "workspace:*",
+    "@kuzo-mcp/types": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "chalk": "^5.3.0",
+    "dotenv": "^16.4.5",
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.2"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

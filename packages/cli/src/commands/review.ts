@@ -5,7 +5,7 @@
 
 import inquirer from "inquirer";
 import chalk from "chalk";
-import { GitHubClient } from "../../plugins/github/client.js";
+import { GitHubClient } from "@kuzo-mcp/plugin-github/client";
 import {
   showBanner,
   showSuccess,
@@ -18,7 +18,7 @@ import type {
   GitHubRepo,
   PRFileDiff,
   PullRequestInfo,
-} from "../../plugins/github/types.js";
+} from "@kuzo-mcp/plugin-github/types";
 
 // CLI-only type — inlined from legacy src/types/index.ts
 interface CodeConcern {

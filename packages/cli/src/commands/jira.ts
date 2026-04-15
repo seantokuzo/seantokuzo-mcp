@@ -5,7 +5,7 @@
 
 import inquirer from "inquirer";
 import chalk from "chalk";
-import { JiraClient } from "../../plugins/jira/client.js";
+import { JiraClient } from "@kuzo-mcp/plugin-jira/client";
 import {
   showBanner,
   showSuccess,
@@ -15,7 +15,7 @@ import {
   showBox,
   createStyledSpinner,
 } from "../ui/display.js";
-import type { JiraTicket, JiraSubtask } from "../../plugins/jira/types.js";
+import type { JiraTicket, JiraSubtask } from "@kuzo-mcp/plugin-jira/types";
 
 /**
  * Construct a JiraClient from environment variables.
