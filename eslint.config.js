@@ -19,6 +19,23 @@ export default tseslint.config(
     },
   },
   {
+    files: ["packages/plugin-*/src/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@kuzo-mcp/plugin-*", "@kuzo-mcp/plugin-*/**"],
+              message:
+                "Plugins must not import from other plugins. Use callTool() via PluginContext for cross-plugin communication.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     ignores: ["**/dist/", "**/node_modules/"],
   },
 );
