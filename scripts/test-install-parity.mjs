@@ -28,7 +28,7 @@
  */
 
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -100,9 +100,7 @@ function buildAndPack(tarballDir) {
     run("pnpm", ["--filter", filter, "pack", "--pack-destination", tarballDir], { cwd: REPO_ROOT });
     // pnpm pack emits "kuzo-mcp-<name>-<version>.tgz"
     const flat = filter.replace(/^@/, "").replace(/\//, "-");
-    const files = execFileSync("ls", [tarballDir], { encoding: "utf8" })
-      .split("\n")
-      .filter((f) => f.startsWith(flat) && f.endsWith(".tgz"));
+    const files = readdirSync(tarballDir).filter((f) => f.startsWith(flat) && f.endsWith(".tgz"));
     if (files.length !== 1) fail(`expected 1 tarball for ${filter}, found ${files.length}: ${files.join(", ")}`);
     tarballs[key] = join(tarballDir, files[0]);
   }
@@ -139,6 +137,15 @@ function bootServer(env) {
 
   let buffer = "";
   const pending = new Map();
+
+  function settle(id, fn, value) {
+    const entry = pending.get(id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    pending.delete(id);
+    entry[fn](value);
+  }
+
   child.stdout.on("data", (chunk) => {
     buffer += chunk.toString();
     let idx;
@@ -148,15 +155,13 @@ function bootServer(env) {
       if (!line) continue;
       let msg;
       try { msg = JSON.parse(line); } catch { continue; }
-      if (msg.id != null && pending.has(msg.id)) {
-        pending.get(msg.id).resolve(msg);
-        pending.delete(msg.id);
-      }
+      if (msg.id != null && pending.has(msg.id)) settle(msg.id, "resolve", msg);
     }
   });
   child.on("exit", (code) => {
-    for (const p of pending.values()) p.reject(new Error(`server exited with code ${code} before responding`));
-    pending.clear();
+    for (const id of [...pending.keys()]) {
+      settle(id, "reject", new Error(`server exited with code ${code} before responding`));
+    }
   });
 
   let nextId = 1;
@@ -164,14 +169,11 @@ function bootServer(env) {
     const id = nextId++;
     const payload = { jsonrpc: "2.0", id, method, params };
     return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
-      child.stdin.write(JSON.stringify(payload) + "\n");
-      setTimeout(() => {
-        if (pending.has(id)) {
-          pending.delete(id);
-          reject(new Error(`timeout waiting for response to ${method} (id=${id})`));
-        }
+      const timer = setTimeout(() => {
+        settle(id, "reject", new Error(`timeout waiting for response to ${method} (id=${id})`));
       }, 30_000);
+      pending.set(id, { resolve, reject, timer });
+      child.stdin.write(JSON.stringify(payload) + "\n");
     });
   }
   function notify(method, params) {

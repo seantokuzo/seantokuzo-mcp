@@ -60,6 +60,7 @@ function installExitGuard(logger: KuzoLogger): void {
   process.exit = ((code?: number) => {
     logger.error(`Blocked process.exit(${code}) — a plugin tried to kill the server`);
   }) as typeof process.exit;
+  logger.info("process.exit guard installed");
 }
 
 function freezePrototypes(logger: KuzoLogger): void {
@@ -70,7 +71,7 @@ function freezePrototypes(logger: KuzoLogger): void {
   Object.freeze(String.prototype);
   Object.freeze(Number.prototype);
   Object.freeze(Boolean.prototype);
-  logger.info("Runtime hardened: prototypes frozen, process.exit guarded");
+  logger.info("Intrinsic prototypes frozen");
 }
 
 async function main(): Promise<void> {
