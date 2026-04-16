@@ -36,14 +36,33 @@ function zodToMcpInputSchema(
 }
 
 // ---------------------------------------------------------------------------
-// Intrinsic hardening — runs before any plugin code loads
+// Intrinsic hardening
 // ---------------------------------------------------------------------------
+//
+// The exit guard installs early (before anything plugin-adjacent runs). The
+// prototype freeze happens *after* the loader imports plugin manifests, because
+// freezing Object.prototype breaks common JS patterns like TypeScript's
+// transpiled namespace IIFE (e.g. `errorUtil.toString = ...` on a plain object
+// inherits a now-read-only toString from the frozen prototype, and strict-mode
+// ESM throws). Deferring the freeze until after manifest import:
+//   - Keeps zero tool-call execution in the parent pre-freeze (2.5d moved all
+//     plugin code to child processes; parent only reads manifests during
+//     loader.loadAll).
+//   - Seals the parent before the server starts serving any MCP requests.
+//
+// Children run without frozen prototypes today (plugin-host doesn't freeze);
+// that's a separate hardening gap tracked for 2.5e+.
 
 /** Stash the real process.exit for core shutdown paths */
 const realExit: (code?: number) => never = process.exit.bind(process);
 
-function hardenRuntime(logger: KuzoLogger): void {
-  // Freeze key prototypes to prevent pollution attacks
+function installExitGuard(logger: KuzoLogger): void {
+  process.exit = ((code?: number) => {
+    logger.error(`Blocked process.exit(${code}) — a plugin tried to kill the server`);
+  }) as typeof process.exit;
+}
+
+function freezePrototypes(logger: KuzoLogger): void {
   Object.freeze(Object.prototype);
   Object.freeze(Array.prototype);
   Object.freeze(Function.prototype);
@@ -51,12 +70,6 @@ function hardenRuntime(logger: KuzoLogger): void {
   Object.freeze(String.prototype);
   Object.freeze(Number.prototype);
   Object.freeze(Boolean.prototype);
-
-  // Block plugins from killing the process
-  process.exit = ((code?: number) => {
-    logger.error(`Blocked process.exit(${code}) — a plugin tried to kill the server`);
-  }) as typeof process.exit;
-
   logger.info("Runtime hardened: prototypes frozen, process.exit guarded");
 }
 
@@ -64,8 +77,8 @@ async function main(): Promise<void> {
   const logger = new KuzoLogger("server");
   logger.info("Starting Kuzo MCP Server...");
 
-  // Harden BEFORE any plugin code runs
-  hardenRuntime(logger);
+  // Install the exit guard before touching any plugin-adjacent code
+  installExitGuard(logger);
 
   // Initialize core systems
   const configManager = new ConfigManager();
@@ -80,8 +93,12 @@ async function main(): Promise<void> {
     auditLogger,
   );
 
-  // Load plugins
+  // Load plugins (imports plugin manifests — plugin dep init runs here)
   const loadResult = await loader.loadAll();
+
+  // Freeze prototypes now that manifest imports are done but before serving
+  // any MCP requests. See the hardening note above for the rationale.
+  freezePrototypes(logger);
 
   if (loadResult.loaded.length === 0 && loadResult.failed.length > 0) {
     logger.error("No plugins loaded and some failed — check your configuration");
