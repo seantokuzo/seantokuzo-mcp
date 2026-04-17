@@ -99,15 +99,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Write .env for parity test
-        # The default runner GITHUB_TOKEN has read access to the current repo,
-        # which is all the parity test's get_repo_info call needs.
-        run: |
-          {
-            echo "GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}"
-            echo "GITHUB_USERNAME=github-actions[bot]"
-          } > .env
-
       - name: Run parity test
         run: pnpm run test:parity
 

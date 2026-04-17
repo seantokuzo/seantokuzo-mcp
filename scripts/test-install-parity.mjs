@@ -16,15 +16,15 @@
  *      tarball + types tarball → satisfies the peerDependency on types.
  *   4. Boot `packages/core/dist/server.js` with KUZO_PLUGINS_DIR pointing at
  *      the temp dir, a tmp HOME (isolates ~/.kuzo/audit.log), KUZO_TRUST_ALL
- *      (bypasses consent prompts), and real GITHUB_* creds from .env.
+ *      (bypasses consent prompts), and fake creds for github/jira (enough to
+ *      pass config validation; children never spawn so creds never hit APIs).
  *   5. MCP handshake + tools/list → assert tools from all 3 plugins present.
- *   6. tools/call get_git_context (no creds) → expect success.
- *   7. tools/call get_repo_info (real GitHub API) → expect success.
- *   8. Read the isolated audit.log → assert plugin.loaded for all three.
+ *   6. tools/call get_git_context (no creds needed) → expect success.
+ *   7. Read the isolated audit.log → assert plugin.loaded for all three.
  *
- * Jira tools/call is skipped because the dev env's Jira token is stale;
- * plugin.loaded still fires because the proxy is registered on manifest
- * import, before the child spawns and calls verifyConnection().
+ * No github/jira tool calls are made. The parity test validates the
+ * install/resolve path, not plugin API connectivity — that belongs in
+ * plugin-level tests once a test runner is in place.
  */
 
 import { spawn, execFileSync } from "node:child_process";
@@ -49,7 +49,6 @@ const EXPECTED_TOOLS = {
 
 const TOOL_CALLS = [
   { name: "get_git_context", arguments: {} },
-  { name: "get_repo_info",   arguments: { repository: "seantokuzo/seantokuzo-mcp" } },
 ];
 
 // ---------------------------------------------------------------------------
@@ -59,21 +58,6 @@ const TOOL_CALLS = [
 function log(msg) { console.log(`[parity] ${msg}`); }
 function fail(msg) { console.error(`[parity] FAIL: ${msg}`); process.exit(1); }
 
-/** Parse .env into a plain object. No substitution, no quoting beyond basic. */
-function loadDotenv(path) {
-  if (!existsSync(path)) return {};
-  const out = {};
-  for (const line of readFileSync(path, "utf8").split("\n")) {
-    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (!m) continue;
-    let [, k, v] = m;
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-      v = v.slice(1, -1);
-    }
-    out[k] = v;
-  }
-  return out;
-}
 
 function run(cmd, args, opts = {}) {
   return execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], ...opts });
@@ -223,9 +207,6 @@ function assertToolResult(method, response) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const dotenv = loadDotenv(join(REPO_ROOT, ".env"));
-  if (!dotenv.GITHUB_TOKEN) fail("GITHUB_TOKEN missing from .env — parity test needs real GitHub creds for the github plugin tool invocation");
-
   const root = join(tmpdir(), `kuzo-parity-${Date.now()}`);
   const tarballDir = join(root, "tarballs");
   const pluginsDir = join(root, "plugins");
@@ -239,17 +220,19 @@ async function main() {
     const tarballs = buildAndPack(tarballDir);
     installPlugins(pluginsDir, tarballs);
 
+    // Fake credentials for github + jira so the plugins pass config
+    // validation and register in the parent (proxy + tools/list).
+    // No tool calls are made against these plugins — plugin.loaded fires
+    // at manifest import (lazy spawn), so fake creds never hit an API.
+    // Only get_git_context is actually invoked (no creds needed).
     server = bootServer({
       PATH: process.env.PATH,
       HOME: home,
       NODE_ENV: "production",
       KUZO_PLUGINS_DIR: pluginsDir,
       KUZO_TRUST_ALL: "true",
-      GITHUB_TOKEN: dotenv.GITHUB_TOKEN,
-      GITHUB_USERNAME: dotenv.GITHUB_USERNAME ?? "",
-      // Fake jira env so the plugin passes config validation and manifest
-      // imports cleanly. Tool calls would fail on verifyConnection but we
-      // don't invoke them — plugin.loaded fires on manifest import (lazy spawn).
+      GITHUB_TOKEN: "parity-fake-token",
+      GITHUB_USERNAME: "parity-test",
       JIRA_HOST: "parity-test.atlassian.net",
       JIRA_EMAIL: "parity@example.com",
       JIRA_API_TOKEN: "parity-fake-token",
