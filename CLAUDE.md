@@ -14,7 +14,7 @@ Kuzo MCP is a **plugin-based MCP server** where each integration (GitHub, Jira, 
 - `docs/SECURITY.md` — Phase 2.5 security model, threat model, implementation plan
 - `docs/2.5e-spec.md` — **Active spec.** Phase 2.5e implementation north star (monorepo + provenance + install CLI)
 
-**Current phase:** 2.5e Steps A.1–A.7 complete — PR #15 (A.1–A.3) and PR #17 (A.4–A.7: extract `@kuzo-mcp/{core,plugin-*,cli}` + loader rewrite) both merged. main at `09011fe`. Next: Steps A.9–A.10 (CI no-cross-plugin lint rule + dev-to-install parity test), then Parts B → C → D per `docs/2.5e-spec.md` §0 Build Order. On a fresh session, if user says "next", read `docs/STATE.md` → "Fresh-session handoff" section.
+**Current phase:** 2.5e Part A complete (PRs #15, #17, #18 all merged). Next: Part B — release workflow + Trusted Publishing, then Parts C → D per `docs/2.5e-spec.md` §0 Build Order. On a fresh session, if user says "next", read `docs/STATE.md` → "Fresh-session handoff" section.
 
 ---
 

@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-04-15 (session 2: A.9+A.10 complete)
+**Last Updated:** 2026-04-16 (Part A complete, PR #18 merged)
 
 ---
 
@@ -226,11 +226,10 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 11. **`@kuzo-mcp/core` directly depends on all 3 plugin packages** — `plugin-github` + `plugin-jira` for the credentials.ts client factory map (Option A coupling, accepted in 2.5b); `plugin-git-context` purely so `import.meta.resolve("@kuzo-mcp/plugin-git-context")` can find it in core's resolution scope. Project refs in `packages/core/tsconfig.json` mirror this.
 12. **`start:mcp` runs `node packages/core/dist/server.js` from repo root**, NOT `pnpm --filter @kuzo-mcp/core exec node dist/server.js` (spec §A.6 suggestion). pnpm --filter changes cwd to the package dir, which breaks the dotenv cwd fallback. Direct node invocation keeps cwd at repo root so `.env` is found.
 
-### Branch state (post-A.9–A.10 session)
+### Branch state (post-Part A)
 
-- **main** at `28fe86e docs: rewrite README around plugin-based MCP platform` (two docs commits past PR #17's `09011fe`).
-- **Active branch** `phase-2.5e/step-9-10-ci-parity` — three commits for A.9 + A.10 + hardening fix. PR not yet opened.
-- Fresh session (post-merge) should branch off main for Part B.
+- **main** at `a0d0245` — PR #18 squash-merged. Part A complete.
+- All local feature branches deleted. Fresh session should branch off main for Part B.
 
 ### Known tactical detail from A.4–A.7 session
 
@@ -253,13 +252,13 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 
 - **PR #15** — A.1–A.3: pnpm prereqs + `@kuzo-mcp/types`.
 - **PR #17** — A.4–A.7: extract `@kuzo-mcp/{core,plugin-*,cli}` + loader rewrite + legacy src/ cleanup.
-- **Open** — A.9–A.10 on branch `phase-2.5e/step-9-10-ci-parity`: cross-plugin ESLint rule + dev-to-install parity test + hardening timing fix.
+- **PR #18** — A.9–A.10: cross-plugin ESLint rule + dev-to-install parity test + hardening timing fix.
 
-PR granularity is implementer's call based on current context, review appetite, and whether the work has naturally separable seams. No need to pre-commit in STATE.md.
+PR granularity is implementer's call based on current context, review appetite, and whether the work has naturally separable seams.
 
 ### Do NOT
 
-- Start with Part B, C, or D before Part A's A.9–A.10 PR merges — publishing/installation logic must not land before the parity gate is active.
+- Skip the parity test (`pnpm test:parity`) before any PR that touches `packages/*/package.json` or loader code — it's the only thing that catches silent dual-mode resolution breakage.
 - Rewrite `PLANNING.md` / `SECURITY.md` in isolation — those updates land at phase close (§E.1).
 - Re-suggest `tsc -b --noEmit` for `typecheck` — blocked by TS6310 with composite projects; already evaluated in A.3.
 - Open cross-session debate on spec §E.2 questions unless you actually hit them — use recommended defaults.
