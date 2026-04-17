@@ -507,21 +507,22 @@ Publish first-party plugins as standalone npm packages. `kuzo plugins install/up
 
 Key implementation decisions:
 - **npm provenance:** GitHub Actions Trusted Publishing (GA July 2025 — tokenless via OIDC, no `NPM_TOKEN` secret needed). Set `NPM_CONFIG_PROVENANCE=true` in the publish job. Two attestations per publish: npm publish attestation + SLSA provenance. Requires npm CLI ≥ 11.5.1, `id-token: write` permission on the job, `repository` field in `package.json`, and Trusted Publisher configured on npmjs.com pointing at the workflow file.
-- **Verification:** `@sigstore/verify` to programmatically check provenance BEFORE `npm install`. Decode SLSA payload, verify `externalParameters.workflow.repository` matches allowed source org. Reject packages without provenance (override with `--trust-unsigned`).
-- **Monorepo restructure:** Current `src/plugins/` → Turborepo monorepo with `packages/` directory. Each plugin becomes its own npm package. `@changesets/cli` for version coordination and changelogs.
+- **Verification:** `sigstore` (meta-package) to programmatically check provenance BEFORE `npm install`. Decode SLSA payload, verify `externalParameters.workflow.repository` matches allowed source org. Reject packages without provenance (override with `--trust-unsigned`).
+- **Monorepo restructure:** pnpm workspaces monorepo with `packages/` directory. Each plugin is its own npm package. `@changesets/cli` for version coordination and changelogs. Turborepo deferred — ~30 min add-later if CI pain emerges.
 
 ```
 packages/
   types/              → @kuzo-mcp/types (peer dep for all plugins)
-  core/               → kuzo-mcp (the server + loader + CLI)
-  plugin-github/      → kuzo-mcp-plugin-github
-  plugin-jira/        → kuzo-mcp-plugin-jira
-  plugin-git-context/ → kuzo-mcp-plugin-git-context
+  core/               → @kuzo-mcp/core (MCP server + plugin loader)
+  cli/                → @kuzo-mcp/cli (interactive CLI)
+  plugin-github/      → @kuzo-mcp/plugin-github
+  plugin-jira/        → @kuzo-mcp/plugin-jira
+  plugin-git-context/ → @kuzo-mcp/plugin-git-context
 ```
 
 - **Plugin package structure:** ESM, `"exports"` field, peer dep on `@kuzo-mcp/types`. `package.json` includes `kuzoPlugin` metadata field for capability summary.
 - **Version coordination:** Peer dep ranges (`^2.0.0`). Major type changes → new peer dep major. Loader supports V1+V2 simultaneously (already built). Changesets handles "which packages changed" in monorepo.
-- **Install flow:** `kuzo plugins install kuzo-mcp-plugin-github` → npm resolve → verify provenance → npm install into `~/.kuzo/plugins/` → parse manifest → consent flow → register in config.
+- **Install flow:** `kuzo plugins install github` → resolve to `@kuzo-mcp/plugin-github` → verify provenance → npm install into `~/.kuzo/plugins/` → parse manifest → consent flow → register in config.
 - **Install location:** `~/.kuzo/plugins/` with managed `node_modules` (isolated from core server deps). `npm install --prefix ~/.kuzo/plugins`.
 - **Provenance strictness:** First-party: pin to `github.com/seantokuzo/*`. Third-party: any repo with valid Sigstore provenance.
 - **Update model:** `kuzo plugins update` — manual, shows changelog + capability diff, requires re-consent if new capabilities. `kuzo plugins rollback` for instant revert. Never auto-update.
@@ -544,8 +545,8 @@ packages/
 | Child process per plugin (not workers/vm/WASM) | 2026-04-12 | OS-level isolation, IPC is cheap vs API latency, production-proven (VS Code, Chrome). Workers share process, vm is repeatedly broken, WASM kills DX. |
 | Discriminated union for plugin manifests (V1/V2) | 2026-04-12 | Separate versioned interfaces > optional field accumulation. Chrome MV2→V3 and Terraform protocol v5→v6 prior art. Clean evolution for V3+. |
 | Hybrid credential broker | 2026-04-12 | Pre-auth clients for known services (safest) + scoped authenticated fetch + raw escape hatch. Single approach can't cover all cases. |
-| npm as plugin registry | 2026-04-12 | Sigstore provenance free + built-in. Zero hosting burden. `kuzo-mcp-plugin-*` naming convention (unscoped). |
-| Monorepo with Turborepo | 2026-04-12 | Atomic cross-cutting changes. Single CI pipeline. Changesets for version coordination. Already have plugins in `src/plugins/`. |
+| npm as plugin registry | 2026-04-12 | Sigstore provenance free + built-in. Zero hosting burden. `@kuzo-mcp/*` scoped naming convention. |
+| Monorepo with pnpm workspaces | 2026-04-12 | Atomic cross-cutting changes. Single CI pipeline. Changesets for version coordination. Turborepo deferred — ~30 min add-later if CI pain emerges. |
 | Own plugins as standalone npm packages | 2026-04-12 | Eat our own dogfood on the entire plugin ecosystem. Validates install/verify/consent flow before third-party plugins exist. |
 
 ---
@@ -614,7 +615,7 @@ kuzo doctor [--fix] [--json]
 #### `kuzo plugins` Commands
 
 ```bash
-kuzo plugins add github jira          # shorthand for kuzo-mcp-plugin-{name}
+kuzo plugins add github jira          # shorthand for @kuzo-mcp/plugin-{name}
 kuzo plugins remove jira
 kuzo plugins list                     # installed + available
 kuzo plugins update [--check]         # show/apply updates with changelog
@@ -708,7 +709,7 @@ See [GitHub Plugin Gap Analysis](#github-plugin-gap-analysis) below for the full
 
 **Acceptance criteria:**
 - [ ] Each plugin implements `KuzoPluginV2` with full capability declarations
-- [ ] Each plugin published as standalone npm package (`kuzo-mcp-plugin-*`)
+- [ ] Each plugin published as standalone npm package (`@kuzo-mcp/plugin-*`)
 - [ ] Each plugin has its own types, client, and tool files
 - [ ] Plugins with missing config are gracefully skipped
 - [ ] Each plugin has a README in its directory with setup instructions

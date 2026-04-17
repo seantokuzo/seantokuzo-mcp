@@ -37,7 +37,7 @@
     "@kuzo-mcp/types": "^0.0.1"
   },
   "devDependencies": {
-    "@kuzo-mcp/types": "workspace:*"
+    "@kuzo-mcp/types": "workspace:^"
   },
   "kuzoPlugin": {
     "name": "git-context",

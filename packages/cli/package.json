@@ -36,10 +36,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@kuzo-mcp/core": "workspace:*",
-    "@kuzo-mcp/plugin-github": "workspace:*",
-    "@kuzo-mcp/plugin-jira": "workspace:*",
-    "@kuzo-mcp/types": "workspace:*",
+    "@kuzo-mcp/core": "workspace:^",
+    "@kuzo-mcp/plugin-github": "workspace:^",
+    "@kuzo-mcp/plugin-jira": "workspace:^",
+    "@kuzo-mcp/types": "workspace:^",
     "boxen": "^8.0.1",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
