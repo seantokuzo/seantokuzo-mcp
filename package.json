@@ -11,7 +11,8 @@
     "clean": "pnpm -r run clean && rm -f tsconfig.tsbuildinfo",
     "start:mcp": "node packages/core/dist/server.js",
     "dev:cli": "pnpm --filter @kuzo-mcp/cli run dev",
-    "cli": "pnpm --filter @kuzo-mcp/cli run dev"
+    "cli": "pnpm --filter @kuzo-mcp/cli run dev",
+    "test:parity": "node scripts/test-install-parity.mjs"
   },
   "keywords": [
     "mcp",
@@ -26,6 +27,7 @@
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.5.0",
     "eslint": "^10.2.0",
+    "globals": "^17.5.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4",
     "typescript-eslint": "^8.58.1"
@@ -36,8 +38,12 @@
   "packageManager": "pnpm@10.33.0",
   "pnpm": {
     "peerDependencyRules": {
-      "ignoreMissing": ["hono"]
+      "ignoreMissing": [
+        "hono"
+      ]
     },
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

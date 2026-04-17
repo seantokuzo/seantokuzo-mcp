@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-04-15
+**Last Updated:** 2026-04-15 (session 2: A.9+A.10 complete)
 
 ---
 
@@ -150,7 +150,7 @@ Old code stays alive until 2.d so nothing breaks mid-flight. `src/core/server.ts
 - Env var scoping: each child receives ONLY its declared credential env vars + system essentials (PATH, LANG, TERM, NODE_ENV, HOME, DEBUG). Jira child cannot read `GITHUB_TOKEN`.
 - Smoke tested: 3 plugins register at startup with zero child processes, first `get_git_context` call spawns child (pid visible in logs), tool returns real data through full IPC round-trip, graceful shutdown terminates all children.
 
-**Phase 2.5e — Supply Chain** (A.1–A.7 complete — PR #17 merged as `09011fe`, 2026-04-15; A.9–A.10 next session, then Parts B/C/D)
+**Phase 2.5e — Supply Chain** (Part A complete pending merge of A.9–A.10 PR; Parts B/C/D remain)
 
 **A.1–A.3** (PR #15 merged as `9c15d7d`, 2026-04-14)
 
@@ -174,24 +174,33 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - **ESLint ignore fix**: `dist/` → `**/dist/`, same for node_modules. Plain `dist/` only matched root in flat config.
 - **Dotenv path depths** updated in `packages/core/src/config.ts` (repo root is 3 levels above `packages/core/dist/`) and `packages/cli/src/commands/config.ts` (4 levels above `packages/cli/{src,dist}/commands/`).
 
+**A.9–A.10** (branch `phase-2.5e/step-9-10-ci-parity`, pending PR, 2026-04-15)
+
+- **A.9 — cross-plugin ESLint rule**: added `no-restricted-imports` block to `eslint.config.js`, scoped via `files: ["packages/plugin-*/src/**/*.ts"]`, blocks patterns `@kuzo-mcp/plugin-*` + `@kuzo-mcp/plugin-*/**`. Core and CLI retain the ability to import plugin subpaths. Synthetic test (bad import in `plugin-jira`) fired the rule; full `pnpm run lint` still clean.
+- **A.10 — dev-to-install parity test**: `scripts/test-install-parity.mjs` + `test:parity` root script. Flow: `pnpm build` → `pnpm pack` `@kuzo-mcp/types` + each plugin into a tmp `tarballs/` → for each plugin, `npm install <plugin-tarball> <types-tarball>` into `$TMPDIR/kuzo-parity-<ts>/plugins/<name>/` (yields the `KUZO_PLUGINS_DIR` shape the resolver expects) → spawn `packages/core/dist/server.js` with `KUZO_PLUGINS_DIR` + isolated `HOME` (so `~/.kuzo/audit.log` lands in the tmp dir) + `KUZO_TRUST_ALL=true` + real `GITHUB_*` from `.env` + fake `JIRA_*` (plugin.loaded fires at proxy-registration time before the child ever calls verifyConnection, so fake creds don't block the test) → MCP JSON-RPC handshake over stdio, `tools/list` contains all three plugins' canary tools, `tools/call get_git_context` + `tools/call get_repo_info` both succeed, audit log has `plugin.loaded` for all three. On success the workdir is removed; on failure it's left for debugging.
+- **CI wiring**: new `parity` job in `ci.yml`, runs after `build`, writes a `.env` from `secrets.GITHUB_TOKEN` (default runner token — read scope is enough for `get_repo_info` on the current repo), then `pnpm run test:parity`. Added to `label-pr` and `ci-success` needs/conditions so branch protection covers it. Always-on per user call — not path-gated.
+- **Surprise fix (same branch): 2.5a hardening timing**. Parity test surfaced a real bug: `Object.freeze(Object.prototype)` at startup breaks installed-mode plugins whose deps use TS-transpiled namespace IIFEs (zod v3.25.76's `errorUtil.js` does `errorUtil.toString = ...` on a plain `{}` — in strict ESM that throws because the inherited `toString` is now read-only). Dev mode hides this because the workspace hoists a single zod copy loaded before the freeze. `packages/core/src/server.ts` split `hardenRuntime()` into `installExitGuard()` (runs early) + `freezePrototypes()` (runs after `loader.loadAll()`). Plugin manifest imports now happen with mutable prototypes; the freeze still lands before the server serves any MCP request. `plugin-host.ts` (children) has never frozen prototypes and still doesn't — separate hardening gap for later.
+- **Commit message plan**: three commits on the branch — (1) `feat(core): 2.5e A.9 — cross-plugin no-restricted-imports ESLint rule`, (2) `feat(core): 2.5e A.10 — dev-to-install parity test + CI job`, (3) `fix(core): defer prototype freeze until after loader.loadAll`. Single PR.
+- **Green:** `pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm test:parity` all clean locally.
+
 ### ⏭️ Fresh-session handoff — when user says "next"
 
-1. **Read `docs/2.5e-spec.md` §A.1 Steps 9 + 10** and **§A.8 (dev-to-install parity — non-negotiable gate)**. Skim §A.7 for the risks the parity test is meant to catch.
-2. **Branch off fresh main** as `phase-2.5e/step-9-10-ci-parity` (or similar). main is at `09011fe` post-#17 merge. `packages/{types,core,plugin-github,plugin-jira,plugin-git-context,cli}/` are all wired and green.
-3. **Step 9 — CI + cross-plugin lint rule** (small — should be one commit):
-   - Verify `.github/workflows/*.yml` still pass post-extraction. The CI fix in PR #15 migrated npm→pnpm — confirm it still walks all packages. May need `pnpm -r build` (it already does) plus maybe `pnpm -r test` once a test runner lands (deferred — no test runner yet).
-   - Add an ESLint `no-restricted-imports` rule against cross-plugin imports between `packages/plugin-*`. Per spec §A.1 Step 9: "no cross-plugin imports between `packages/plugin-*`." The enforcement: any import path starting with `@kuzo-mcp/plugin-` from inside another `packages/plugin-*/` directory must error. Scope the rule via `files` globbed to `packages/plugin-*/src/**` so core/cli can still import plugin subpaths.
-   - Verify the rule actually fires with a synthetic test import (add, run lint, see error, remove).
-4. **Step 10 — dev-to-install parity test** (bigger — one commit, may get its own PR):
-   - New file `scripts/test-install-parity.mjs` per spec §A.8. Steps: (a) `pnpm --filter @kuzo-mcp/plugin-<name> pack` per plugin → produces tarballs; (b) `mkdir -p $TMPDIR/kuzo-install-test/<name> && cd <name> && npm init -y && npm install <tarball>`; (c) `KUZO_PLUGINS_DIR=$TMPDIR/kuzo-install-test node packages/core/dist/server.js` + pipe a `tools/call` for a fast tool on that plugin via MCP JSON-RPC stdio; (d) assert `plugin.loaded` audit row + non-error response; (e) repeat for all three plugins. Clean up tmpdir on exit.
-   - This is the contract test for §A.8 parity. **Non-negotiable per spec §A.9 "Do NOT skip".** It's the only thing that catches silent dual-mode resolution breakage — the dev branch works via pnpm symlinks, the installed branch exercises the tarball + `files` allowlist + `exports` subpaths + peerDep resolution + shebang bits.
-   - Add a root script: `"test:parity": "node scripts/test-install-parity.mjs"`.
-   - Wire into CI as a required gate when `packages/*/package.json` or `packages/core/src/{loader,plugin-resolver,plugin-process,plugin-host}.ts` change (per spec §A.8: "Run on every PR touching `packages/*/package.json` or the loader").
-   - Note: running this test requires `pnpm pack` to actually include everything needed. If any plugin is missing a dep (e.g. `@kuzo-mcp/types` is peer-only + not hoisted in npm install — check behavior), this is where it surfaces.
-5. **Verify green:** `pnpm install`, `pnpm build`, `pnpm typecheck`, `pnpm lint`, `pnpm test:parity`. Commit green.
-6. **Commit message suggestion:** `feat(core): 2.5e A.9–10 — cross-plugin ESLint rule + dev-to-install parity test` (or split into two commits within one PR).
-7. **Close Part A:** verify `docs/2.5e-spec.md` §E.1 acceptance criteria for Part A are satisfied. Also nudge the user about updating `docs/PLANNING.md` §2.5e (stale Turborepo/unscoped refs) and `docs/SECURITY.md` §5 per §E.1 — these land at phase close, not mid-Part.
-8. **Then Parts B → C → D** per `docs/2.5e-spec.md` §0 Build Order. Each is its own PR.
+**Prerequisite:** the A.9–A.10 PR is open and merged. If it isn't yet, land that first.
+
+1. **Read `docs/2.5e-spec.md` Part B** (`release.yml`, Changesets config, npmjs.com setup, 12 gotchas). Skim §0 Build Order + §E.1 acceptance criteria for Part A so you can mark it closed.
+2. **Close Part A bookkeeping** before starting Part B:
+   - Confirm A.9–A.10 PR merged, branch deleted.
+   - Verify §E.1 Part A acceptance criteria in `docs/2.5e-spec.md` are all satisfied.
+   - Update `docs/PLANNING.md` §2.5e (stale Turborepo/unscoped `kuzo-mcp-plugin-*` refs — land with the Part B PR or a dedicated docs commit, implementer's call).
+   - Update `docs/SECURITY.md` §5 (supply chain) per §E.1 at phase close.
+3. **Part B — release workflow + Trusted Publishing**:
+   - Branch off main: `phase-2.5e/part-b-release`.
+   - Copy `release.yml` from spec §B.1. Add Changesets config per §B.2. Root `package.json` scripts per §B.3.
+   - npmjs.com setup checklist (§B.5): create `@kuzo-mcp` scope, configure Trusted Publisher for each of the 6 packages (OIDC, tokenless, GA since July 2025). This is a manual UI step — flag it as an out-of-band task for the user.
+   - Review §B.6 gotchas before committing. Dry-run via §B.7.
+4. **Then Parts C → D** per §0. Each its own PR.
+
+**Open cross-phase note:** `plugin-host.ts` still doesn't freeze prototypes in child processes. Not urgent (process isolation already limits blast radius) but belongs in the 2.5e+ hardening cleanup list. File an issue at phase close.
 
 ### Source of truth
 
@@ -217,11 +226,11 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 11. **`@kuzo-mcp/core` directly depends on all 3 plugin packages** — `plugin-github` + `plugin-jira` for the credentials.ts client factory map (Option A coupling, accepted in 2.5b); `plugin-git-context` purely so `import.meta.resolve("@kuzo-mcp/plugin-git-context")` can find it in core's resolution scope. Project refs in `packages/core/tsconfig.json` mirror this.
 12. **`start:mcp` runs `node packages/core/dist/server.js` from repo root**, NOT `pnpm --filter @kuzo-mcp/core exec node dist/server.js` (spec §A.6 suggestion). pnpm --filter changes cwd to the package dir, which breaks the dotenv cwd fallback. Direct node invocation keeps cwd at repo root so `.env` is found.
 
-### Branch state (post-A.7)
+### Branch state (post-A.9–A.10 session)
 
-- **main** at `09011fe Phase 2.5e A.4–7: extract @kuzo-mcp/{core,plugin-*,cli} packages (#17)`
-- `phase-2.5e/step-4-5-core-plugins` deleted on both local + remote after squash-merge.
-- Fresh session should branch off main.
+- **main** at `28fe86e docs: rewrite README around plugin-based MCP platform` (two docs commits past PR #17's `09011fe`).
+- **Active branch** `phase-2.5e/step-9-10-ci-parity` — three commits for A.9 + A.10 + hardening fix. PR not yet opened.
+- Fresh session (post-merge) should branch off main for Part B.
 
 ### Known tactical detail from A.4–A.7 session
 
@@ -240,16 +249,17 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - **`docs/PLANNING.md` §2.5e (lines ~504-527):** still references Turborepo and unscoped `kuzo-mcp-plugin-*` names. Land at phase close per spec §E.1 — do not touch in a separate docs commit.
 - **`docs/SECURITY.md` §5 (supply chain):** review + update at phase close per spec §E.1.
 
-### PR strategy
+### PR history
 
-- **PR #15 (merged)** — A.1–A.3: pnpm prereqs + `@kuzo-mcp/types`.
-- **PR #17 (merged)** — A.4–A.7: extract `@kuzo-mcp/{core,plugin-*,cli}` + loader rewrite + legacy src/ cleanup.
-- **Next PR** — A.9–A.10: CI no-cross-plugin ESLint rule + dev-to-install parity test. Could be one PR with two commits, or two small PRs — implementer's call but a single PR is fine.
-- **Then Parts B → C → D** each their own PR per `docs/2.5e-spec.md` §0 Build Order.
+- **PR #15** — A.1–A.3: pnpm prereqs + `@kuzo-mcp/types`.
+- **PR #17** — A.4–A.7: extract `@kuzo-mcp/{core,plugin-*,cli}` + loader rewrite + legacy src/ cleanup.
+- **Open** — A.9–A.10 on branch `phase-2.5e/step-9-10-ci-parity`: cross-plugin ESLint rule + dev-to-install parity test + hardening timing fix.
+
+PR granularity is implementer's call based on current context, review appetite, and whether the work has naturally separable seams. No need to pre-commit in STATE.md.
 
 ### Do NOT
 
-- Start with Part B, C, or D before Part A completes (Steps 9+10 still pending) — packages must exist AND the parity test must pass before publishing or installation logic can land.
+- Start with Part B, C, or D before Part A's A.9–A.10 PR merges — publishing/installation logic must not land before the parity gate is active.
 - Rewrite `PLANNING.md` / `SECURITY.md` in isolation — those updates land at phase close (§E.1).
 - Re-suggest `tsc -b --noEmit` for `typecheck` — blocked by TS6310 with composite projects; already evaluated in A.3.
 - Open cross-session debate on spec §E.2 questions unless you actually hit them — use recommended defaults.
