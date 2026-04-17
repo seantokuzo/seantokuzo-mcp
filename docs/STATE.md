@@ -185,20 +185,25 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 
 ### ⏭️ Fresh-session handoff — when user says "next"
 
-**Prerequisite:** the A.9–A.10 PR is open and merged. If it isn't yet, land that first.
+**Part B code is merged** (PR #19). Release workflow, Changesets config, and publish scripts are in place. `PLANNING.md` stale refs fixed. `workspace:*` → `workspace:^` across all packages.
 
-1. **Read `docs/2.5e-spec.md` Part B** (`release.yml`, Changesets config, npmjs.com setup, 12 gotchas). Skim §0 Build Order + §E.1 acceptance criteria for Part A so you can mark it closed.
-2. **Close Part A bookkeeping** before starting Part B:
-   - Confirm A.9–A.10 PR merged, branch deleted.
-   - Verify §E.1 Part A acceptance criteria in `docs/2.5e-spec.md` are all satisfied.
-   - Update `docs/PLANNING.md` §2.5e (stale Turborepo/unscoped `kuzo-mcp-plugin-*` refs — land with the Part B PR or a dedicated docs commit, implementer's call).
-   - Update `docs/SECURITY.md` §5 (supply chain) per §E.1 at phase close.
-3. **Part B — release workflow + Trusted Publishing**:
-   - Branch off main: `phase-2.5e/part-b-release`.
-   - Copy `release.yml` from spec §B.1. Add Changesets config per §B.2. Root `package.json` scripts per §B.3.
-   - npmjs.com setup checklist (§B.5): create `@kuzo-mcp` scope, configure Trusted Publisher for each of the 6 packages (OIDC, tokenless, GA since July 2025). This is a manual UI step — flag it as an out-of-band task for the user.
-   - Review §B.6 gotchas before committing. Dry-run via §B.7.
-4. **Then Parts C → D** per §0. Each its own PR.
+**Before first real release — npmjs.com manual setup (§B.5, not yet done):**
+1. Reserve `@kuzo-mcp` scope — create org on npmjs.com, free tier, public packages.
+2. Bootstrap-publish 6 placeholder packages (`0.0.0-bootstrap.0`) using a temporary automation token: `pnpm publish --access=public --tag=bootstrap --no-git-checks` from each package dir.
+3. Configure Trusted Publisher on each package page (6×) pointing at `release.yml` (org: `seantokuzo`, repo: `seantokuzo-mcp`, workflow: `release.yml`, environment: blank).
+4. Revoke the bootstrap token.
+5. Optional: enable 2FA-for-publish on the org.
+
+**Next code work — Part C (pre-install provenance verification):**
+1. Read `docs/2.5e-spec.md` Part C — `sigstore@4` + `pacote`, trust policy, failure mode table, caching.
+2. Branch off main: `phase-2.5e/part-c-verify`.
+3. Implement `packages/core/src/provenance/{policy,verify,errors}.ts`.
+4. Then Part D (plugin install CLI) per §0 build order. Each its own PR.
+
+**Phase-close bookkeeping (after Parts C+D):**
+- Update `docs/SECURITY.md` §5 (supply chain) per spec §E.1.
+- Update `docs/STATE.md` — mark 2.5e complete with all PR refs.
+- File issue for `plugin-host.ts` prototype freeze (open cross-phase note).
 
 **Open cross-phase note:** `plugin-host.ts` still doesn't freeze prototypes in child processes. Not urgent (process isolation already limits blast radius) but belongs in the 2.5e+ hardening cleanup list. File an issue at phase close.
 
@@ -226,10 +231,10 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 11. **`@kuzo-mcp/core` directly depends on all 3 plugin packages** — `plugin-github` + `plugin-jira` for the credentials.ts client factory map (Option A coupling, accepted in 2.5b); `plugin-git-context` purely so `import.meta.resolve("@kuzo-mcp/plugin-git-context")` can find it in core's resolution scope. Project refs in `packages/core/tsconfig.json` mirror this.
 12. **`start:mcp` runs `node packages/core/dist/server.js` from repo root**, NOT `pnpm --filter @kuzo-mcp/core exec node dist/server.js` (spec §A.6 suggestion). pnpm --filter changes cwd to the package dir, which breaks the dotenv cwd fallback. Direct node invocation keeps cwd at repo root so `.env` is found.
 
-### Branch state (post-Part A)
+### Branch state (post-Part B)
 
-- **main** at `a0d0245` — PR #18 squash-merged. Part A complete.
-- All local feature branches deleted. Fresh session should branch off main for Part B.
+- **main** at `910e0f7` — PR #19 squash-merged. Part B code complete (npmjs.com setup still pending).
+- All local feature branches deleted. Fresh session should branch off main for Part C.
 
 ### Known tactical detail from A.4–A.7 session
 
@@ -245,7 +250,7 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 
 ### Stale docs to expect (don't fix in isolation)
 
-- **`docs/PLANNING.md` §2.5e (lines ~504-527):** still references Turborepo and unscoped `kuzo-mcp-plugin-*` names. Land at phase close per spec §E.1 — do not touch in a separate docs commit.
+- **`docs/PLANNING.md` §2.5e:** Fixed in PR #19 — Turborepo → pnpm workspaces, unscoped → `@kuzo-mcp/*`.
 - **`docs/SECURITY.md` §5 (supply chain):** review + update at phase close per spec §E.1.
 
 ### PR history
@@ -253,13 +258,14 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - **PR #15** — A.1–A.3: pnpm prereqs + `@kuzo-mcp/types`.
 - **PR #17** — A.4–A.7: extract `@kuzo-mcp/{core,plugin-*,cli}` + loader rewrite + legacy src/ cleanup.
 - **PR #18** — A.9–A.10: cross-plugin ESLint rule + dev-to-install parity test + hardening timing fix.
+- **PR #19** — B.1–B.4: Changesets config + release workflow + publish scripts + `workspace:^` fix + PLANNING.md stale refs.
 
 PR granularity is implementer's call based on current context, review appetite, and whether the work has naturally separable seams.
 
 ### Do NOT
 
 - Skip the parity test (`pnpm test:parity`) before any PR that touches `packages/*/package.json` or loader code — it's the only thing that catches silent dual-mode resolution breakage.
-- Rewrite `PLANNING.md` / `SECURITY.md` in isolation — those updates land at phase close (§E.1).
+- Rewrite `SECURITY.md` in isolation — that update lands at phase close (§E.1). (`PLANNING.md` stale refs already fixed in PR #19.)
 - Re-suggest `tsc -b --noEmit` for `typecheck` — blocked by TS6310 with composite projects; already evaluated in A.3.
 - Open cross-session debate on spec §E.2 questions unless you actually hit them — use recommended defaults.
 - Skip the parity test (§A.8) — it's the only gate that catches silent dual-mode resolution breakage. Non-negotiable per spec §A.9.
