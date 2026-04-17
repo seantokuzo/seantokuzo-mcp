@@ -12,7 +12,11 @@
     "start:mcp": "node packages/core/dist/server.js",
     "dev:cli": "pnpm --filter @kuzo-mcp/cli run dev",
     "cli": "pnpm --filter @kuzo-mcp/cli run dev",
-    "test:parity": "node scripts/test-install-parity.mjs"
+    "test": "pnpm run test:parity",
+    "test:parity": "node scripts/test-install-parity.mjs",
+    "changeset": "changeset",
+    "version": "changeset version && pnpm install --lockfile-only",
+    "release": "pnpm build && changeset publish"
   },
   "keywords": [
     "mcp",
@@ -24,6 +28,8 @@
   "author": "Sean Tokuzo",
   "license": "MIT",
   "devDependencies": {
+    "@changesets/changelog-github": "^0.6.0",
+    "@changesets/cli": "^2.30.0",
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.5.0",
     "eslint": "^10.2.0",

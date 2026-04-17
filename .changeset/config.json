@@ -1,0 +1,16 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.0.0/schema.json",
+  "changelog": [
+    "@changesets/changelog-github",
+    { "repo": "seantokuzo/seantokuzo-mcp" }
+  ],
+  "commit": false,
+  "fixed": [],
+  "linked": [["@kuzo-mcp/types", "@kuzo-mcp/core"]],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "ignore": [],
+  "privatePackages": { "version": true, "tag": false },
+  "snapshot": { "useCalculatedVersion": true }
+}

@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# One release at a time. Prevents two pushes to main racing each other
+# into `changeset publish` and creating version-order drift.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Start empty at workflow level; every job is explicitly scoped.
+permissions: {}
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    # Stop external forks from triggering OIDC publishes.
+    if: github.repository == 'seantokuzo/seantokuzo-mcp'
+    permissions:
+      id-token: write       # Sigstore OIDC for npm Trusted Publishing
+      contents: write       # changesets/action pushes the "Version Packages" PR
+      pull-requests: write  # changesets/action opens/updates that PR
+      issues: write         # changesets/action writes release notes/comments
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Upgrade npm CLI
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Test
+        run: pnpm run test
+
+      - name: Create Release PR or Publish
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          publish: pnpm release
+          version: pnpm changeset version
+          commit: "chore(release): version packages"
+          title: "chore(release): version packages"
+          createGithubReleases: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # DO NOT SET NPM_TOKEN or NODE_AUTH_TOKEN. If either is present,
+          # the npm CLI uses it instead of OIDC and silently skips Trusted
+          # Publishing.
+          NPM_CONFIG_PROVENANCE: "true"
