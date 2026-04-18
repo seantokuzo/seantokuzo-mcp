@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-04-16 (Part A complete, PR #18 merged)
+**Last Updated:** 2026-04-17 (Part B fully complete — code + npmjs.com manual setup done)
 
 ---
 
@@ -185,20 +185,29 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 
 ### ⏭️ Fresh-session handoff — when user says "next"
 
-**Part B code is merged** (PR #19). Release workflow, Changesets config, and publish scripts are in place. `PLANNING.md` stale refs fixed. `workspace:*` → `workspace:^` across all packages.
+**Part B is fully complete** (code in PR #19, merged; npmjs.com manual setup done 2026-04-17).
 
-**Before first real release — npmjs.com manual setup (§B.5, not yet done):**
-1. Reserve `@kuzo-mcp` scope — create org on npmjs.com, free tier, public packages.
-2. Bootstrap-publish 6 placeholder packages (`0.0.0-bootstrap.0`) using a temporary automation token: `pnpm publish --access=public --tag=bootstrap --no-git-checks` from each package dir.
-3. Configure Trusted Publisher on each package page (6×) pointing at `release.yml` (org: `seantokuzo`, repo: `seantokuzo-mcp`, workflow: `release.yml`, environment: blank).
-4. Revoke the bootstrap token.
-5. Optional: enable 2FA-for-publish on the org.
+**What landed on npmjs.com (§B.5 done):**
+- `@kuzo-mcp` org reserved on npmjs.com (free tier, public).
+- All 6 packages bootstrap-published at `0.0.0-bootstrap.0` with `--tag=bootstrap` (not `latest`) — confirmed via registry JSON query on all 6.
+- Trusted Publisher configured on all 6 packages: org `seantokuzo`, repo `seantokuzo-mcp`, workflow `release.yml`, environment blank.
+- Bootstrap granular token (24h expiry, `@kuzo-mcp` scope, bypass-2fa) revoked. Local `~/.npmrc` token cleared.
+- Account 2FA = security key only (org `kuzo-mcp` requires it). No Auth App / TOTP option available in the UI. CI publishes use OIDC, which is 2FA-exempt — so this doesn't block anything.
+- `publishConfig.provenance: true` is correct for CI publishes; for local bootstrap we used `--no-provenance` because provenance generation requires an OIDC provider. Do NOT change `publishConfig` in package.json — the real releases need it on.
 
 **Next code work — Part C (pre-install provenance verification):**
-1. Read `docs/2.5e-spec.md` Part C — `sigstore@4` + `pacote`, trust policy, failure mode table, caching.
+1. Read `docs/2.5e-spec.md` Part C (lines 777–1050ish) — algorithm §C.1, npm attestation API §C.2, `sigstore.verify()` usage §C.3, SLSA parsing §C.4, trust policy §C.5, install flow §C.6, failure table §C.7, caching §C.8.
 2. Branch off main: `phase-2.5e/part-c-verify`.
-3. Implement `packages/core/src/provenance/{policy,verify,errors}.ts`.
-4. Then Part D (plugin install CLI) per §0 build order. Each its own PR.
+3. Add deps to `packages/core`: `sigstore@^4.1.0`, `@sigstore/verify@^3.1.0`, `@sigstore/bundle@^4.0.0`, `pacote@^21.5.0`. Node engine ≥ 20.17 or ≥ 22.9 (peer requirement of sigstore-js).
+4. Implement `packages/core/src/provenance/{policy.ts,verify.ts,errors.ts}`. Policy constants: `firstPartyOrgs: ['seantokuzo']`, `allowedBuilders: ['https://github.com/actions/runner']`.
+5. No CLI wiring yet — Part D adds `kuzo plugins install`. Part C is a pure library PR: expose `verifyPackageProvenance(pkg, version, policy) → Result<VerifiedAttestation>`.
+6. Test with `@kuzo-mcp/types@0.0.1` (or whatever first real `0.0.x` is by then) — it will have real provenance after the first `release.yml` run.
+7. Then Part D (plugin install CLI) per §0 build order. Each its own PR.
+
+**First real release — do this AFTER Part C lands:**
+- Make a changeset, merge to main, push. `release.yml` runs, publishes `0.0.x` with real Sigstore provenance attestations.
+- Verify: `npm view @kuzo-mcp/types@0.0.1 dist.attestations` should return the attestation URL. Also visible on the package page on npmjs.com (Sigstore badge).
+- **Canary first:** only changeset `@kuzo-mcp/types` for the very first release. Lowest blast radius per spec §B.7.
 
 **Phase-close bookkeeping (after Parts C+D):**
 - Update `docs/SECURITY.md` §5 (supply chain) per spec §E.1.
@@ -206,6 +215,11 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - File issue for `plugin-host.ts` prototype freeze (open cross-phase note).
 
 **Open cross-phase note:** `plugin-host.ts` still doesn't freeze prototypes in child processes. Not urgent (process isolation already limits blast radius) but belongs in the 2.5e+ hardening cleanup list. File an issue at phase close.
+
+**Gotchas for Part C (from Part B session):**
+- Don't try to use `npm token create --bypass-2fa --scopes ...` CLI — npm 11.6.2 rejects those flags as "Unknown cli config" despite the docs. Granular tokens must be created via web UI. (Not Part C–blocking, but if you ever need another token, skip the CLI path.)
+- `pacote.manifest(spec, {verifyAttestations: true})` does verification for you — mirror its logic but also run our own `TrustPolicy` on top. The spec §C.2 calls pacote's `lib/registry.js` "gold standard — mirror its logic."
+- Registry CDN has ~minutes of replication lag for new packages. `npm view` may 404 on something you just published. Query `https://registry.npmjs.org/<scope>%2F<name>` directly for authoritative state.
 
 ### Source of truth
 
@@ -233,7 +247,8 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 
 ### Branch state (post-Part B)
 
-- **main** at `910e0f7` — PR #19 squash-merged. Part B code complete (npmjs.com setup still pending).
+- **main** at `910e0f7` (plus this STATE.md bump) — PR #19 squash-merged. Part B code + npmjs.com setup both complete.
+- All 6 `@kuzo-mcp/*` packages exist on npm at `0.0.0-bootstrap.0` with `--tag=bootstrap`. `latest` tag is empty until first real release.
 - All local feature branches deleted. Fresh session should branch off main for Part C.
 
 ### Known tactical detail from A.4–A.7 session
