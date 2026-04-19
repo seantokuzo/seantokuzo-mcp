@@ -46,8 +46,6 @@ export type TrustPolicy = {
   allowedBuilders: string[];
   /** GitHub orgs whose plugins are classified first-party. */
   firstPartyOrgs: string[];
-  /** Reject install when no provenance attestation exists (default true). */
-  requireProvenance: boolean;
   /** Permit third-party org plugins (default true; future policy gate). */
   allowThirdParty: boolean;
 };
@@ -60,7 +58,6 @@ export type PolicyResult =
 export const DEFAULT_POLICY: TrustPolicy = {
   allowedBuilders: ["https://github.com/actions/runner"],
   firstPartyOrgs: ["seantokuzo"],
-  requireProvenance: true,
   allowThirdParty: true,
 };
 

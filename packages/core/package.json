@@ -55,8 +55,6 @@
     "@kuzo-mcp/plugin-jira": "workspace:^",
     "@kuzo-mcp/types": "workspace:^",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@sigstore/bundle": "^4.0.0",
-    "@sigstore/verify": "^3.1.0",
     "chalk": "^5.3.0",
     "dotenv": "^16.4.5",
     "pacote": "^21.5.0",

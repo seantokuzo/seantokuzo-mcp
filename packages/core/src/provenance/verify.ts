@@ -19,7 +19,7 @@
  *      d. sigstore.verify(bundle, { tufCachePath, tufForceCache, keySelector? }).
  * 4. Apply TrustPolicy to the SLSA provenance attestation → first-party / repo / builder.
  *
- * Returns a frozen evidence object on success.
+ * Returns verification evidence on success.
  */
 
 import { Buffer } from "node:buffer";
@@ -29,8 +29,10 @@ import { join } from "node:path";
 // pacote is CJS; Node ESM only exposes its `module.exports` via the default
 // import. `import * as pacote` would put it under `pacote.default` only.
 import pacote from "pacote";
-import { verify as sigstoreVerify } from "sigstore";
-import type { SerializedBundle } from "@sigstore/bundle";
+// `Bundle` here is sigstore's re-export of `Bundle` from
+// @sigstore/bundle — pulling it through the umbrella package avoids
+// having to declare @sigstore/bundle as a direct dependency.
+import { type Bundle, verify as sigstoreVerify } from "sigstore";
 
 import type { PluginLogger } from "@kuzo-mcp/types";
 
@@ -46,7 +48,7 @@ export type VerifyOptions = {
   registry?: string;
   /** Sigstore TUF cache directory. Defaults to ~/.kuzo/tuf-cache. */
   tufCachePath?: string;
-  /** Optional structured logger; debug-level events on success/failure. */
+  /** Optional structured logger; debug-level event on successful verification. */
   logger?: PluginLogger;
   /** Replaceable fetch implementation (testing). */
   fetch?: typeof globalThis.fetch;
@@ -79,7 +81,7 @@ type RegistryKey = {
 };
 
 type AttestationsResponse = {
-  attestations: Array<{ predicateType: string; bundle: SerializedBundle }>;
+  attestations: Array<{ predicateType: string; bundle: Bundle }>;
 };
 
 type DistWithAttestations = {
@@ -119,6 +121,41 @@ function derToPem(base64Der: string): string {
   return `-----BEGIN PUBLIC KEY-----\n${wrapped}\n-----END PUBLIC KEY-----\n`;
 }
 
+/**
+ * Build a URL anchored at the registry's base, preserving any path-prefix
+ * (Artifactory-style mirrors mount npm under e.g. `/api/npm/<repo>/`). Used
+ * for both the attestations endpoint and the registry-keys endpoint so a
+ * subpath registry doesn't silently get its host-root requested.
+ */
+function joinRegistry(
+  registryBase: URL,
+  pathOrSourceUrl: string,
+  preserveSearch = false,
+): string {
+  const source = (() => {
+    try {
+      return new URL(pathOrSourceUrl);
+    } catch {
+      return null;
+    }
+  })();
+  const path = source ? source.pathname : pathOrSourceUrl;
+  // Strip ALL leading slashes so URL() treats `path` as relative to base.
+  const relative = path.replace(/^\/+/, "");
+  const result = new URL(relative, registryBase);
+  if (preserveSearch && source) result.search = source.search;
+  return result.href;
+}
+
+function withTrailingSlash(url: URL): URL {
+  if (!url.pathname.endsWith("/")) {
+    const next = new URL(url.href);
+    next.pathname = `${url.pathname}/`;
+    return next;
+  }
+  return url;
+}
+
 class HttpStatusError extends Error {
   constructor(
     readonly status: number,
@@ -140,14 +177,14 @@ async function fetchJson<T>(
 
 type Decoded = {
   predicateType: string;
-  bundle: SerializedBundle;
+  bundle: Bundle;
   statement: InTotoStatement;
   /** `null` for keyless (Sigstore/Fulcio) bundles. */
   keyid: string | null;
 };
 
 function decodeStatement(
-  bundle: SerializedBundle,
+  bundle: Bundle,
 ): { ok: true; statement: InTotoStatement; keyid: string | null } | { ok: false; reason: string } {
   const dsse = bundle.dsseEnvelope;
   if (!dsse) {
@@ -231,9 +268,14 @@ export async function verifyPackageProvenance(
   }
 
   // Step 2 — fetch attestations payload, rewriting host to active registry
-  // (matches pacote — lets private mirrors proxy attestations).
-  const attestationsPath = new URL(dist.attestations.url).pathname;
-  const attestationsUrl = new URL(attestationsPath, registry).href;
+  // (matches pacote — lets private mirrors proxy attestations). For Artifactory-
+  // style mirrors, joinRegistry preserves the registry's path prefix.
+  const registryBase = withTrailingSlash(new URL(registry));
+  const attestationsUrl = joinRegistry(
+    registryBase,
+    dist.attestations.url,
+    /* preserveSearch */ true,
+  );
   let response: AttestationsResponse;
   try {
     response = await fetchJson<AttestationsResponse>(attestationsUrl, fetcher);
@@ -281,7 +323,7 @@ export async function verifyPackageProvenance(
   const pemByKeyid = new Map<string, string>();
   const expiresByKeyid = new Map<string, string | null>();
   if (keyedAttestations.length > 0) {
-    const keysUrl = new URL("/-/npm/v1/keys", registry).href;
+    const keysUrl = joinRegistry(registryBase, "-/npm/v1/keys");
     let keysResponse: { keys?: RegistryKey[] };
     try {
       keysResponse = await fetchJson<{ keys?: RegistryKey[] }>(
@@ -325,11 +367,13 @@ export async function verifyPackageProvenance(
   }
 
   // Step 5 — per-attestation: subject check + sigstore.verify
+  // Subject malformedness applies to ALL attestations (SLSA + npm publish);
+  // E_MALFORMED_SLSA stays reserved for SLSA-specific shape issues in step 6.
   for (const att of decoded) {
     const subject = att.statement.subject?.[0];
     if (!subject?.name || !subject.digest?.sha512) {
       return fail(
-        "E_MALFORMED_SLSA",
+        "E_MALFORMED_ATTESTATION",
         `attestation (${att.predicateType}) subject malformed`,
       );
     }
