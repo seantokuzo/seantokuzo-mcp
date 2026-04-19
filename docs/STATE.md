@@ -198,7 +198,7 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 **Next code work — Part C (pre-install provenance verification):**
 1. Read `docs/2.5e-spec.md` Part C (lines 777–1050ish) — algorithm §C.1, npm attestation API §C.2, `sigstore.verify()` usage §C.3, SLSA parsing §C.4, trust policy §C.5, install flow §C.6, failure table §C.7, caching §C.8.
 2. Branch off main: `phase-2.5e/part-c-verify`.
-3. Add deps to `packages/core`: `sigstore@^4.1.0`, `@sigstore/verify@^3.1.0`, `@sigstore/bundle@^4.0.0`, `pacote@^21.5.0`. Node engine ≥ 20.17 or ≥ 22.9 (peer requirement of sigstore-js).
+3. Add deps to `packages/core`: `sigstore@^4.1.0`, `@sigstore/verify@^3.1.0`, `@sigstore/bundle@^4.0.0`, `pacote@^21.5.0`. **Before adding**, verify your local Node is ≥ 20.17 or ≥ 22.9 (`node --version`) — sigstore-js peer requirement. Also bump `packages/core/package.json` `engines.node` to `">=20.17.0 <21 || >=22.9.0"` so install-time enforcement catches drift. Repo baseline stays Node 20+ elsewhere (CLAUDE.md Tech Stack) — this stricter constraint is core-only, not a global change.
 4. Implement `packages/core/src/provenance/{policy.ts,verify.ts,errors.ts}`. Policy constants: `firstPartyOrgs: ['seantokuzo']`, `allowedBuilders: ['https://github.com/actions/runner']`.
 5. No CLI wiring yet — Part D adds `kuzo plugins install`. Part C is a pure library PR: expose `verifyPackageProvenance(pkg, version, policy) → Result<VerifiedAttestation>`.
 6. Test with `@kuzo-mcp/types@0.0.1` (or whatever first real `0.0.x` is by then) — it will have real provenance after the first `release.yml` run.
