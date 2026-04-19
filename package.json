@@ -12,8 +12,9 @@
     "start:mcp": "node packages/core/dist/server.js",
     "dev:cli": "pnpm --filter @kuzo-mcp/cli run dev",
     "cli": "pnpm --filter @kuzo-mcp/cli run dev",
-    "test": "pnpm run test:parity",
+    "test": "pnpm run test:parity && pnpm run test:provenance",
     "test:parity": "node scripts/test-install-parity.mjs",
+    "test:provenance": "node scripts/smoke-provenance.mjs",
     "changeset": "changeset",
     "version": "changeset version && pnpm install --lockfile-only",
     "release": "pnpm build && changeset publish"

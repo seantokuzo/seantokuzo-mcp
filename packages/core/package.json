@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=20.0.0"
+    "node": "^20.17.0 || >=22.9.0"
   },
   "repository": {
     "type": "git",
@@ -33,6 +33,10 @@
     "./audit": {
       "types": "./dist/audit.d.ts",
       "import": "./dist/audit.js"
+    },
+    "./provenance": {
+      "types": "./dist/provenance/index.d.ts",
+      "import": "./dist/provenance/index.js"
     }
   },
   "files": [
@@ -51,8 +55,12 @@
     "@kuzo-mcp/plugin-jira": "workspace:^",
     "@kuzo-mcp/types": "workspace:^",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@sigstore/bundle": "^4.0.0",
+    "@sigstore/verify": "^3.1.0",
     "chalk": "^5.3.0",
     "dotenv": "^16.4.5",
+    "pacote": "^21.5.0",
+    "sigstore": "^4.1.0",
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.25.2"
   },
@@ -60,5 +68,8 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "devDependencies": {
+    "@types/pacote": "^11.1.8"
   }
 }
