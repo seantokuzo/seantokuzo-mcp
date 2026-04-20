@@ -14,7 +14,7 @@ Kuzo MCP is a **plugin-based MCP server** where each integration (GitHub, Jira, 
 - `docs/SECURITY.md` — Phase 2.5 security model, threat model, implementation plan
 - `docs/2.5e-spec.md` — **Active spec.** Phase 2.5e implementation north star (monorepo + provenance + install CLI)
 
-**Current phase:** 2.5e Part B complete — code (PR #19) + npmjs.com manual setup (2026-04-17). All 6 packages bootstrap-published with Trusted Publisher configured. Next: Part C — pre-install provenance verification, then Part D per `docs/2.5e-spec.md` §0 Build Order. On a fresh session, if user says "next", read `docs/STATE.md` → "Fresh-session handoff" section.
+**Current phase:** 2.5e Part C complete — pre-install provenance verification library merged (PR #21, `d17fac9`, 2026-04-19). Next: Part D — `kuzo plugins install/update/rollback/list/uninstall` CLI per `docs/2.5e-spec.md` §0 Build Order. On a fresh session, if user says "next", read `docs/STATE.md` → "Fresh-session handoff" section.
 
 ---
 

@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-04-17 (Part B fully complete — code + npmjs.com manual setup done)
+**Last Updated:** 2026-04-19 (Part C merged — pre-install provenance verification library landed)
 
 ---
 
@@ -183,43 +183,60 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - **Commit message plan**: three commits on the branch — (1) `feat(core): 2.5e A.9 — cross-plugin no-restricted-imports ESLint rule`, (2) `feat(core): 2.5e A.10 — dev-to-install parity test + CI job`, (3) `fix(core): defer prototype freeze until after loader.loadAll`. Single PR.
 - **Green:** `pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm test:parity` all clean locally.
 
+**Phase 2.5e Part C — pre-install provenance verification** (complete — PR #21, merged `d17fac9`, 2026-04-19)
+
+- New `@kuzo-mcp/core/provenance` subpath export (`packages/core/src/provenance/{errors,policy,verify,index}.ts`). Pure library — no CLI wiring (Part D's job), no install scripts, no disk writes outside the Sigstore TUF cache.
+- `verifyPackageProvenance(name, version, policy, opts) → Result<VerifiedAttestation>` mirrors `pacote/lib/registry.js` (the verifyAttestations path):
+  1. `pacote.manifest()` resolves the packument (no install scripts).
+  2. Fetches attestations via `dist.attestations.url`, host-rewritten to active registry through `joinRegistry()` helper that preserves any subpath prefix (Artifactory-style mirrors).
+  3. Decodes each DSSE bundle's in-toto statement.
+  4. For keyed (publish) attestations: fetches `<registry>/-/npm/v1/keys`, converts DER → PEM, validates that the key wasn't expired at the bundle's Rekor `integratedTime`.
+  5. Subject check: `subject[0].name === pkg PURL` AND `subject[0].digest.sha512 === ssri-hex(integrity)`.
+  6. `sigstore.verify(bundle, { tufCachePath, tufForceCache: true, keySelector? })` for every attestation.
+  7. Applies `TrustPolicy` to the SLSA v1 statement → `{firstParty, repo, builder}`.
+- `errors.ts`: 14 codes mapped onto exit codes 10–19 per spec §C.7. `ProvenanceError` class for try/catch consumers.
+- `policy.ts`: `evaluate()` returns Result-style `PolicyResult`. `DEFAULT_POLICY = { allowedBuilders: ['https://github.com/actions/runner'], firstPartyOrgs: ['seantokuzo'], allowThirdParty: true }`. **`requireProvenance` field intentionally NOT in TrustPolicy** — Part D CLI will short-circuit before calling `verifyPackageProvenance` when `--trust-unsigned` is set, rather than threading the flag through the policy contract (cleaner layering).
+- Bumped `@kuzo-mcp/core` `engines.node` to `^20.17.0 || >=22.9.0` (sigstore-js peer requirement). Repo-wide baseline still Node 20+; this is core-only.
+- Pinned all 5 CI jobs to `node-version: '^22.9.0'` to satisfy the engines floor regardless of setup-node's bare `22` resolution.
+- `scripts/smoke-provenance.mjs` + new `provenance` CI job exercise three real-npm scenarios against live Sigstore TUF + Rekor: `sigstore@4.1.0` permissive (third-party verified, 2 attestations), `sigstore@4.1.0` first-party-only (E_THIRD_PARTY_BLOCKED), `lodash@4.17.21` (E_NO_ATTESTATION). Wired into `label-pr` + `ci-success` required-checks. `pnpm test:provenance` runs locally (with auto `pnpm -s build` prefix).
+- Deliberately deviates from spec on three small points (all called out in PR replies):
+  1. `requireProvenance` removed from `TrustPolicy` (caller-layer decision).
+  2. `@sigstore/verify` + `@sigstore/bundle` NOT direct deps — sigstore meta-package brings them transitively, and spec §C.10 #10 explicitly warns against using `@sigstore/verify` directly. `Bundle` type imported via sigstore's re-export.
+  3. No cert-pinning (`certificateIdentityURI`) — pacote (gold standard) doesn't use it; SLSA policy already enforces builder + repo + org. Easy to add later if defense-in-depth wanted.
+- 2 Copilot review rounds: 10 inline comments in round 1 (all addressed in commit `2eb19a2`), 0 in round 2 (LGTM). Round 2 needed explicit `@copilot review` PR comment trigger — auto-re-review didn't fire on push.
+- ESM/CJS gotcha caught by smoke before commit: `import * as pacote from "pacote"` doesn't expose named exports at runtime in Node ESM (pacote is CJS, `module.exports = {...}`). Switched to `import pacote from "pacote"`.
+
 ### ⏭️ Fresh-session handoff — when user says "next"
 
-**Part B is fully complete** (code in PR #19, merged; npmjs.com manual setup done 2026-04-17).
+**Part C is fully merged** (PR #21, `d17fac9`). The provenance lib is callable but has no consumer yet — Part D wires it.
 
-**What landed on npmjs.com (§B.5 done):**
-- `@kuzo-mcp` org reserved on npmjs.com (free tier, public).
-- All 6 packages bootstrap-published at `0.0.0-bootstrap.0` with `--tag=bootstrap` (not `latest`) — confirmed via registry JSON query on all 6.
-- Trusted Publisher configured on all 6 packages: org `seantokuzo`, repo `seantokuzo-mcp`, workflow `release.yml`, environment blank.
-- Bootstrap granular token (24h expiry, `@kuzo-mcp` scope, bypass-2fa) revoked. Local `~/.npmrc` token cleared.
-- Account 2FA = security key only (org `kuzo-mcp` requires it). No Auth App / TOTP option available in the UI. CI publishes use OIDC, which is 2FA-exempt — so this doesn't block anything.
-- `publishConfig.provenance: true` is correct for CI publishes; for local bootstrap we used `--no-provenance` because provenance generation requires an OIDC provider. Do NOT change `publishConfig` in package.json — the real releases need it on.
+**Next code work — Part D (plugin install CLI):**
+1. Read `docs/2.5e-spec.md` Part D (lines 1102–1297) — install command §D.1, update/rollback §D.3, list/uninstall §D.4, state files §D.5, locking §D.6, config mutation §D.7.
+2. Branch off main: `phase-2.5e/part-d-install-cli`.
+3. Implement `packages/cli/src/commands/plugins/{install,update,rollback,list,uninstall}.ts` plus `~/.kuzo/plugins/{index.json, .lock}` state management. Wire `verifyPackageProvenance` from `@kuzo-mcp/core/provenance` into the install flow (spec §C.6 step 5+).
+4. CLI flags per §C.1 step 2: `--version`, `--registry`, `--trust-unsigned`, `--offline`, `--allow-third-party`, `--allow-builder`. The `--trust-unsigned` flag short-circuits BEFORE calling `verifyPackageProvenance` (we removed `requireProvenance` from TrustPolicy — see Part C deviations above).
+5. Atomic install staging: `~/.kuzo/plugins/<name>/.tmp/` → rename to `<version>/` on success. Retain last 3 versions for rollback per spec locked-decision #7. Update `kuzo.config.ts` and `~/.kuzo/plugins/index.json` after consent.
+6. Consent re-run on capability changes per §D.3 (delegate to existing 2.5c `ConsentStore` against new manifest).
+7. Caching: `~/.kuzo/attestations-cache/<sha256(name@version@integrity)>.json` per §C.8. Pure evidence — install path always re-verifies.
 
-**Next code work — Part C (pre-install provenance verification):**
-1. Read `docs/2.5e-spec.md` Part C (lines 777–1050ish) — algorithm §C.1, npm attestation API §C.2, `sigstore.verify()` usage §C.3, SLSA parsing §C.4, trust policy §C.5, install flow §C.6, failure table §C.7, caching §C.8.
-2. Branch off main: `phase-2.5e/part-c-verify`.
-3. Add deps to `packages/core`: `sigstore@^4.1.0`, `@sigstore/verify@^3.1.0`, `@sigstore/bundle@^4.0.0`, `pacote@^21.5.0`. **Before adding**, verify your local Node is ≥ 20.17 or ≥ 22.9 (`node --version`) — sigstore-js peer requirement. Also bump `packages/core/package.json` `engines.node` to `">=20.17.0 <21 || >=22.9.0"` so install-time enforcement catches drift. Repo baseline stays Node 20+ elsewhere (CLAUDE.md Tech Stack) — this stricter constraint is core-only, not a global change.
-4. Implement `packages/core/src/provenance/{policy.ts,verify.ts,errors.ts}`. Policy constants: `firstPartyOrgs: ['seantokuzo']`, `allowedBuilders: ['https://github.com/actions/runner']`.
-5. No CLI wiring yet — Part D adds `kuzo plugins install`. Part C is a pure library PR: expose `verifyPackageProvenance(pkg, version, policy) → Result<VerifiedAttestation>`.
-6. Test with `@kuzo-mcp/types@0.0.1` (or whatever first real `0.0.x` is by then) — it will have real provenance after the first `release.yml` run.
-7. Then Part D (plugin install CLI) per §0 build order. Each its own PR.
+**First real release — do this whenever convenient (no longer Part-C-gated):**
+- Make a changeset for `@kuzo-mcp/types` only (canary per spec §B.7), merge release PR, push. `release.yml` publishes `0.0.x` with real Sigstore provenance attestations.
+- Verify: `npm view @kuzo-mcp/types@0.0.1 dist.attestations` returns the attestation URL. Sigstore badge visible on npmjs.com.
+- After canary, the rest of the packages get changesets per Part D's actual install testing needs.
 
-**First real release — do this AFTER Part C lands:**
-- Make a changeset, merge to main, push. `release.yml` runs, publishes `0.0.x` with real Sigstore provenance attestations.
-- Verify: `npm view @kuzo-mcp/types@0.0.1 dist.attestations` should return the attestation URL. Also visible on the package page on npmjs.com (Sigstore badge).
-- **Canary first:** only changeset `@kuzo-mcp/types` for the very first release. Lowest blast radius per spec §B.7.
-
-**Phase-close bookkeeping (after Parts C+D):**
+**Phase-close bookkeeping (after Part D):**
 - Update `docs/SECURITY.md` §5 (supply chain) per spec §E.1.
-- Update `docs/STATE.md` — mark 2.5e complete with all PR refs.
+- Update `docs/STATE.md` — mark 2.5e complete with all PR refs (#15, #17, #18, #19, #20, #21, +D's PR).
 - File issue for `plugin-host.ts` prototype freeze (open cross-phase note).
 
 **Open cross-phase note:** `plugin-host.ts` still doesn't freeze prototypes in child processes. Not urgent (process isolation already limits blast radius) but belongs in the 2.5e+ hardening cleanup list. File an issue at phase close.
 
-**Gotchas for Part C (from Part B session):**
-- Don't try to use `npm token create --bypass-2fa --scopes ...` CLI — npm 11.6.2 rejects those flags as "Unknown cli config" despite the docs. Granular tokens must be created via web UI. (Not Part C–blocking, but if you ever need another token, skip the CLI path.)
-- `pacote.manifest(spec, {verifyAttestations: true})` does verification for you — mirror its logic but also run our own `TrustPolicy` on top. The spec §C.2 calls pacote's `lib/registry.js` "gold standard — mirror its logic."
+**Gotchas for Part D (carried forward + Part C session learnings):**
+- Don't try to use `npm token create --bypass-2fa --scopes ...` CLI — npm 11.6.2 rejects those flags as "Unknown cli config" despite the docs. Granular tokens must be created via web UI.
 - Registry CDN has ~minutes of replication lag for new packages. `npm view` may 404 on something you just published. Query `https://registry.npmjs.org/<scope>%2F<name>` directly for authoritative state.
+- pacote is CJS; from ESM use `import pacote from "pacote"` (default = `module.exports`). `import * as pacote` puts everything under `.default` only and breaks at runtime.
+- `pacote.extract(spec, target, opts)` does NOT run install scripts — those happen on `npm install`. Spec §C.6 step 4: extract to `.tmp/pkg/`, then `npm install --prefix=.tmp --ignore-scripts --no-audit --no-fund` for transitive deps. NEVER call `pacote.extract` or `npm install` on the plugin before `verifyPackageProvenance` succeeds.
+- Copilot does NOT auto-re-review on every push to a PR (at least not reliably) — comment `@copilot review` to explicitly trigger round 2+. Auto-review only fires on PR creation.
 
 ### Source of truth
 
@@ -245,11 +262,11 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 11. **`@kuzo-mcp/core` directly depends on all 3 plugin packages** — `plugin-github` + `plugin-jira` for the credentials.ts client factory map (Option A coupling, accepted in 2.5b); `plugin-git-context` purely so `import.meta.resolve("@kuzo-mcp/plugin-git-context")` can find it in core's resolution scope. Project refs in `packages/core/tsconfig.json` mirror this.
 12. **`start:mcp` runs `node packages/core/dist/server.js` from repo root**, NOT `pnpm --filter @kuzo-mcp/core exec node dist/server.js` (spec §A.6 suggestion). pnpm --filter changes cwd to the package dir, which breaks the dotenv cwd fallback. Direct node invocation keeps cwd at repo root so `.env` is found.
 
-### Branch state (post-Part B)
+### Branch state (post-Part C)
 
-- **main** at `910e0f7` (plus this STATE.md bump) — PR #19 squash-merged. Part B code + npmjs.com setup both complete.
-- All 6 `@kuzo-mcp/*` packages exist on npm at `0.0.0-bootstrap.0` with `--tag=bootstrap`. `latest` tag is empty until first real release.
-- All local feature branches deleted. Fresh session should branch off main for Part C.
+- **main** at `d17fac9` — PR #21 merge commit. Part C library merged (Part B prep already on main).
+- All 6 `@kuzo-mcp/*` packages still exist on npm at `0.0.0-bootstrap.0` with `--tag=bootstrap`. `latest` tag is empty until first real release (no longer Part-C-gated; can canary-release `@kuzo-mcp/types` whenever).
+- All local feature branches deleted (`phase-2.5e/part-c-verify` cleaned by `--delete-branch` on merge). Fresh session should branch off main for Part D.
 
 ### Known tactical detail from A.4–A.7 session
 
@@ -274,6 +291,8 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - **PR #17** — A.4–A.7: extract `@kuzo-mcp/{core,plugin-*,cli}` + loader rewrite + legacy src/ cleanup.
 - **PR #18** — A.9–A.10: cross-plugin ESLint rule + dev-to-install parity test + hardening timing fix.
 - **PR #19** — B.1–B.4: Changesets config + release workflow + publish scripts + `workspace:^` fix + PLANNING.md stale refs.
+- **PR #20** — Docs-only: clarify Part C Node-version scope before kicking off Part C.
+- **PR #21** — Part C: `@kuzo-mcp/core/provenance` library + smoke script + CI provenance job. 2 Copilot rounds (10/0 comments).
 
 PR granularity is implementer's call based on current context, review appetite, and whether the work has naturally separable seams.
 
