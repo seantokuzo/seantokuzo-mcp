@@ -338,6 +338,7 @@ PR granularity is implementer's call based on current context, review appetite, 
 - Remove `@kuzo-mcp/types` from plugin `devDependencies` thinking the peer entry is enough — see locked decision #10. This will silently break local workspace builds.
 - Change `start:mcp` back to `pnpm --filter @kuzo-mcp/core exec node dist/server.js` — see locked decision #12. Breaks dotenv cwd fallback.
 - Extract plugin clients into `@kuzo-mcp/clients-*` packages ("Option C") as part of 2.5e. Intentionally deferred — it is proper decoupling but not phase-blocking. Subpath exports are the 2.5e-era answer.
+- Claim `.kuzo/workflows/` or `~/.kuzo/workflows/` for any 2.5e work. Those directory names are reserved for the Phase 3 user-definable workflows feature (tool-surface filtering + macros) — see the GitHub issue for the full design discussion. Install CLI, consent files, plugin state — none of those should live under `workflows/`.
 
 ### Phase 2.b Decomposition
 
