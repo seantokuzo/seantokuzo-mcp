@@ -28,7 +28,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Pinned to satisfy @kuzo-mcp/core engines.node (^20.17.0 || >=22.9.0).
+          # Plain "22" resolves to latest 22.x in the runner toolcache, which
+          # currently satisfies the floor — but the explicit range guards
+          # against future setup-node behavior changes.
+          node-version: "^22.9.0"
           cache: "pnpm"
 
       - name: Install dependencies
@@ -49,7 +53,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Pinned to satisfy @kuzo-mcp/core engines.node (^20.17.0 || >=22.9.0).
+          # Plain "22" resolves to latest 22.x in the runner toolcache, which
+          # currently satisfies the floor — but the explicit range guards
+          # against future setup-node behavior changes.
+          node-version: "^22.9.0"
           cache: "pnpm"
 
       - name: Install dependencies
@@ -71,7 +79,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Pinned to satisfy @kuzo-mcp/core engines.node (^20.17.0 || >=22.9.0).
+          # Plain "22" resolves to latest 22.x in the runner toolcache, which
+          # currently satisfies the floor — but the explicit range guards
+          # against future setup-node behavior changes.
+          node-version: "^22.9.0"
           cache: "pnpm"
 
       - name: Install dependencies
@@ -93,7 +105,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Pinned to satisfy @kuzo-mcp/core engines.node (^20.17.0 || >=22.9.0).
+          # Plain "22" resolves to latest 22.x in the runner toolcache, which
+          # currently satisfies the floor — but the explicit range guards
+          # against future setup-node behavior changes.
+          node-version: "^22.9.0"
           cache: "pnpm"
 
       - name: Install dependencies
@@ -101,6 +117,35 @@ jobs:
 
       - name: Run parity test
         run: pnpm run test:parity
+
+  provenance:
+    name: Provenance smoke
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          # Pinned to satisfy @kuzo-mcp/core engines.node (^20.17.0 || >=22.9.0).
+          # Plain "22" resolves to latest 22.x in the runner toolcache, which
+          # currently satisfies the floor — but the explicit range guards
+          # against future setup-node behavior changes.
+          node-version: "^22.9.0"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Run provenance smoke (real npm + Sigstore TUF + Rekor)
+        run: pnpm run test:provenance
 
   # ==========================================================================
   # Tests — uncomment once vitest is set up
@@ -135,7 +180,7 @@ jobs:
   label-pr:
     name: Label PR
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, build, parity]
+    needs: [lint, typecheck, build, parity, provenance]
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Add CI Pass label
@@ -143,7 +188,8 @@ jobs:
           needs.lint.result == 'success' &&
           needs.typecheck.result == 'success' &&
           needs.build.result == 'success' &&
-          needs.parity.result == 'success'
+          needs.parity.result == 'success' &&
+          needs.provenance.result == 'success'
         uses: actions/github-script@v7
         with:
           script: |
@@ -157,7 +203,8 @@ jobs:
           needs.lint.result == 'failure' ||
           needs.typecheck.result == 'failure' ||
           needs.build.result == 'failure' ||
-          needs.parity.result == 'failure'
+          needs.parity.result == 'failure' ||
+          needs.provenance.result == 'failure'
         uses: actions/github-script@v7
         with:
           script: |
@@ -172,7 +219,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, build, parity]
+    needs: [lint, typecheck, build, parity, provenance]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -180,7 +227,8 @@ jobs:
           if [[ "${{ needs.lint.result }}" != "success" ]] || \
              [[ "${{ needs.typecheck.result }}" != "success" ]] || \
              [[ "${{ needs.build.result }}" != "success" ]] || \
-             [[ "${{ needs.parity.result }}" != "success" ]]; then
+             [[ "${{ needs.parity.result }}" != "success" ]] || \
+             [[ "${{ needs.provenance.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
           fi
