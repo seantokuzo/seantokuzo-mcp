@@ -74,6 +74,12 @@ importers:
       nanospinner:
         specifier: ^1.1.0
         version: 1.2.2
+      pacote:
+        specifier: ^21.5.0
+        version: 21.5.0
+      signal-exit:
+        specifier: ^4.1.0
+        version: 4.1.0
     devDependencies:
       '@types/figlet':
         specifier: ^1.5.8
@@ -84,6 +90,9 @@ importers:
       '@types/inquirer':
         specifier: ^9.0.7
         version: 9.0.9
+      '@types/pacote':
+        specifier: ^11.1.8
+        version: 11.1.8
 
   packages/core:
     dependencies:

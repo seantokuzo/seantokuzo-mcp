@@ -40,6 +40,7 @@ import {
   revokeInteractive,
   auditInteractive,
 } from "./commands/consent.js";
+import { registerPluginsCommands } from "./commands/plugins/index.js";
 import { showBanner, showGoodbye, showError } from "./ui/display.js";
 
 /** Inline replacement for the deleted `utils/config.ts` helper. */
@@ -56,7 +57,15 @@ program
   .hook("preAction", (thisCommand) => {
     // Check config before most commands (except setup and help)
     const commandName = thisCommand.args[0];
-    const noConfigCommands = ["setup", "config", "consent", "permissions", "revoke", "audit"];
+    const noConfigCommands = [
+      "setup",
+      "config",
+      "consent",
+      "permissions",
+      "revoke",
+      "audit",
+      "plugins",
+    ];
     if (
       !noConfigCommands.includes(commandName ?? "") &&
       !thisCommand.opts()["help"]
@@ -317,6 +326,11 @@ program
     await auditInteractive(options.since);
     showGoodbye();
   });
+
+// ============================================
+// Plugins Commands
+// ============================================
+registerPluginsCommands(program);
 
 // ============================================
 // Interactive Mode (default)

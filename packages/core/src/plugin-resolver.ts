@@ -3,10 +3,15 @@
  *
  * Maps friendly plugin names (as used in kuzo.config.ts) to scoped npm package
  * names, then resolves them to a file:// URL that can be imported. Supports
- * two modes:
+ * three resolution modes, tried in order:
  *
- *   1. Installed mode — ~/.kuzo/plugins/<name>/node_modules/<pkg>/ (Part D)
- *   2. Dev mode       — pnpm workspace symlink via import.meta.resolve
+ *   1. Versioned install (Part D) — ~/.kuzo/plugins/<name>/current/pkg/
+ *      The active-version symlink produced by `kuzo plugins install`. Sibling
+ *      node_modules/ carries transitive deps.
+ *   2. Flat install (parity test) — ~/.kuzo/plugins/<name>/node_modules/<pkg>/
+ *      Structure `npm install <tarball>` produces; used by the dev-to-install
+ *      parity script until it's migrated to the versioned layout.
+ *   3. Dev mode — pnpm workspace symlink via import.meta.resolve.
  *
  * The friendly-name → package-name mapping for built-ins is a hardcoded map,
  * not config-driven, because that decoupling is a security property: config
@@ -62,14 +67,21 @@ export function resolvePluginEntry(
     );
   }
 
-  // 1. Installed-mode lookup
   const installedRoot =
     process.env["KUZO_PLUGINS_DIR"] ?? join(homedir(), ".kuzo", "plugins");
-  const installedPath = join(installedRoot, name, "node_modules", pkg);
-  if (existsSync(join(installedPath, "package.json"))) {
-    return pathToFileURL(join(installedPath, readMainEntry(installedPath))).href;
+
+  // 1. Versioned install (Part D): <root>/<name>/current/pkg/
+  const versionedPath = join(installedRoot, name, "current", "pkg");
+  if (existsSync(join(versionedPath, "package.json"))) {
+    return pathToFileURL(join(versionedPath, readMainEntry(versionedPath))).href;
   }
 
-  // 2. Dev-mode fallback via workspace symlink
+  // 2. Flat install (parity test): <root>/<name>/node_modules/<pkg>/
+  const flatPath = join(installedRoot, name, "node_modules", pkg);
+  if (existsSync(join(flatPath, "package.json"))) {
+    return pathToFileURL(join(flatPath, readMainEntry(flatPath))).href;
+  }
+
+  // 3. Dev-mode fallback via workspace symlink
   return import.meta.resolve(pkg);
 }
