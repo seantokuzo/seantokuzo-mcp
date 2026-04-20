@@ -25,6 +25,7 @@ export type AuditAction =
   | "plugin.loaded"
   | "plugin.skipped"
   | "plugin.failed"
+  | "plugin.installed"
   | "consent.granted"
   | "consent.revoked"
   | "consent.checked";

@@ -47,12 +47,15 @@
     "figlet": "^1.7.0",
     "gradient-string": "^3.0.0",
     "inquirer": "^10.1.8",
-    "nanospinner": "^1.1.0"
+    "nanospinner": "^1.1.0",
+    "pacote": "^21.5.0",
+    "signal-exit": "^4.1.0"
   },
   "devDependencies": {
     "@types/figlet": "^1.5.8",
     "@types/gradient-string": "^1.1.6",
-    "@types/inquirer": "^9.0.7"
+    "@types/inquirer": "^9.0.7",
+    "@types/pacote": "^11.1.8"
   },
   "publishConfig": {
     "access": "public",
