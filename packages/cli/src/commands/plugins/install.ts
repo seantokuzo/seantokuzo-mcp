@@ -82,7 +82,6 @@ export interface InstallOptions {
   trustUnsigned?: boolean;
   allowThirdParty?: boolean;
   allowBuilder?: string[];
-  allowDeprecated?: boolean;
   allowRegistry?: string;
   dryRun?: boolean;
   yes?: boolean;
@@ -135,6 +134,7 @@ export async function runInstall(
   try {
     // --- Step 3: Verify provenance ------------------------------------------
     const verification = await runVerification(
+      friendlyName,
       pkg,
       versionSpec,
       registry,
@@ -163,7 +163,10 @@ export async function runInstall(
     }
 
     // --- Step 6-7: Stage tarball + deps ------------------------------------
-    await stageTarball(friendlyName, pkg, versionSpec, registry);
+    // Pin to the verified version + integrity so we install the exact bytes
+    // we verified, not whatever `latest`/range might resolve to by the time
+    // pacote re-resolves (spec §C.9 + Copilot round 1).
+    await stageTarball(friendlyName, pkg, resolvedVersion, registry, verification.package.integrity);
 
     // --- Step 8: Parse manifest via dynamic import -------------------------
     const manifest = await loadStagedManifest(friendlyName);
@@ -298,6 +301,7 @@ function acquireLockOrExit(command: string): () => void {
 }
 
 async function runVerification(
+  friendlyName: string,
   pkg: string,
   versionSpec: string,
   registry: string,
@@ -305,17 +309,12 @@ async function runVerification(
   audit: AuditLogger,
 ): Promise<VerifiedAttestation> {
   // --trust-unsigned: skip real verification, but still resolve the packument
-  // so we know the integrity + version we're about to install.
+  // so we know the integrity + version we're about to install. No audit
+  // emission here — we log `plugin.installed` once, after commit succeeds.
   if (options.trustUnsigned) {
     const manifest = await pacote.manifest(`${pkg}@${versionSpec}`, {
       registry,
       fullMetadata: false,
-    });
-    audit.log({
-      plugin: pkg,
-      action: "plugin.installed",
-      outcome: "allowed",
-      details: { version: manifest.version },
     });
     return {
       package: {
@@ -342,10 +341,10 @@ async function runVerification(
   if (!result.ok) {
     spinner.error({ text: `Verification failed: ${result.message}` });
     audit.log({
-      plugin: pkg,
+      plugin: friendlyName,
       action: "plugin.installed",
       outcome: "denied",
-      details: { code: result.code, reason: result.message },
+      details: { code: result.code, reason: result.message, packageName: pkg },
     });
     throw new ProvenanceFailure(result.code, result.message);
   }
@@ -371,8 +370,9 @@ function buildPolicy(options: InstallOptions): TrustPolicy {
 async function stageTarball(
   friendlyName: string,
   pkg: string,
-  versionSpec: string,
+  resolvedVersion: string,
   registry: string,
+  integrity: string,
 ): Promise<void> {
   ensurePluginsRoot();
   const staging = stagingDir(friendlyName);
@@ -383,13 +383,19 @@ async function stageTarball(
   mkdirSync(staging, { recursive: true });
 
   const pkgTarget = stagingPkgDir(friendlyName);
+  const pinnedSpec = `${pkg}@${resolvedVersion}`;
 
-  const extract = createSpinner(`Extracting ${pkg}@${versionSpec}...`).start();
+  const extract = createSpinner(`Extracting ${pinnedSpec}...`).start();
   try {
-    // pacote.extract does NOT run install scripts. We still pass ignoreScripts
-    // belt-and-braces in case future pacote versions gain such behavior.
-    await pacote.extract(`${pkg}@${versionSpec}`, pkgTarget, {
+    // Pin to the exact version + integrity we verified. pacote will
+    // reject a tarball that doesn't match the integrity hash, closing the
+    // verify→extract TOCTOU window. `ignoreScripts` is defense-in-depth —
+    // pacote.extract does not run scripts today, but we pass it anyway
+    // so a future pacote change can't silently start running them.
+    await pacote.extract(pinnedSpec, pkgTarget, {
       registry,
+      ...(integrity ? { integrity } : {}),
+      ignoreScripts: true,
     });
     extract.success({ text: `Extracted tarball to ${relative(pluginsRoot(), pkgTarget)}` });
   } catch (err) {
@@ -404,14 +410,26 @@ async function stageTarball(
   // Build a sibling-to-pkg package.json so `npm install --prefix=<staging>`
   // resolves the plugin's declared deps, per spec §C.6 layout where
   // node_modules/ lives next to pkg/, not inside it.
+  //
+  // Include peerDependencies + optionalDependencies alongside dependencies:
+  // first-party plugins declare `@kuzo-mcp/types` as a peer (locked-decision
+  // #10) and would otherwise fail at runtime `import "@kuzo-mcp/types"`.
   const pluginPkgJson = JSON.parse(
     readFileSync(join(pkgTarget, "package.json"), "utf-8"),
-  ) as { dependencies?: Record<string, string> };
+  ) as {
+    dependencies?: Record<string, string>;
+    peerDependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+  };
   const stagingPkgJson = {
     name: `kuzo-staging-${friendlyName}`,
     version: "0.0.0",
     private: true,
-    dependencies: pluginPkgJson.dependencies ?? {},
+    dependencies: {
+      ...(pluginPkgJson.peerDependencies ?? {}),
+      ...(pluginPkgJson.optionalDependencies ?? {}),
+      ...(pluginPkgJson.dependencies ?? {}),
+    },
   };
   writeFileSync(
     join(staging, "package.json"),
@@ -464,7 +482,12 @@ async function loadStagedManifest(friendlyName: string): Promise<KuzoPlugin> {
       `Plugin package has no entry point (main or exports["."]).`,
     );
   }
-  const entryUrl = pathToFileURL(join(pkgRoot, entry)).href;
+  // Cache-bust the ESM module key: the staging path `.../<name>/.tmp/pkg/`
+  // is stable across invocations, so a plain file:// URL would hand us the
+  // module we loaded on the previous install. Appending a unique query
+  // makes the loader treat each staged import as a fresh module.
+  const entryUrl =
+    pathToFileURL(join(pkgRoot, entry)).href + `?staged=${Date.now().toString()}`;
 
   let module: Record<string, unknown>;
   try {

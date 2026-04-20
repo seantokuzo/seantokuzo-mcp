@@ -38,7 +38,6 @@ export function registerPluginsCommands(program: Command): void {
       (value: string, prev: string[] = []) => [...prev, value],
       [] as string[],
     )
-    .option("--allow-deprecated", "Allow installing a deprecated version")
     .option(
       "--allow-registry <url>",
       "Override the npmjs.org-only registry gate",
