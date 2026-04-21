@@ -109,9 +109,9 @@ export function registerPluginsCommands(program: Command): void {
     .description(
       "Clear the Sigstore TUF + attestations caches so next install re-fetches",
     )
-    .action(async () => {
+    .action(() => {
       try {
-        await runRefreshTrustRoot();
+        runRefreshTrustRoot();
       } catch (err) {
         const message = (err as Error).message || String(err);
         console.error(chalk.red(`\n✗ ${message}`));

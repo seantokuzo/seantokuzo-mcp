@@ -4,9 +4,8 @@
  * Read-only per spec §D.6, so no lock acquisition. `--json` emits the raw
  * PluginsIndex for machine consumers; default renders a table for humans.
  *
- * `--verify` is reserved in the Commander help text but deferred to D.3's
- * standalone `kuzo plugins verify <name>` command — same code path, exposing
- * it twice is churn.
+ * `--verify` is deferred to D.3's standalone `kuzo plugins verify <name>`
+ * command — same code path, exposing it twice is churn.
  */
 
 import chalk from "chalk";
@@ -68,8 +67,11 @@ function printTable(index: PluginsIndex, names: string[]): void {
   console.log("\n" + header);
   console.log(chalk.gray(divider));
   for (const row of rows) {
+    // Pad BEFORE coloring — chalk's ANSI escape codes count toward .length,
+    // so padding a colored string pads against the wrong visible width and
+    // misaligns columns on a TTY. The header path already does this.
     const line = row
-      .map((cell, i) => colorForColumn(i, cell).padEnd(widths[i]!))
+      .map((cell, i) => colorForColumn(i, cell.padEnd(widths[i]!)))
       .join("  ");
     console.log(line);
   }

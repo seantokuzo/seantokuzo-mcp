@@ -24,9 +24,12 @@ import { acquireLock, PluginsLockedError } from "./lock.js";
 const TUF_CACHE_DIRNAME = "tuf-cache";
 const ATTESTATIONS_CACHE_DIRNAME = "attestations-cache";
 
-export async function runRefreshTrustRoot(): Promise<void> {
+export function runRefreshTrustRoot(): void {
   const audit = new AuditLogger();
-  const release = acquireLockOrExit("refresh-trust-root");
+  // Let PluginsLockedError bubble to the Commander action so
+  // exitCodeForRefreshTrustRootError can map it. No async work happens in
+  // here — keep the function synchronous to surface errors directly.
+  const release = acquireLock("refresh-trust-root");
   try {
     const kuzoHome = join(homedir(), ".kuzo");
     const tufCache = join(kuzoHome, TUF_CACHE_DIRNAME);
@@ -55,18 +58,6 @@ function wipeIfExists(dir: string): boolean {
   if (!existsSync(dir)) return false;
   rmSync(dir, { recursive: true, force: true });
   return true;
-}
-
-function acquireLockOrExit(command: string): () => void {
-  try {
-    return acquireLock(command);
-  } catch (err) {
-    if (err instanceof PluginsLockedError) {
-      console.error(chalk.red(err.message));
-      process.exit(30);
-    }
-    throw err;
-  }
 }
 
 function printSuccess(wipedTuf: boolean, wipedAttestations: boolean): void {

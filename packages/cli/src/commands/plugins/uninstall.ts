@@ -59,7 +59,9 @@ export async function runUninstall(
     }
   }
 
-  const release = acquireLockOrExit("uninstall");
+  // Let PluginsLockedError bubble to the Commander action so
+  // exitCodeForUninstallError can map it.
+  const release = acquireLock("uninstall");
   try {
     const removedVersions = options.keepVersions
       ? []
@@ -124,18 +126,6 @@ function notInstalledMessage(nameArg: string, installed: string[]): string {
     return `${head} No plugins are currently installed.`;
   }
   return `${head} Installed: ${installed.sort().join(", ")}`;
-}
-
-function acquireLockOrExit(command: string): () => void {
-  try {
-    return acquireLock(command);
-  } catch (err) {
-    if (err instanceof PluginsLockedError) {
-      console.error(chalk.red(err.message));
-      process.exit(30);
-    }
-    throw err;
-  }
 }
 
 async function confirm(message: string): Promise<boolean> {
