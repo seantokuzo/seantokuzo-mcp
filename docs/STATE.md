@@ -245,20 +245,11 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 4. Add `plugin.updated` and `plugin.rolled_back` to `AuditAction` union.
 5. `plugin.trust_root_refreshed` uses `plugin: "system"` — reuse that sentinel anywhere else that "no specific plugin" applies (probably nowhere in D.3, but worth knowing).
 
-**Part D.3 (update / rollback / verify) comes after D.2:**
-1. **`update [<name>]`** — per spec §D.3: `pacote.manifest(pkg@latest)`, diff to current version, run Part C verify on new version, diff capabilities vs stored consent, re-consent if added/changed, atomic install + symlink flip, prune beyond last 3. No args = update all.
-2. **`rollback <name> [<version>]`** — per spec §D.4: validate target version exists under `<name>/`, re-run consent against target manifest (capability diff may differ from current), flip `current` symlink, update `index.json`, emit `plugin.rolled_back`. If `n-1` not retained → exit 20.
-3. **`verify <name>`** — re-run Part C verification against installed version. Reuses `~/.kuzo/attestations-cache/` when policy snapshot matches; re-fetches otherwise. Read-only.
-
-**First real release — do this whenever convenient (still unblocked):**
+**First real release — do this whenever convenient (not Part-D-gated):**
 - Make a changeset for `@kuzo-mcp/types` only (canary per spec §B.7), merge release PR, push. `release.yml` publishes `0.0.x` with real Sigstore provenance attestations.
 - Verify: `npm view @kuzo-mcp/types@0.0.1 dist.attestations` returns the attestation URL. Sigstore badge visible on npmjs.com.
 - Once `@kuzo-mcp/types@0.0.1` exists, `kuzo plugins install git-context@0.0.0-bootstrap.0 --trust-unsigned` will succeed end-to-end (peer dep finally resolves). Worth re-running that smoke at that point.
-
-**First real release — do this whenever convenient (no longer Part-C-gated):**
-- Make a changeset for `@kuzo-mcp/types` only (canary per spec §B.7), merge release PR, push. `release.yml` publishes `0.0.x` with real Sigstore provenance attestations.
-- Verify: `npm view @kuzo-mcp/types@0.0.1 dist.attestations` returns the attestation URL. Sigstore badge visible on npmjs.com.
-- After canary, the rest of the packages get changesets per Part D's actual install testing needs.
+- After the types canary, the rest of the packages get changesets per Part D.3's actual install/update testing needs.
 
 **Phase-close bookkeeping (after Part D.3):**
 - Update `docs/SECURITY.md` §5 (supply chain) per spec §E.1.
@@ -267,7 +258,7 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 
 **Open cross-phase note:** `plugin-host.ts` still doesn't freeze prototypes in child processes. Not urgent (process isolation already limits blast radius) but belongs in the 2.5e+ hardening cleanup list. File an issue at phase close.
 
-**Gotchas for Part D.2/D.3 (carried forward + Part D.1 session learnings):**
+**Gotchas for Part D.3 (carried forward from D.1 + D.2 session learnings):**
 - Don't try to use `npm token create --bypass-2fa --scopes ...` CLI — npm 11.6.2 rejects those flags as "Unknown cli config" despite the docs. Granular tokens must be created via web UI.
 - Registry CDN has ~minutes of replication lag for new packages. `npm view` may 404 on something you just published. Query `https://registry.npmjs.org/<scope>%2F<name>` directly for authoritative state.
 - pacote is CJS; from ESM use `import pacote from "pacote"` (default = `module.exports`). `import * as pacote` puts everything under `.default` only and breaks at runtime.
