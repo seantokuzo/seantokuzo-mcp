@@ -192,7 +192,7 @@ function capabilityKeys(caps: Capability[]): Set<string> {
 }
 
 /** Stable identity key for a capability (kind + discriminating field) */
-function capabilityKey(cap: Capability): string {
+export function capabilityKey(cap: Capability): string {
   switch (cap.kind) {
     case "credentials":
       return `credentials:${cap.env}:${cap.access}`;
@@ -205,4 +205,27 @@ function capabilityKey(cap: Capability): string {
     case "system":
       return `system:${cap.operation}:${cap.command ?? "*"}`;
   }
+}
+
+/**
+ * Diff two capability lists by identity key (see `capabilityKey`).
+ *
+ * Returns the capability objects from each side — not just their keys — so
+ * callers can render human-readable diff lines (kind, target, reason) without
+ * re-resolving keys back to caps.
+ *
+ * Used by `kuzo plugins update` to decide whether a new manifest's capability
+ * surface requires re-consent. Subset/equal → silent reuse; any add/remove →
+ * surface diff + re-prompt.
+ */
+export function diffCapabilities(
+  next: Capability[],
+  prev: Capability[],
+): { added: Capability[]; removed: Capability[] } {
+  const prevKeys = capabilityKeys(prev);
+  const nextKeys = capabilityKeys(next);
+  return {
+    added: next.filter((cap) => !prevKeys.has(capabilityKey(cap))),
+    removed: prev.filter((cap) => !nextKeys.has(capabilityKey(cap))),
+  };
 }

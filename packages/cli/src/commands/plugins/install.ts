@@ -9,30 +9,25 @@
  *      - skipped when --trust-unsigned (loud warning)
  *   4. If --dry-run: print plan and exit 0
  *   5. Show summary card + y/N confirmation (unless --yes)
- *   6. pacote.extract → .tmp/pkg/ (no install scripts)
+ *   6. pacote.extract → .tmp/pkg/ (no install scripts) — staging.ts
  *   7. npm install --prefix=.tmp --ignore-scripts (transitive deps sibling to pkg/)
  *   8. Dynamic-import .tmp/pkg/dist/index.js → KuzoPluginV2 manifest
  *   9. Consent flow (delegate to ConsentStore)
- *  10. Atomic commit: rename .tmp/ → <version>/, flip current symlink, update index.json
- *  11. Prune retained versions beyond last 3
+ *  10. Write verification.json (with policySnapshot per spec §C.8)
+ *  11. Atomic commit: rename .tmp/ → <version>/, flip current symlink, update index.json
+ *  12. Prune retained versions beyond last 3
  *
  * Exit codes: 10-19 from @kuzo-mcp/core/provenance, 30 for lock contention,
- * 40+ reserved here for install-domain errors.
+ * 40+ reserved here for install-domain errors, 42-44 for staging errors.
  */
 
-import { spawnSync } from "node:child_process";
 import {
   existsSync,
-  mkdirSync,
-  readFileSync,
   renameSync,
   rmSync,
   symlinkSync,
   unlinkSync,
-  writeFileSync,
 } from "node:fs";
-import { join, relative } from "node:path";
-import { pathToFileURL } from "node:url";
 
 import boxen from "boxen";
 import chalk from "chalk";
@@ -52,7 +47,6 @@ import {
 import {
   isV2Plugin,
   type Capability,
-  type KuzoPlugin,
   type KuzoPluginV2,
 } from "@kuzo-mcp/types";
 
@@ -60,14 +54,18 @@ import { acquireLock, PluginsLockedError } from "./lock.js";
 import {
   currentSymlink,
   pluginDir,
-  pluginsRoot,
   stagingDir,
-  stagingPkgDir,
   versionDir,
 } from "./paths.js";
 import {
+  cleanupStaging,
+  loadStagedManifest,
+  stageTarball,
+  StagingError,
+  STAGING_ERROR_EXIT_CODES,
+} from "./staging.js";
+import {
   MAX_RETAINED_VERSIONS,
-  ensurePluginsRoot,
   readIndex,
   upsertEntry,
   writeIndex,
@@ -75,6 +73,12 @@ import {
   type PluginSource,
   type PluginsIndex,
 } from "./state.js";
+import {
+  confirm,
+  printCapabilitySummary,
+  printSummaryCard,
+} from "./summary-card.js";
+import { writeVerificationFile } from "./verification-cache.js";
 
 export interface InstallOptions {
   version?: string;
@@ -135,11 +139,13 @@ export async function runInstall(
 
   try {
     // --- Step 3: Verify provenance ------------------------------------------
+    const policy = buildPolicy(options);
     const verification = await runVerification(
       friendlyName,
       pkg,
       versionSpec,
       registry,
+      policy,
       options,
       audit,
     );
@@ -149,13 +155,19 @@ export async function runInstall(
 
     // --- Step 4: Dry-run exit path -----------------------------------------
     if (options.dryRun) {
-      printSummaryCard(friendlyName, pkg, verification, options);
+      printSummaryCard(friendlyName, pkg, verification, {
+        title: "kuzo plugins install",
+        trustUnsigned: options.trustUnsigned,
+      });
       console.log(chalk.cyan("\nDry run complete — no changes written."));
       return;
     }
 
     // --- Step 5: Confirmation prompt ---------------------------------------
-    printSummaryCard(friendlyName, pkg, verification, options);
+    printSummaryCard(friendlyName, pkg, verification, {
+      title: "kuzo plugins install",
+      trustUnsigned: options.trustUnsigned,
+    });
     if (!options.yes) {
       const confirmed = await confirm(`Install ${friendlyName}@${resolvedVersion}?`);
       if (!confirmed) {
@@ -168,7 +180,13 @@ export async function runInstall(
     // Pin to the verified version + integrity so we install the exact bytes
     // we verified, not whatever `latest`/range might resolve to by the time
     // pacote re-resolves (spec §C.9 + Copilot round 1).
-    await stageTarball(friendlyName, pkg, resolvedVersion, registry, verification.package.integrity);
+    await stageTarball(
+      friendlyName,
+      pkg,
+      resolvedVersion,
+      registry,
+      verification.package.integrity,
+    );
 
     // --- Step 8: Parse manifest via dynamic import -------------------------
     const manifest = await loadStagedManifest(friendlyName);
@@ -209,7 +227,12 @@ export async function runInstall(
       return;
     }
 
-    // --- Step 10: Atomic commit -------------------------------------------
+    // --- Step 10-11: Write evidence then atomic commit --------------------
+    // verification.json is written into the staging dir BEFORE rename so it
+    // moves with the package. The policy snapshot is what verify uses to
+    // detect "policy changed → re-verify on next read" per spec §C.8.
+    writeVerificationFile(stagingDir(friendlyName), verification, policy);
+
     const commitResult = commitAtomic(
       friendlyName,
       pkg,
@@ -295,6 +318,7 @@ async function runVerification(
   pkg: string,
   versionSpec: string,
   registry: string,
+  policy: TrustPolicy,
   options: InstallOptions,
   audit: AuditLogger,
 ): Promise<VerifiedAttestation> {
@@ -321,7 +345,6 @@ async function runVerification(
     };
   }
 
-  const policy = buildPolicy(options);
   const spinner = createSpinner(`Verifying ${pkg}@${versionSpec}...`).start();
 
   const result = await verifyPackageProvenance(pkg, versionSpec, policy, {
@@ -355,148 +378,6 @@ function buildPolicy(options: InstallOptions): TrustPolicy {
     allowThirdParty:
       options.allowThirdParty ?? DEFAULT_POLICY.allowThirdParty,
   };
-}
-
-async function stageTarball(
-  friendlyName: string,
-  pkg: string,
-  resolvedVersion: string,
-  registry: string,
-  integrity: string,
-): Promise<void> {
-  ensurePluginsRoot();
-  const staging = stagingDir(friendlyName);
-  // Clean leftovers from a previous aborted install.
-  if (existsSync(staging)) {
-    rmSync(staging, { recursive: true, force: true });
-  }
-  mkdirSync(staging, { recursive: true });
-
-  const pkgTarget = stagingPkgDir(friendlyName);
-  const pinnedSpec = `${pkg}@${resolvedVersion}`;
-
-  const extract = createSpinner(`Extracting ${pinnedSpec}...`).start();
-  try {
-    // Pin to the exact version + integrity we verified. pacote will
-    // reject a tarball that doesn't match the integrity hash, closing the
-    // verify→extract TOCTOU window. `ignoreScripts` is defense-in-depth —
-    // pacote.extract does not run scripts today, but we pass it anyway
-    // so a future pacote change can't silently start running them.
-    await pacote.extract(pinnedSpec, pkgTarget, {
-      registry,
-      ...(integrity ? { integrity } : {}),
-      ignoreScripts: true,
-    });
-    extract.success({ text: `Extracted tarball to ${relative(pluginsRoot(), pkgTarget)}` });
-  } catch (err) {
-    extract.error({ text: `Extract failed: ${(err as Error).message}` });
-    cleanupStaging(friendlyName);
-    throw new InstallError(
-      "E_EXTRACT_FAILED",
-      `Failed to extract tarball: ${(err as Error).message}`,
-    );
-  }
-
-  // Build a sibling-to-pkg package.json so `npm install --prefix=<staging>`
-  // resolves the plugin's declared deps, per spec §C.6 layout where
-  // node_modules/ lives next to pkg/, not inside it.
-  //
-  // Include peerDependencies + optionalDependencies alongside dependencies:
-  // first-party plugins declare `@kuzo-mcp/types` as a peer (locked-decision
-  // #10) and would otherwise fail at runtime `import "@kuzo-mcp/types"`.
-  const pluginPkgJson = JSON.parse(
-    readFileSync(join(pkgTarget, "package.json"), "utf-8"),
-  ) as {
-    dependencies?: Record<string, string>;
-    peerDependencies?: Record<string, string>;
-    optionalDependencies?: Record<string, string>;
-  };
-  const stagingPkgJson = {
-    name: `kuzo-staging-${friendlyName}`,
-    version: "0.0.0",
-    private: true,
-    dependencies: {
-      ...(pluginPkgJson.peerDependencies ?? {}),
-      ...(pluginPkgJson.optionalDependencies ?? {}),
-      ...(pluginPkgJson.dependencies ?? {}),
-    },
-  };
-  writeFileSync(
-    join(staging, "package.json"),
-    JSON.stringify(stagingPkgJson, null, 2) + "\n",
-    "utf-8",
-  );
-
-  const deps = createSpinner("Installing transitive deps (scripts disabled)...").start();
-  const result = spawnSync(
-    "npm",
-    [
-      "install",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-      "--omit=dev",
-      "--no-package-lock",
-      "--no-save",
-      "--registry",
-      registry,
-    ],
-    { cwd: staging, stdio: "pipe", encoding: "utf-8" },
-  );
-  if (result.status !== 0) {
-    deps.error({ text: "npm install failed" });
-    cleanupStaging(friendlyName);
-    throw new InstallError(
-      "E_DEPS_INSTALL_FAILED",
-      `npm install failed (exit ${String(result.status)}):\n${result.stderr || result.stdout}`,
-    );
-  }
-  deps.success({ text: "Dependencies installed" });
-}
-
-async function loadStagedManifest(friendlyName: string): Promise<KuzoPlugin> {
-  const pkgRoot = stagingPkgDir(friendlyName);
-  const pkgJson = JSON.parse(
-    readFileSync(join(pkgRoot, "package.json"), "utf-8"),
-  ) as {
-    main?: string;
-    exports?: { "."?: { import?: string; default?: string } };
-  };
-  const entry =
-    pkgJson.exports?.["."]?.import ??
-    pkgJson.exports?.["."]?.default ??
-    pkgJson.main;
-  if (!entry) {
-    throw new InstallError(
-      "E_NO_ENTRY_POINT",
-      `Plugin package has no entry point (main or exports["."]).`,
-    );
-  }
-  // Cache-bust the ESM module key: the staging path `.../<name>/.tmp/pkg/`
-  // is stable across invocations, so a plain file:// URL would hand us the
-  // module we loaded on the previous install. Appending a unique query
-  // makes the loader treat each staged import as a fresh module.
-  const entryUrl =
-    pathToFileURL(join(pkgRoot, entry)).href + `?staged=${Date.now().toString()}`;
-
-  let module: Record<string, unknown>;
-  try {
-    module = (await import(entryUrl)) as Record<string, unknown>;
-  } catch (err) {
-    throw new InstallError(
-      "E_MANIFEST_LOAD_FAILED",
-      `Failed to import plugin entry: ${(err as Error).message}`,
-    );
-  }
-
-  const defaultExport = module["default"];
-  if (!defaultExport || typeof defaultExport !== "object") {
-    throw new InstallError(
-      "E_NO_DEFAULT_EXPORT",
-      `Plugin entry must default-export a KuzoPlugin object.`,
-    );
-  }
-  return defaultExport as KuzoPlugin;
 }
 
 async function runConsentFlow(
@@ -542,25 +423,9 @@ function commitAtomic(
     rmSync(target, { recursive: true, force: true });
   }
 
-  // Write frozen verification evidence BEFORE the rename — if the evidence
-  // write fails we still have the staging dir to inspect.
-  const verifJson = {
-    schemaVersion: 1,
-    package: verification.package,
-    verifiedAt: verification.verifiedAt,
-    firstParty: verification.firstParty,
-    repo: verification.repo,
-    builder: verification.builder,
-    predicateTypes: verification.predicateTypes,
-    attestationsCount: verification.attestationsCount,
-  };
-  writeFileSync(
-    join(staging, "verification.json"),
-    JSON.stringify(verifJson, null, 2) + "\n",
-    "utf-8",
-  );
-
   // Atomic rename staging → versioned dir. Same filesystem → atomic on POSIX.
+  // verification.json lives inside `staging` already (caller wrote it before
+  // calling us), so it moves with the package.
   renameSync(staging, target);
 
   // Flip `current` symlink → <version>/. Create parent dir if first install.
@@ -598,97 +463,9 @@ function commitAtomic(
   };
 }
 
-function cleanupStaging(friendlyName: string): void {
-  const staging = stagingDir(friendlyName);
-  if (existsSync(staging)) {
-    rmSync(staging, { recursive: true, force: true });
-  }
-}
-
 // ---------------------------------------------------------------------------
 // UI helpers
 // ---------------------------------------------------------------------------
-
-async function confirm(message: string): Promise<boolean> {
-  const inquirer = await import("inquirer");
-  const { ok } = await inquirer.default.prompt<{ ok: boolean }>([
-    { type: "confirm", name: "ok", message, default: false },
-  ]);
-  return ok;
-}
-
-function printSummaryCard(
-  friendlyName: string,
-  pkg: string,
-  verification: VerifiedAttestation,
-  options: InstallOptions,
-): void {
-  const firstParty = verification.firstParty
-    ? chalk.green("✓ first-party")
-    : chalk.yellow("third-party");
-  const verified = options.trustUnsigned
-    ? chalk.red.bold("✗ UNSIGNED (--trust-unsigned)")
-    : chalk.green(`✓ ${verification.attestationsCount} attestations verified`);
-
-  const lines = [
-    `${chalk.bold("Plugin:")}        ${friendlyName}`,
-    `${chalk.bold("Package:")}       ${pkg}`,
-    `${chalk.bold("Version:")}       ${verification.package.version}`,
-    `${chalk.bold("Source:")}        ${firstParty}`,
-    `${chalk.bold("Verification:")}  ${verified}`,
-  ];
-  if (verification.repo) {
-    lines.push(`${chalk.bold("Repo:")}          ${verification.repo}`);
-  }
-  if (verification.builder) {
-    lines.push(`${chalk.bold("Builder:")}       ${verification.builder}`);
-  }
-
-  console.log(
-    "\n" +
-      boxen(lines.join("\n"), {
-        padding: 1,
-        borderColor: "cyan",
-        title: "kuzo plugins install",
-        titleAlignment: "left",
-      }),
-  );
-}
-
-function printCapabilitySummary(plugin: KuzoPluginV2): void {
-  console.log(
-    "\n" + chalk.bold(`Plugin ${plugin.name}@${plugin.version} requests:`),
-  );
-  if (plugin.capabilities.length > 0) {
-    console.log(chalk.bold("\n  Required capabilities:"));
-    for (const cap of plugin.capabilities) {
-      console.log("    " + formatCapabilityShort(cap));
-    }
-  }
-  if (plugin.optionalCapabilities && plugin.optionalCapabilities.length > 0) {
-    console.log(chalk.bold("\n  Optional capabilities:"));
-    for (const cap of plugin.optionalCapabilities) {
-      console.log("    " + formatCapabilityShort(cap));
-    }
-  }
-  console.log();
-}
-
-function formatCapabilityShort(cap: Capability): string {
-  const tag = chalk.cyan(`[${cap.kind}]`);
-  switch (cap.kind) {
-    case "credentials":
-      return `${tag} ${cap.env} (${cap.access})  — ${chalk.gray(cap.reason)}`;
-    case "network":
-      return `${tag} ${cap.domain}  — ${chalk.gray(cap.reason)}`;
-    case "filesystem":
-      return `${tag} ${cap.path} (${cap.access})  — ${chalk.gray(cap.reason)}`;
-    case "cross-plugin":
-      return `${tag} ${cap.target}  — ${chalk.gray(cap.reason)}`;
-    case "system":
-      return `${tag} ${cap.operation}${cap.command ? `:${cap.command}` : ""}  — ${chalk.gray(cap.reason)}`;
-  }
-}
 
 function printSuccess(
   friendlyName: string,
@@ -721,16 +498,11 @@ function printSuccess(
 export type InstallErrorCode =
   | "E_INVALID_SPEC"
   | "E_UNSUPPORTED_REGISTRY"
-  | "E_EXTRACT_FAILED"
-  | "E_DEPS_INSTALL_FAILED"
-  | "E_NO_ENTRY_POINT"
-  | "E_MANIFEST_LOAD_FAILED"
-  | "E_NO_DEFAULT_EXPORT"
   | "E_LEGACY_MANIFEST"
   | "E_NAME_MISMATCH"
   | "E_VERSION_MISMATCH";
 
-/** Non-provenance install failures. Exit codes 40-49 reserved. */
+/** Non-provenance, non-staging install failures. Exit codes 40-49 reserved. */
 export class InstallError extends Error {
   readonly code: InstallErrorCode;
   readonly exitCode: number;
@@ -745,11 +517,6 @@ export class InstallError extends Error {
 const INSTALL_ERROR_EXIT_CODES: Record<InstallErrorCode, number> = {
   E_INVALID_SPEC: 40,
   E_UNSUPPORTED_REGISTRY: 41,
-  E_EXTRACT_FAILED: 42,
-  E_DEPS_INSTALL_FAILED: 43,
-  E_NO_ENTRY_POINT: 44,
-  E_MANIFEST_LOAD_FAILED: 44,
-  E_NO_DEFAULT_EXPORT: 44,
   E_LEGACY_MANIFEST: 45,
   E_NAME_MISMATCH: 46,
   E_VERSION_MISMATCH: 46,
@@ -771,6 +538,7 @@ export class ProvenanceFailure extends Error {
 export function exitCodeForError(err: unknown): number {
   if (err instanceof ProvenanceFailure) return err.exitCode;
   if (err instanceof InstallError) return err.exitCode;
+  if (err instanceof StagingError) return STAGING_ERROR_EXIT_CODES[err.code];
   if (err instanceof PluginsLockedError) return 30;
   return 1;
 }
