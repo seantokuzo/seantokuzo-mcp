@@ -28,6 +28,14 @@ import chalk from "chalk";
 import { createSpinner } from "nanospinner";
 import pacote from "pacote";
 
+import {
+  existsSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+} from "node:fs";
+
 import { AuditLogger } from "@kuzo-mcp/core/audit";
 import {
   ConsentStore,
@@ -74,14 +82,6 @@ import {
   printSummaryCard,
 } from "./summary-card.js";
 import { writeVerificationFile } from "./verification-cache.js";
-
-import {
-  existsSync,
-  renameSync,
-  rmSync,
-  symlinkSync,
-  unlinkSync,
-} from "node:fs";
 
 export interface UpdateOptions {
   to?: string;

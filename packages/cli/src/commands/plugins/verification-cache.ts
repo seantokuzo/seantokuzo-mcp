@@ -13,6 +13,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 import type { TrustPolicy, VerifiedAttestation } from "@kuzo-mcp/core/provenance";
 
@@ -97,10 +98,7 @@ export function rewriteVerificationCache(
   evidence: VerifiedAttestation,
   policy: TrustPolicy,
 ): void {
-  const dir = verificationJsonPath(name, version).replace(
-    /\/verification\.json$/,
-    "",
-  );
+  const dir = dirname(verificationJsonPath(name, version));
   writeVerificationFile(dir, evidence, policy);
 }
 
