@@ -153,10 +153,44 @@ export async function runRollback(
   }
 
   // --- Lock + commit ----------------------------------------------------
+  // Re-read index under the lock before mutating anything: a concurrent
+  // `kuzo plugins uninstall` could have detached this plugin between the
+  // preflight reads and now. Then commit index-first, symlink-second, with
+  // a best-effort revert if the symlink flip fails. Index.json writes are
+  // atomic (tmp + rename), so an index-write failure leaves disk state
+  // untouched and the symlink preserved — worst case is the user re-runs.
   const release = acquireLock("rollback");
   try {
-    flipSymlink(friendlyName, targetVersion);
-    updateIndex(friendlyName, entry, targetVersion);
+    const freshIndex = readIndex();
+    const freshEntry = freshIndex.plugins[friendlyName];
+    if (!freshEntry) {
+      throw new RollbackError(
+        "E_NOT_INSTALLED",
+        `${friendlyName} disappeared from the index before rollback could commit.`,
+      );
+    }
+    if (!freshEntry.retainedVersions.includes(targetVersion)) {
+      throw new RollbackError(
+        "E_VERSION_NOT_RETAINED",
+        `${friendlyName}@${targetVersion} is no longer in the retained list (concurrent update?). Available: ${freshEntry.retainedVersions.join(", ")}.`,
+      );
+    }
+
+    const snapshotForRevert = { ...freshEntry };
+    updateIndex(friendlyName, targetVersion);
+    try {
+      flipSymlink(friendlyName, targetVersion);
+    } catch (err) {
+      // Symlink flip failed AFTER index write — revert to keep disk/index
+      // consistent. A best-effort revert is better than leaking a mismatch.
+      try {
+        revertIndex(friendlyName, snapshotForRevert);
+      } catch {
+        // If revert itself fails we at least logged the original symlink
+        // error; leave the process to exit with that cause.
+      }
+      throw err;
+    }
   } finally {
     release();
   }
@@ -298,37 +332,33 @@ function flipSymlink(friendlyName: string, targetVersion: string): void {
 }
 
 /**
- * Update index.json to reflect the rollback.
+ * Update index.json to reflect the rollback. Called under the plugins lock
+ * with the index already known to contain `friendlyName`.
  *
  * - currentVersion = target
- * - retainedVersions reordered to put target first (current → [1])
- * - installedAt unchanged (the original install date sticks)
+ * - retainedVersions reordered to put target first (previous current → [1])
+ * - installedAt unchanged (original install date sticks)
  * - lastUpdatedAt = now (rollback IS an update event)
- * - integrity reflects target's recorded integrity, pulled from the existing
- *   retained-versions metadata via the per-version verification.json. We
- *   prefer that over recomputing because the verified value was the
- *   bytes-on-disk hash at original install time.
+ * - integrity taken from target's verification.json. If that file is missing
+ *   or unreadable (pre-D.3 install without policySnapshot, or user deletion)
+ *   we store empty string rather than falling back to the CURRENT version's
+ *   integrity — that fallback would silently record a hash that doesn't
+ *   correspond to the bytes on disk and mislead `list` + future `verify`.
  */
-function updateIndex(
-  friendlyName: string,
-  entry: PluginIndexEntry,
-  targetVersion: string,
-): void {
+function updateIndex(friendlyName: string, targetVersion: string): void {
   const index = readIndex();
   const current = index.plugins[friendlyName];
   if (!current) {
-    // Concurrent uninstall? Bail without writing.
     throw new RollbackError(
       "E_NOT_INSTALLED",
       `${friendlyName} disappeared from the index before rollback could commit.`,
     );
   }
 
-  const targetIntegrity = readTargetIntegrity(friendlyName, targetVersion) ?? entry.integrity;
+  const targetIntegrity = readTargetIntegrity(friendlyName, targetVersion) ?? "";
 
   // Reorder retained: target first, then everything else preserving order.
-  // We DON'T re-prune because retained.length cannot grow — we're only
-  // shuffling positions within a fixed-size list.
+  // retained.length cannot grow (we're shuffling within a fixed-size list).
   const retained = [
     targetVersion,
     ...current.retainedVersions.filter((v) => v !== targetVersion),
@@ -341,6 +371,17 @@ function updateIndex(
     retainedVersions: retained,
     integrity: targetIntegrity,
   };
+  writeIndex(index);
+}
+
+/**
+ * Revert index.json to a pre-rollback snapshot. Used when the symlink flip
+ * fails after the index write succeeded, so on-disk state doesn't drift.
+ */
+function revertIndex(friendlyName: string, snapshot: PluginIndexEntry): void {
+  const index = readIndex();
+  if (!index.plugins[friendlyName]) return;
+  index.plugins[friendlyName] = snapshot;
   writeIndex(index);
 }
 

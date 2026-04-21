@@ -298,11 +298,14 @@ function parseSpec(
 }
 
 function resolveRegistry(options: InstallOptions): string {
-  const requested = options.registry ?? options.allowRegistry;
+  // `--allow-registry` is strictly the gate that permits `--registry` to
+  // target a non-npmjs.org URL; it MUST NOT act as a registry selector on
+  // its own. (Was a D.1 latent bug — surfaced by Copilot review on D.3.)
+  // Only npmjs.org produces SLSA provenance at scale in v1, so anything
+  // else needs both flags together. (Spec §C.9)
+  const requested = options.registry;
   if (!requested) return NPM_REGISTRY;
 
-  // Only npmjs.org produces SLSA provenance at scale in v1. Any other registry
-  // needs --allow-registry. (Spec §C.9)
   const normalized = requested.endsWith("/") ? requested : `${requested}/`;
   if (normalized !== NPM_REGISTRY && !options.allowRegistry) {
     throw new InstallError(

@@ -43,8 +43,12 @@ export interface VerifyOptions {
   allowBuilder?: string[];
   allowRegistry?: string;
   registry?: string;
-  /** Force re-fetch even if cache is valid (debugging / paranoia). */
-  noCache?: boolean;
+  /**
+   * Commander negated flag. `--no-cache` sets this to `false`; default is
+   * `true`. We check `options.cache === false` to force a re-fetch — NOT
+   * `options.noCache` (which Commander never populates).
+   */
+  cache?: boolean;
 }
 
 const NPM_REGISTRY = "https://registry.npmjs.org/";
@@ -66,7 +70,12 @@ export async function runVerify(
   const registry = resolveRegistry(options);
 
   // --- Cache path -----------------------------------------------------------
-  if (!options.noCache) {
+  // `options.cache === false` is set by Commander's `--no-cache` negated
+  // flag; the default (flag absent) leaves it `undefined`, which means
+  // "use the cache." Do NOT check `options.noCache` — Commander does not
+  // populate a `noCache` field for negated flags.
+  const skipCache = options.cache === false;
+  if (!skipCache) {
     const cached = readVerificationCache(friendlyName, entry.currentVersion);
     if (cached?.policySnapshot && policiesEqual(cached.policySnapshot, policy)) {
       printSuccess(friendlyName, entry, {
@@ -160,7 +169,11 @@ function buildPolicy(options: VerifyOptions): TrustPolicy {
 }
 
 function resolveRegistry(options: VerifyOptions): string {
-  const requested = options.registry ?? options.allowRegistry;
+  // `--allow-registry` is strictly the gate that permits `--registry` to
+  // target a non-npmjs.org URL. It MUST NOT act as a registry selector on
+  // its own — that would silently switch registries if a user passes the
+  // gate flag alone.
+  const requested = options.registry;
   if (!requested) return NPM_REGISTRY;
   const normalized = requested.endsWith("/") ? requested : `${requested}/`;
   if (normalized !== NPM_REGISTRY && !options.allowRegistry) {

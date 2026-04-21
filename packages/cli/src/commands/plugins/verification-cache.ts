@@ -13,7 +13,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { TrustPolicy, VerifiedAttestation } from "@kuzo-mcp/core/provenance";
 
@@ -41,9 +41,11 @@ export interface CachedVerification {
 /**
  * Read `<name>/<version>/verification.json` if present.
  *
- * Returns `undefined` when the file is missing or malformed — both are
- * treated as cache misses by `verify`. Never throws on parse failure; the
- * file is non-authoritative (spec §C.8).
+ * Returns `undefined` when the file is missing, malformed, or fails minimal
+ * shape validation. Callers (`verify`, `rollback`) treat that as a cache
+ * miss — never throws on parse/shape failure. The file is non-authoritative
+ * (spec §C.8), so a corrupt entry cannot grant verification status; it just
+ * forces a re-fetch on the next install/verify.
  */
 export function readVerificationCache(
   name: string,
@@ -53,12 +55,54 @@ export function readVerificationCache(
   if (!existsSync(path)) return undefined;
   try {
     const raw = readFileSync(path, "utf-8");
-    const parsed = JSON.parse(raw) as CachedVerification;
-    if (parsed.schemaVersion !== VERIFICATION_SCHEMA_VERSION) return undefined;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isCachedVerification(parsed)) return undefined;
     return parsed;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Minimal runtime shape guard — enough to prevent downstream crashes on
+ * `cached.package.integrity` and `policiesEqual(cached.policySnapshot, ...)`.
+ *
+ * We intentionally DON'T validate every field; pre-D.3 installs wrote a
+ * narrower shape (no `policySnapshot`) and must still load. The guard
+ * enforces exactly what callers dereference, nothing more.
+ */
+function isCachedVerification(value: unknown): value is CachedVerification {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  if (v["schemaVersion"] !== VERIFICATION_SCHEMA_VERSION) return false;
+
+  const pkg = v["package"];
+  if (!pkg || typeof pkg !== "object") return false;
+  const p = pkg as Record<string, unknown>;
+  if (typeof p["name"] !== "string") return false;
+  if (typeof p["version"] !== "string") return false;
+  if (typeof p["integrity"] !== "string") return false;
+
+  if (typeof v["verifiedAt"] !== "string") return false;
+  if (typeof v["firstParty"] !== "boolean") return false;
+  if (typeof v["repo"] !== "string") return false;
+  if (typeof v["builder"] !== "string") return false;
+  if (!Array.isArray(v["predicateTypes"])) return false;
+  if (typeof v["attestationsCount"] !== "number") return false;
+
+  // policySnapshot is optional (D.1/D.2 installs predate it). Shape-check
+  // only when present so callers can rely on `policiesEqual(snap, ...)`
+  // without re-guarding.
+  const snap = v["policySnapshot"];
+  if (snap !== undefined) {
+    if (!snap || typeof snap !== "object") return false;
+    const s = snap as Record<string, unknown>;
+    if (!Array.isArray(s["allowedBuilders"])) return false;
+    if (!Array.isArray(s["firstPartyOrgs"])) return false;
+    if (typeof s["allowThirdParty"] !== "boolean") return false;
+  }
+
+  return true;
 }
 
 /**
@@ -85,7 +129,7 @@ export function writeVerificationFile(
     policySnapshot: policy,
   };
   writeFileSync(
-    `${targetDir}/verification.json`,
+    join(targetDir, "verification.json"),
     JSON.stringify(cached, null, 2) + "\n",
     "utf-8",
   );
@@ -98,8 +142,13 @@ export function rewriteVerificationCache(
   evidence: VerifiedAttestation,
   policy: TrustPolicy,
 ): void {
-  const dir = dirname(verificationJsonPath(name, version));
-  writeVerificationFile(dir, evidence, policy);
+  // path.dirname on the full file path is portable (handles both / and \
+  // separators); the earlier regex-based slice broke on Windows.
+  writeVerificationFile(
+    dirname(verificationJsonPath(name, version)),
+    evidence,
+    policy,
+  );
 }
 
 /**

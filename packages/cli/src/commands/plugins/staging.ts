@@ -134,13 +134,22 @@ export async function stageTarball(
   // plugin's declared deps next to pkg/ (spec §C.6). Merge peer + optional +
   // deps because first-party plugins declare `@kuzo-mcp/types` as a peer
   // (locked-decision #10) and would otherwise fail at runtime.
-  const pluginPkgJson = JSON.parse(
-    readFileSync(join(pkgTarget, "package.json"), "utf-8"),
-  ) as {
+  let pluginPkgJson: {
     dependencies?: Record<string, string>;
     peerDependencies?: Record<string, string>;
     optionalDependencies?: Record<string, string>;
   };
+  try {
+    pluginPkgJson = JSON.parse(
+      readFileSync(join(pkgTarget, "package.json"), "utf-8"),
+    ) as typeof pluginPkgJson;
+  } catch (err) {
+    cleanupStaging(friendlyName);
+    throw new StagingError(
+      "E_MANIFEST_LOAD_FAILED",
+      `Failed to read extracted package.json: ${(err as Error).message}`,
+    );
+  }
   const stagingPkgJson = {
     name: `kuzo-staging-${friendlyName}`,
     version: "0.0.0",
@@ -210,12 +219,20 @@ export function cleanupStaging(friendlyName: string): void {
  * load. The `?staged=<timestamp>` cache-buster forces a fresh module each call.
  */
 export async function loadPluginManifest(pkgRoot: string): Promise<KuzoPlugin> {
-  const pkgJson = JSON.parse(
-    readFileSync(join(pkgRoot, "package.json"), "utf-8"),
-  ) as {
+  let pkgJson: {
     main?: string;
     exports?: { "."?: { import?: string; default?: string } };
   };
+  try {
+    pkgJson = JSON.parse(
+      readFileSync(join(pkgRoot, "package.json"), "utf-8"),
+    ) as typeof pkgJson;
+  } catch (err) {
+    throw new StagingError(
+      "E_MANIFEST_LOAD_FAILED",
+      `Failed to read plugin package.json at ${pkgRoot}: ${(err as Error).message}`,
+    );
+  }
   const entry =
     pkgJson.exports?.["."]?.import ??
     pkgJson.exports?.["."]?.default ??

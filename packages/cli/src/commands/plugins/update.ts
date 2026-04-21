@@ -109,33 +109,38 @@ export async function runUpdate(
   options: UpdateOptions,
 ): Promise<void> {
   const audit = new AuditLogger();
-  const index = readIndex();
-
-  // --- Resolve targets -----------------------------------------------------
-  const targets = resolveTargets(index.plugins, nameArg);
-  if (targets.length === 0) {
-    if (nameArg) {
-      throw new UpdateError(
-        "E_NOT_INSTALLED",
-        notInstalledMessage(nameArg, Object.keys(index.plugins)),
-      );
-    }
-    console.log(
-      chalk.gray(
-        "No plugins installed. Try: kuzo plugins install <name>",
-      ),
-    );
-    return;
-  }
 
   const policy = buildPolicy(options);
   const registry = resolveRegistry(options);
 
-  // --- Lock for all writes; dry-run skips -------------------------------
+  // --- Acquire lock BEFORE reading index for non-dry-run ----------------
+  // Reading the index outside the lock opens a TOCTOU window: a concurrent
+  // uninstall can remove the plugin after we computed targets, and we'd
+  // then "resurrect" its directory + index entry. Lock first, then read.
+  // Dry-run performs no writes, so it can safely skip the lock.
   const release = options.dryRun ? () => {} : acquireLock("update");
-
   const results: UpdateResult[] = [];
+
   try {
+    const index = readIndex();
+
+    // --- Resolve targets --------------------------------------------------
+    const targets = resolveTargets(index.plugins, nameArg);
+    if (targets.length === 0) {
+      if (nameArg) {
+        throw new UpdateError(
+          "E_NOT_INSTALLED",
+          notInstalledMessage(nameArg, Object.keys(index.plugins)),
+        );
+      }
+      console.log(
+        chalk.gray(
+          "No plugins installed. Try: kuzo plugins install <name>",
+        ),
+      );
+      return;
+    }
+
     for (const target of targets) {
       const result = await updateOne(
         target.friendlyName,
@@ -425,7 +430,10 @@ function buildPolicy(options: UpdateOptions): TrustPolicy {
 }
 
 function resolveRegistry(options: UpdateOptions): string {
-  const requested = options.registry ?? options.allowRegistry;
+  // `--allow-registry` is strictly a gate, not a selector — pairing the gate
+  // flag with no `--registry` should be a no-op rather than silently
+  // switching the registry. (Fix matches verify + install.)
+  const requested = options.registry;
   if (!requested) return NPM_REGISTRY;
   const normalized = requested.endsWith("/") ? requested : `${requested}/`;
   if (normalized !== NPM_REGISTRY && !options.allowRegistry) {
