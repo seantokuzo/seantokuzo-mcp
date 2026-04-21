@@ -129,7 +129,9 @@ export async function runInstall(
   }
 
   // --- Step 2: Dry-run doesn't touch disk → skip lock ------------------------
-  const release = options.dryRun ? () => {} : acquireLockOrExit("install");
+  // PluginsLockedError bubbles to the Commander action where exitCodeForError
+  // maps it. Keep this module free of process.exit so callers stay testable.
+  const release = options.dryRun ? () => {} : acquireLock("install");
 
   try {
     // --- Step 3: Verify provenance ------------------------------------------
@@ -286,18 +288,6 @@ function resolveRegistry(options: InstallOptions): string {
     );
   }
   return normalized;
-}
-
-function acquireLockOrExit(command: string): () => void {
-  try {
-    return acquireLock(command);
-  } catch (err) {
-    if (err instanceof PluginsLockedError) {
-      console.error(chalk.red(err.message));
-      process.exit(30);
-    }
-    throw err;
-  }
 }
 
 async function runVerification(
