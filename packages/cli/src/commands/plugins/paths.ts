@@ -38,6 +38,15 @@ export function versionDir(name: string, version: string): string {
   return join(pluginDir(name), version);
 }
 
+/**
+ * Where the extracted package contents live within a versioned install.
+ * Mirrors `stagingPkgDir` after the staging→version rename — both point at
+ * the `pkg/` subdir that holds package.json + dist/.
+ */
+export function versionPkgDir(name: string, version: string): string {
+  return join(versionDir(name, version), "pkg");
+}
+
 export function currentSymlink(name: string): string {
   return join(pluginDir(name), "current");
 }
