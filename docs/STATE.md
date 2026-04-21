@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-04-21 (Part D.2 merged — `list`, `uninstall`, `refresh-trust-root` commands landed)
+**Last Updated:** 2026-04-21 (Part D.3 merged — `update`, `rollback`, `verify` commands landed; `kuzo plugins` CLI surface complete)
 
 ---
 
@@ -231,46 +231,57 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - **Copilot review:** 1 round, 5 inline comments in round 1 (all addressed in commit `3595a3e`). Round 2 LGTM — returned as a PR issue comment from user login `Copilot` (capital C, no `[bot]` suffix) confirming all 5 fixes and CI green.
 - No new dependencies. No config-file mutation. `kuzo.config.ts` edit remains a printed reminder on uninstall, mirroring install's posture.
 
+**Phase 2.5e Part D.3 — update / rollback / verify** (complete — PR #25, merged `a316c9d`, 2026-04-21)
+
+- Three new `kuzo plugins` subcommands complete the install CLI surface. `update [name]` (single or all installed), `rollback <name> [version]` (n-1 default or explicit retained version), `verify <name>` (read-only re-verify against cached evidence).
+- **Refactor up front**: extracted `staging.ts` (stageTarball, cleanupStaging, loadStagedManifest, loadVersionedManifest), `verification-cache.ts` (read/write per-version `verification.json` with schema guard + policySnapshot + policiesEqual), `summary-card.ts` (confirm, printSummaryCard, printCapabilitySummary, formatCapabilityShort, printCapabilityDiff) from install.ts. install.ts shrank from ~780 → ~410 lines.
+- **D.1 bug fixed in D.3**: install.ts D.1 wrote `verification.json` WITHOUT `policySnapshot`, but spec §C.8 requires it for cache invalidation. Now writes it. Older D.1/D.2 entries load fine (field is optional); `verify` treats missing snapshot as forced cache miss and backfills on next re-verify.
+- **`update`**: per-plugin `pacote.manifest(@latest)` → skip-if-same → Part C verify → stage tarball → diff new manifest's capabilities against `ConsentStore.getConsent(name)` (subset/equal refreshes `pluginVersion` silently; added/removed surfaces `+/-` diff + re-prompt). Declined plugin skipped, loop continues. Atomic commit reuses install's staging→version rename. Emits `plugin.updated` audit, prints `{ updated, skipped, failed }` summary. Lock acquired BEFORE `readIndex()` for non-dry-run (closes uninstall→resurrect TOCTOU).
+- **`rollback`**: default target `retainedVersions[1]`; explicit version must be in retained AND on disk. Re-consent against target manifest (rollback is NOT implicitly safer than upgrade). Commit under lock: re-read index, index-first / symlink-second with best-effort `revertIndex` on symlink failure. Does NOT re-verify provenance — target was verified at original install (use `verify` after rollback if paranoid). Missing n-1 → exit 20 per spec §D.4.
+- **`verify`**: read-only, no lock, no audit. Reads `verification.json`; if `policySnapshot` equals active TrustPolicy (via sorted-array compare + boolean match), prints cached evidence. Else (mismatch / missing / `--no-cache`) re-fetches attestations, re-runs `sigstore.verify()`, rewrites cache.
+- `AuditAction` union extended with `plugin.updated` + `plugin.rolled_back`. `@kuzo-mcp/core/consent` now also exports `capabilityKey` + `diffCapabilities(next, prev) → { added, removed }`.
+- **Exit codes added:** 20 (`E_NO_RETAINED_TARGET`), 48 (`E_NOT_INSTALLED`), 49 (`E_PARTIAL_FAILURE` — multi-plugin update), 50 (`E_RESOLVE_FAILED`), 51 (`E_VERSION_DIR_MISSING`), 52 (`E_VERSION_NOT_RETAINED`), 53 (`E_ALREADY_CURRENT`). All three commands honor the shared `STAGING_ERROR_EXIT_CODES` (42-44) via staging.ts.
+- **Bonus latent-bug fix**: `install.ts`'s `resolveRegistry` had `requested = options.registry ?? options.allowRegistry`, letting `--allow-registry <url>` act as a selector instead of a gate. Fixed in all three commands (install/update/verify) to read `options.registry` only.
+- **Windows portability**: `verification-cache.ts` uses `path.join` + `path.dirname` instead of string concat + regex slice (flagged by Copilot round 1).
+- **Copilot review:** 1 round, 11 inline comments in round 1 (all addressed in commit `2eeadfe`; round landed on top of a trivial style-fix commit `5379080` from `copilot-swe-agent[bot]` — style fixes from that bot were subsumed by the full fix commit). Round 2 LGTM — returned as a PR issue comment from user `Copilot` confirming all 11 fixes + flagging one non-actionable observation about predicateTypes element typing (intentional scoping per "validate exactly what callers dereference"). Merged per `<5` threshold.
+- No new dependencies.
+- **End-to-end smoke gap**: full install → update → rollback against real npm remains gated on `@kuzo-mcp/types@0.0.1` canary release. Until then, coverage is typecheck + lint + build + parity test + CLI help text + E_NOT_INSTALLED / empty-index code paths.
+
 ### ⏭️ Fresh-session handoff — when user says "next"
 
-**Part D.2 is fully merged** (PR #24, `a838e70`). `kuzo plugins` now has `install / list / uninstall / refresh-trust-root`. Only Part D.3 (`update / rollback / verify`) remains before 2.5e phase-close bookkeeping.
+**2.5e IS COMPLETE, code-wise.** PR #25 merged 2026-04-21 at `a316c9d`. `kuzo plugins` has `install / list / uninstall / update / rollback / verify / refresh-trust-root` — the full command surface from spec §D.1. All three first-party plugins build, verify, install, and load under the V2 permission + consent model.
 
-**Next code work — Part D.3 (update / rollback / verify):**
-1. Re-read `docs/2.5e-spec.md` Part D — §D.3 (update flow, capability-diff re-consent), §D.4 (rollback semantics + exit 20 recovery path), `verify` spec in §D.1. Skim §C.8 `CachedVerification` because `verify` + `update` both want to reuse `~/.kuzo/plugins/<name>/<version>/verification.json` rather than re-fetch.
-2. Branch off main: `phase-2.5e/part-d-update-rollback-verify` (or similar).
-3. Implement `packages/cli/src/commands/plugins/{update,rollback,verify}.ts`:
-   - **`update [<name>]`** (spec §D.3) — no-arg = update all installed. Per plugin: `pacote.manifest(pkg@latest)`, skip if `latestVersion === currentVersion`, else run Part C verify on new version, diff new manifest's `capabilities` against `ConsentStore` record. Subset/equal → silent reuse; added/changed → surface the diff table + require re-consent; declined → abort that plugin and continue. Atomic install of new version dir + flip `current` symlink + update `index.json` + retention prune. Emit `plugin.updated` audit. Needs lock.
-   - **`rollback <name> [<version>]`** (spec §D.4) — default target is n-1; `<version>` targets a specific retained version. Re-run consent against target manifest (capabilities may differ — rollback is NOT implicitly lower-risk than upgrade), flip symlink, update `index.json`, emit `plugin.rolled_back`. If n-1 not retained → exit 20 with suggestion to re-install the specific version. Needs lock.
-   - **`verify <name>`** — re-run Part C verification against the installed version. Reuse `~/.kuzo/plugins/<name>/<version>/verification.json` when policy snapshot matches; otherwise re-fetch. Read-only → no lock. Also usable from `list --verify` once this lands (deferred from D.2 to avoid duplicating code).
-4. Add `plugin.updated` and `plugin.rolled_back` to `AuditAction` union.
-5. `plugin.trust_root_refreshed` uses `plugin: "system"` — reuse that sentinel anywhere else that "no specific plugin" applies (probably nowhere in D.3, but worth knowing).
+Only **phase-close bookkeeping** and the **first real npm release** remain. Neither is code-heavy.
 
-**First real release — do this whenever convenient (not Part-D-gated):**
-- Make a changeset for `@kuzo-mcp/types` only (canary per spec §B.7), merge release PR, push. `release.yml` publishes `0.0.x` with real Sigstore provenance attestations.
-- Verify: `npm view @kuzo-mcp/types@0.0.1 dist.attestations` returns the attestation URL. Sigstore badge visible on npmjs.com.
-- Once `@kuzo-mcp/types@0.0.1` exists, `kuzo plugins install git-context@0.0.0-bootstrap.0 --trust-unsigned` will succeed end-to-end (peer dep finally resolves). Worth re-running that smoke at that point.
-- After the types canary, the rest of the packages get changesets per Part D.3's actual install/update testing needs.
+**Phase-close bookkeeping (pick one, or batch in a single PR):**
+1. Update `docs/SECURITY.md` §5 (supply chain) per spec §E.1 — describe the Sigstore/TUF verification story, the trust policy, the consent model, and the audit log as shipped. Mostly narrative prose referencing what's now in `packages/core/src/{provenance,consent,audit}.ts`.
+2. File a GitHub issue for `plugin-host.ts` prototype freeze — not urgent (process isolation already limits blast radius) but belongs in the hardening cleanup list. Open cross-phase note.
 
-**Phase-close bookkeeping (after Part D.3):**
-- Update `docs/SECURITY.md` §5 (supply chain) per spec §E.1.
-- Update `docs/STATE.md` — mark 2.5e complete with all PR refs (#15, #17, #18, #19, #20, #21, #22, #24, +D.3's PR).
-- File issue for `plugin-host.ts` prototype freeze (open cross-phase note).
+**First real release (high-leverage, independent of bookkeeping):**
+- Make a changeset for `@kuzo-mcp/types` only (canary per spec §B.7), merge the release PR, push. `release.yml` publishes `0.0.x` with real Sigstore provenance attestations.
+- Verify post-publish: `npm view @kuzo-mcp/types@0.0.1 dist.attestations` returns the attestation URL. Sigstore badge visible on npmjs.com.
+- Once `@kuzo-mcp/types@0.0.1` exists, `kuzo plugins install git-context@0.0.0-bootstrap.0 --trust-unsigned` will succeed end-to-end (peer dep finally resolves). Re-run that live install smoke + a live `update` + `rollback` dry-run at that point to close the D.3 "e2e gap" noted above.
+- After the types canary: changesets for the remaining 5 packages. Publish order doesn't matter — pnpm workspace publishing handles the dep graph.
 
-**Open cross-phase note:** `plugin-host.ts` still doesn't freeze prototypes in child processes. Not urgent (process isolation already limits blast radius) but belongs in the 2.5e+ hardening cleanup list. File an issue at phase close.
+**Open cross-phase note:** `plugin-host.ts` still doesn't freeze prototypes in child processes. Worth filing an issue at 2.5e close.
 
-**Gotchas for Part D.3 (carried forward from D.1 + D.2 session learnings):**
+**Gotchas carried forward (still relevant for any plugin-install-adjacent work):**
 - Don't try to use `npm token create --bypass-2fa --scopes ...` CLI — npm 11.6.2 rejects those flags as "Unknown cli config" despite the docs. Granular tokens must be created via web UI.
 - Registry CDN has ~minutes of replication lag for new packages. `npm view` may 404 on something you just published. Query `https://registry.npmjs.org/<scope>%2F<name>` directly for authoritative state.
 - pacote is CJS; from ESM use `import pacote from "pacote"` (default = `module.exports`). `import * as pacote` puts everything under `.default` only and breaks at runtime.
-- `pacote.extract(spec, target, opts)` does NOT run install scripts — those happen on `npm install`. Spec §C.6 step 4: extract to `.tmp/pkg/`, then `npm install --prefix=.tmp --ignore-scripts --no-audit --no-fund` for transitive deps. NEVER call `pacote.extract` or `npm install` on the plugin before `verifyPackageProvenance` succeeds.
-- Copilot does NOT auto-re-review on every push to a PR (at least not reliably) — comment `@copilot review` to explicitly trigger round 2+. Auto-review only fires on PR creation.
-- Copilot round-2 response to an `@copilot review` trigger comes back as a PR **issue comment**, not a formal review. The canonical pipeline's `"Pull request overview"` body regex won't count it — read the issue comment thread directly. (Discovered in Part D.1.)
-- The round-2 issue comment is posted as user login `Copilot` (capital C, no `[bot]` suffix), NOT `copilot-pull-request-reviewer[bot]` (which is the round-1 formal-review login). Poll scripts must match both. (Caught in Part D.2 — my round-2 poll missed the landed comment for ~5 min.)
-- `require(...)` **fails** in ESM modules even though tooling may not warn loudly. Always top-level `import` from `node:fs` etc. (Slipped twice during D.1, caught on build.)
-- When you add a new `AuditAction` variant to `packages/core/src/audit.ts`, the `AuditAction` union is CLOSED — TS will reject any emit with a non-listed string. Pick a verb + past-tense form (`plugin.installed`, `plugin.uninstalled`, `plugin.rolled_back`).
-- `stageTarball` must pin pacote calls to the VERIFIED `version + integrity`, not the user-supplied `versionSpec`. Otherwise `latest`/range specs silently open a TOCTOU window between verify and extract. Keep the same discipline in update/rollback — re-verify before any extract, and pass integrity downstream.
+- `pacote.extract(spec, target, opts)` does NOT run install scripts — those happen on `npm install`. Extract to `.tmp/pkg/`, then `npm install --prefix=.tmp --ignore-scripts --no-audit --no-fund` for transitive deps. NEVER call `pacote.extract` or `npm install` on the plugin before `verifyPackageProvenance` succeeds.
+- Copilot does NOT auto-re-review on every push to a PR — comment `@copilot review` to explicitly trigger round 2+. Auto-review only fires on PR creation.
+- Copilot round-2 response to an `@copilot review` trigger comes back as a PR **issue comment**, not a formal review. The canonical pipeline's `"Pull request overview"` body regex won't count it — read the issue comment thread directly. The round-2 comment is posted as user login `Copilot` (capital C, no `[bot]` suffix), NOT `copilot-pull-request-reviewer[bot]` (which is the round-1 formal-review login). Poll scripts must match both.
+- Commander's negated flags (`--no-cache`) populate `options.cache: boolean` (default true, false when flag present), NOT `options.noCache`. Type your `XOptions` interface and check accordingly; otherwise the bypass path is unreachable (caught in D.3 Copilot r1).
+- `--allow-registry <url>` is strictly a GATE that permits `--registry <url>` to target a non-npmjs.org URL. It MUST NOT act as a selector on its own. (D.1 latent bug swept in D.3.)
+- `require(...)` **fails** in ESM modules even though tooling may not warn loudly. Always top-level `import` from `node:fs` etc.
+- When you add a new `AuditAction` variant to `packages/core/src/audit.ts`, the `AuditAction` union is CLOSED — TS will reject any emit with a non-listed string. Pick a verb + past-tense form.
+- `stageTarball` must pin pacote calls to the VERIFIED `version + integrity`, not the user-supplied `versionSpec`. Otherwise `latest`/range specs silently open a TOCTOU window between verify and extract.
 - Synthetic staging `package.json` must merge `peerDependencies` + `optionalDependencies` into `dependencies`. First-party plugins declare `@kuzo-mcp/types` as peer (locked-decision #10) and `npm install --omit=dev` will silently skip peer deps otherwise.
-- Dynamic `import()` of a staged manifest caches by URL. Bust with `?staged=<Date.now()>` so repeat installs in the same process get fresh modules. (Still matters in D.3 for update/rollback which re-import manifests.)
+- Dynamic `import()` of a staged manifest caches by URL. Bust with `?staged=<Date.now()>` so repeat installs/updates/rollbacks in the same process get fresh modules.
+- For write commands that read shared state, **acquire the lock BEFORE reading** — reading outside the lock opens TOCTOU windows with concurrent uninstall/update (caught in D.3 Copilot r1 on update.ts, also applies to any future shared-state write path).
+- For multi-step writes on shared state (index + symlink), write the atomic metadata first (index.json uses tmp + rename so it's atomic), THEN the non-atomic operation (symlink flip), with a revert-the-metadata path if the non-atomic step fails. Disk/index drift is worse than a clean re-run request.
+- `verification.json` shape evolves additively — D.1 entries lack `policySnapshot`, shape guard must treat missing optional fields as "pre-D.3, forced cache miss" rather than rejecting the whole entry.
 
 ### Source of truth
 
@@ -296,11 +307,11 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 11. **`@kuzo-mcp/core` directly depends on all 3 plugin packages** — `plugin-github` + `plugin-jira` for the credentials.ts client factory map (Option A coupling, accepted in 2.5b); `plugin-git-context` purely so `import.meta.resolve("@kuzo-mcp/plugin-git-context")` can find it in core's resolution scope. Project refs in `packages/core/tsconfig.json` mirror this.
 12. **`start:mcp` runs `node packages/core/dist/server.js` from repo root**, NOT `pnpm --filter @kuzo-mcp/core exec node dist/server.js` (spec §A.6 suggestion). pnpm --filter changes cwd to the package dir, which breaks the dotenv cwd fallback. Direct node invocation keeps cwd at repo root so `.env` is found.
 
-### Branch state (post-Part D.2)
+### Branch state (post-Part D.3)
 
-- **main** at `a838e70` — PR #24 merge commit. `kuzo plugins {install, list, uninstall, refresh-trust-root}` all live.
-- All 6 `@kuzo-mcp/*` packages still exist on npm at `0.0.0-bootstrap.0` with `--tag=bootstrap`. `latest` tag is empty until first real release (canary-release `@kuzo-mcp/types` whenever — full install smoke needs it).
-- All local feature branches deleted (`phase-2.5e/part-d-list-uninstall` cleaned by `--delete-branch` on merge). Fresh session should branch off main for Part D.3.
+- **main** at `a316c9d` — PR #25 merge commit. `kuzo plugins {install, list, uninstall, update, rollback, verify, refresh-trust-root}` all live. Full §D.1 command surface complete.
+- All 6 `@kuzo-mcp/*` packages still exist on npm at `0.0.0-bootstrap.0` with `--tag=bootstrap`. `latest` tag is empty until first real release (canary-release `@kuzo-mcp/types` whenever — end-to-end install/update/rollback smoke needs it).
+- All local feature branches deleted (`phase-2.5e/part-d-update-rollback-verify` cleaned by `--delete-branch` on merge).
 
 ### Known tactical detail from A.4–A.7 session
 
@@ -329,6 +340,7 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - **PR #21** — Part C: `@kuzo-mcp/core/provenance` library + smoke script + CI provenance job. 2 Copilot rounds (10/0 comments).
 - **PR #22** — Part D.1: `kuzo plugins install` command, state + lock primitives, versioned-layout resolver. 1 Copilot round (8 comments, all fixed in `55fa650`) + r2 LGTM via PR comment.
 - **PR #24** — Part D.2: `kuzo plugins {list, uninstall, refresh-trust-root}` commands, `acquireLockOrExit` anti-pattern swept from all three commands, `AuditAction` extended. 1 Copilot round (5 comments, all fixed in `3595a3e`) + r2 LGTM via PR issue comment.
+- **PR #25** — Part D.3: `kuzo plugins {update, rollback, verify}` commands + refactor extracting `staging.ts` / `verification-cache.ts` / `summary-card.ts` from install.ts + `policySnapshot` backfill + latent D.1 `--allow-registry`-as-selector fix swept across all three registry-aware commands + TOCTOU lock-before-read fix on update + rollback commit-order + revert-on-symlink-failure. 1 Copilot round (11 comments, all fixed in `2eeadfe`) + r2 LGTM via PR issue comment. Also absorbed a parallel `copilot-swe-agent[bot]` style-fix commit `5379080` via rebase.
 
 PR granularity is implementer's call based on current context, review appetite, and whether the work has naturally separable seams.
 
