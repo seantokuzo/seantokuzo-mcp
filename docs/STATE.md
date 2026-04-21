@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-04-20 (Part D.1 merged — `kuzo plugins install` command landed)
+**Last Updated:** 2026-04-21 (Part D.2 merged — `list`, `uninstall`, `refresh-trust-root` commands landed)
 
 ---
 
@@ -220,19 +220,30 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - **TOCTOU fix from Copilot r1:** pre-fix, `stageTarball` re-resolved `${pkg}@${versionSpec}` via `pacote.extract`, which could hand us a different tarball than `verifyPackageProvenance` just verified if `versionSpec` was `latest` or a range. Post-fix, all post-verify calls use `verification.package.version` + `verification.package.integrity` — pacote rejects a tarball whose hash doesn't match.
 - **Peer-dep smoke takeaway:** bootstrap-tagged `@kuzo-mcp/plugin-git-context` DOES declare `@kuzo-mcp/types` as peer (verified during review fix), but the peer target `^0.0.1` doesn't yet exist on npm. So `plugins install --trust-unsigned git-context@0.0.0-bootstrap.0` still hits `ETARGET` until the canary release of `@kuzo-mcp/types`. My stage-with-peer-deps fix is correct; the registry state is the remaining blocker.
 
+**Phase 2.5e Part D.2 — list / uninstall / refresh-trust-root** (complete — PR #24, merged `a838e70`, 2026-04-21)
+
+- Three new `kuzo plugins` subcommands under `packages/cli/src/commands/plugins/`: `list.ts` (read-only, no lock), `uninstall.ts` (lookup by friendly name OR packageName → rm plugin dir → remove index entry → `ConsentStore.revokeConsent` → audit; `--keep-versions` preserves version dirs on disk), `refresh-trust-root.ts` (wipes `~/.kuzo/tuf-cache/` + `~/.kuzo/attestations-cache/`, missing dirs are no-ops; plugin field in audit is the sentinel `"system"`).
+- `list` renders a 5-column padded table (Name · Version · Source · Integrity (20-char prefix) · Installed YYYY-MM-DD). `--json` dumps the raw `PluginsIndex`. Headers + rows pad BEFORE chalk coloring — coloring-then-padding breaks alignment on a TTY because ANSI codes count toward `String.prototype.length`.
+- `uninstall` exits 47 with "not installed / Installed: x, y" hint when the name doesn't match. `--keep-versions` still removes the index entry and revokes consent — only the retained version dirs stay.
+- `AuditAction` union extended with `"plugin.uninstalled"` and `"plugin.trust_root_refreshed"`.
+- **Round-1 cleanup — `acquireLockOrExit` anti-pattern removed**. D.1's `install.ts` used a helper that swallowed `PluginsLockedError` and called `process.exit(30)` internally, which made the `PluginsLockedError` branch in `exitCodeForError` dead code and leaked process termination into business logic. D.2 drops the helper from all three files (install, uninstall, refresh-trust-root) and calls `acquireLock(command)` directly; `PluginsLockedError` now bubbles to the Commander action's `exitCodeFor*Error` mapper for consistent exit-30 handling. Verified with a manually-held lock.
+- **D.1 round-1 UX carry-over landed**: `--registry <url>` help text now explicitly mentions that non-npmjs.org URLs require `--allow-registry <url>`.
+- **Copilot review:** 1 round, 5 inline comments in round 1 (all addressed in commit `3595a3e`). Round 2 LGTM — returned as a PR issue comment from user login `Copilot` (capital C, no `[bot]` suffix) confirming all 5 fixes and CI green.
+- No new dependencies. No config-file mutation. `kuzo.config.ts` edit remains a printed reminder on uninstall, mirroring install's posture.
+
 ### ⏭️ Fresh-session handoff — when user says "next"
 
-**Part D.1 is fully merged** (PR #22, `7dec129`). `kuzo plugins install` is live. Part D split into three PRs per `docs/STATE.md` §2.5e plan — D.2 and D.3 remain.
+**Part D.2 is fully merged** (PR #24, `a838e70`). `kuzo plugins` now has `install / list / uninstall / refresh-trust-root`. Only Part D.3 (`update / rollback / verify`) remains before 2.5e phase-close bookkeeping.
 
-**Next code work — Part D.2 (list / uninstall / refresh-trust-root):**
-1. Read `docs/2.5e-spec.md` Part D (lines 1102–1297) — command surface §D.1, state files §D.7 (already half-implemented in D.1), failure UX §D.8.
-2. Branch off main: `phase-2.5e/part-d-list-uninstall` (or similar).
-3. Implement `packages/cli/src/commands/plugins/{list,uninstall,refresh-trust-root}.ts`:
-   - **`list`** — read `~/.kuzo/plugins/index.json`, render a table (name, current version, source, integrity prefix, installedAt). Flags: `--verify` (re-run Part C verification against cached evidence; if missing, re-fetch), `--json` (machine-readable). Read-only → no lock.
-   - **`uninstall <name>`** — look up in index, remove `~/.kuzo/plugins/<name>/` entirely, delete the entry from `index.json`, emit `plugin.uninstalled` audit row. Also revoke consent via `ConsentStore.revokeConsent(name)`. Flags: `--keep-versions` (preserve the version dirs for later re-register). Needs lock.
-   - **`refresh-trust-root`** — wipe `~/.kuzo/tuf-cache/` and `~/.kuzo/attestations-cache/`. Next install will re-fetch Sigstore TUF root. Needs lock (mutates shared caches).
-4. Add `plugin.uninstalled` to `AuditAction` union in `@kuzo-mcp/core/audit`. Optionally `plugin.trust_root_refreshed` too.
-5. Round-1 UX nit from Part D.1 (from Copilot) — clarify `--registry <url>` help string to mention the `--allow-registry` gate. One-line touch, fold into D.2.
+**Next code work — Part D.3 (update / rollback / verify):**
+1. Re-read `docs/2.5e-spec.md` Part D — §D.3 (update flow, capability-diff re-consent), §D.4 (rollback semantics + exit 20 recovery path), `verify` spec in §D.1. Skim §C.8 `CachedVerification` because `verify` + `update` both want to reuse `~/.kuzo/plugins/<name>/<version>/verification.json` rather than re-fetch.
+2. Branch off main: `phase-2.5e/part-d-update-rollback-verify` (or similar).
+3. Implement `packages/cli/src/commands/plugins/{update,rollback,verify}.ts`:
+   - **`update [<name>]`** (spec §D.3) — no-arg = update all installed. Per plugin: `pacote.manifest(pkg@latest)`, skip if `latestVersion === currentVersion`, else run Part C verify on new version, diff new manifest's `capabilities` against `ConsentStore` record. Subset/equal → silent reuse; added/changed → surface the diff table + require re-consent; declined → abort that plugin and continue. Atomic install of new version dir + flip `current` symlink + update `index.json` + retention prune. Emit `plugin.updated` audit. Needs lock.
+   - **`rollback <name> [<version>]`** (spec §D.4) — default target is n-1; `<version>` targets a specific retained version. Re-run consent against target manifest (capabilities may differ — rollback is NOT implicitly lower-risk than upgrade), flip symlink, update `index.json`, emit `plugin.rolled_back`. If n-1 not retained → exit 20 with suggestion to re-install the specific version. Needs lock.
+   - **`verify <name>`** — re-run Part C verification against the installed version. Reuse `~/.kuzo/plugins/<name>/<version>/verification.json` when policy snapshot matches; otherwise re-fetch. Read-only → no lock. Also usable from `list --verify` once this lands (deferred from D.2 to avoid duplicating code).
+4. Add `plugin.updated` and `plugin.rolled_back` to `AuditAction` union.
+5. `plugin.trust_root_refreshed` uses `plugin: "system"` — reuse that sentinel anywhere else that "no specific plugin" applies (probably nowhere in D.3, but worth knowing).
 
 **Part D.3 (update / rollback / verify) comes after D.2:**
 1. **`update [<name>]`** — per spec §D.3: `pacote.manifest(pkg@latest)`, diff to current version, run Part C verify on new version, diff capabilities vs stored consent, re-consent if added/changed, atomic install + symlink flip, prune beyond last 3. No args = update all.
@@ -249,9 +260,9 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - Verify: `npm view @kuzo-mcp/types@0.0.1 dist.attestations` returns the attestation URL. Sigstore badge visible on npmjs.com.
 - After canary, the rest of the packages get changesets per Part D's actual install testing needs.
 
-**Phase-close bookkeeping (after Part D):**
+**Phase-close bookkeeping (after Part D.3):**
 - Update `docs/SECURITY.md` §5 (supply chain) per spec §E.1.
-- Update `docs/STATE.md` — mark 2.5e complete with all PR refs (#15, #17, #18, #19, #20, #21, +D's PR).
+- Update `docs/STATE.md` — mark 2.5e complete with all PR refs (#15, #17, #18, #19, #20, #21, #22, #24, +D.3's PR).
 - File issue for `plugin-host.ts` prototype freeze (open cross-phase note).
 
 **Open cross-phase note:** `plugin-host.ts` still doesn't freeze prototypes in child processes. Not urgent (process isolation already limits blast radius) but belongs in the 2.5e+ hardening cleanup list. File an issue at phase close.
@@ -263,6 +274,7 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - `pacote.extract(spec, target, opts)` does NOT run install scripts — those happen on `npm install`. Spec §C.6 step 4: extract to `.tmp/pkg/`, then `npm install --prefix=.tmp --ignore-scripts --no-audit --no-fund` for transitive deps. NEVER call `pacote.extract` or `npm install` on the plugin before `verifyPackageProvenance` succeeds.
 - Copilot does NOT auto-re-review on every push to a PR (at least not reliably) — comment `@copilot review` to explicitly trigger round 2+. Auto-review only fires on PR creation.
 - Copilot round-2 response to an `@copilot review` trigger comes back as a PR **issue comment**, not a formal review. The canonical pipeline's `"Pull request overview"` body regex won't count it — read the issue comment thread directly. (Discovered in Part D.1.)
+- The round-2 issue comment is posted as user login `Copilot` (capital C, no `[bot]` suffix), NOT `copilot-pull-request-reviewer[bot]` (which is the round-1 formal-review login). Poll scripts must match both. (Caught in Part D.2 — my round-2 poll missed the landed comment for ~5 min.)
 - `require(...)` **fails** in ESM modules even though tooling may not warn loudly. Always top-level `import` from `node:fs` etc. (Slipped twice during D.1, caught on build.)
 - When you add a new `AuditAction` variant to `packages/core/src/audit.ts`, the `AuditAction` union is CLOSED — TS will reject any emit with a non-listed string. Pick a verb + past-tense form (`plugin.installed`, `plugin.uninstalled`, `plugin.rolled_back`).
 - `stageTarball` must pin pacote calls to the VERIFIED `version + integrity`, not the user-supplied `versionSpec`. Otherwise `latest`/range specs silently open a TOCTOU window between verify and extract. Keep the same discipline in update/rollback — re-verify before any extract, and pass integrity downstream.
@@ -293,11 +305,11 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 11. **`@kuzo-mcp/core` directly depends on all 3 plugin packages** — `plugin-github` + `plugin-jira` for the credentials.ts client factory map (Option A coupling, accepted in 2.5b); `plugin-git-context` purely so `import.meta.resolve("@kuzo-mcp/plugin-git-context")` can find it in core's resolution scope. Project refs in `packages/core/tsconfig.json` mirror this.
 12. **`start:mcp` runs `node packages/core/dist/server.js` from repo root**, NOT `pnpm --filter @kuzo-mcp/core exec node dist/server.js` (spec §A.6 suggestion). pnpm --filter changes cwd to the package dir, which breaks the dotenv cwd fallback. Direct node invocation keeps cwd at repo root so `.env` is found.
 
-### Branch state (post-Part D.1)
+### Branch state (post-Part D.2)
 
-- **main** at `7dec129` — PR #22 merge commit. `kuzo plugins install` live.
+- **main** at `a838e70` — PR #24 merge commit. `kuzo plugins {install, list, uninstall, refresh-trust-root}` all live.
 - All 6 `@kuzo-mcp/*` packages still exist on npm at `0.0.0-bootstrap.0` with `--tag=bootstrap`. `latest` tag is empty until first real release (canary-release `@kuzo-mcp/types` whenever — full install smoke needs it).
-- All local feature branches deleted (`phase-2.5e/part-d-install-cli` cleaned by `--delete-branch` on merge). Fresh session should branch off main for Part D.2.
+- All local feature branches deleted (`phase-2.5e/part-d-list-uninstall` cleaned by `--delete-branch` on merge). Fresh session should branch off main for Part D.3.
 
 ### Known tactical detail from A.4–A.7 session
 
@@ -325,6 +337,7 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 - **PR #20** — Docs-only: clarify Part C Node-version scope before kicking off Part C.
 - **PR #21** — Part C: `@kuzo-mcp/core/provenance` library + smoke script + CI provenance job. 2 Copilot rounds (10/0 comments).
 - **PR #22** — Part D.1: `kuzo plugins install` command, state + lock primitives, versioned-layout resolver. 1 Copilot round (8 comments, all fixed in `55fa650`) + r2 LGTM via PR comment.
+- **PR #24** — Part D.2: `kuzo plugins {list, uninstall, refresh-trust-root}` commands, `acquireLockOrExit` anti-pattern swept from all three commands, `AuditAction` extended. 1 Copilot round (5 comments, all fixed in `3595a3e`) + r2 LGTM via PR issue comment.
 
 PR granularity is implementer's call based on current context, review appetite, and whether the work has naturally separable seams.
 
