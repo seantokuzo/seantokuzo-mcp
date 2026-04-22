@@ -12,6 +12,7 @@
  * Credentials: JIRA_HOST, JIRA_EMAIL, JIRA_API_TOKEN via credential broker (access: "client")
  */
 
+import { createRequire } from "node:module";
 import type { KuzoPluginV2 } from "@kuzo-mcp/types";
 import type { JiraClient } from "./client.js";
 import { setClient, resetClient } from "./state.js";
@@ -19,7 +20,8 @@ import { ticketTools } from "./tools/tickets.js";
 import { transitionTools } from "./tools/transitions.js";
 import { subtaskTools } from "./tools/subtasks.js";
 import { commentTools } from "./tools/comments.js";
-import pkgJson from "../package.json" with { type: "json" };
+
+const pkgJson = createRequire(import.meta.url)("../package.json") as { version: string };
 
 const plugin: KuzoPluginV2 = {
   name: "jira",

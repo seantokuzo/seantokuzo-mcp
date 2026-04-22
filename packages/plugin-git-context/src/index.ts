@@ -5,10 +5,12 @@
  * `context.callTool()` to resolve repo/branch automatically.
  */
 
+import { createRequire } from "node:module";
 import type { KuzoPluginV2 } from "@kuzo-mcp/types";
 import { getGitContextTool } from "./tools/context.js";
 import { gitContextResource } from "./resources/context.js";
-import pkgJson from "../package.json" with { type: "json" };
+
+const pkgJson = createRequire(import.meta.url)("../package.json") as { version: string };
 
 const plugin: KuzoPluginV2 = {
   name: "git-context",

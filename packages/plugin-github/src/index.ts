@@ -9,6 +9,7 @@
  * Optional: GITHUB_USERNAME via credential broker (access: "raw")
  */
 
+import { createRequire } from "node:module";
 import type { KuzoPluginV2 } from "@kuzo-mcp/types";
 import type { GitHubClient } from "./client.js";
 import { setClient, resetClient } from "./state.js";
@@ -16,7 +17,8 @@ import { pullRequestTools } from "./tools/pulls.js";
 import { reviewTools } from "./tools/reviews.js";
 import { repoTools } from "./tools/repos.js";
 import { branchTools } from "./tools/branches.js";
-import pkgJson from "../package.json" with { type: "json" };
+
+const pkgJson = createRequire(import.meta.url)("../package.json") as { version: string };
 
 const plugin: KuzoPluginV2 = {
   name: "github",
