@@ -9,6 +9,7 @@
  * Optional: GITHUB_USERNAME via credential broker (access: "raw")
  */
 
+import { createRequire } from "node:module";
 import type { KuzoPluginV2 } from "@kuzo-mcp/types";
 import type { GitHubClient } from "./client.js";
 import { setClient, resetClient } from "./state.js";
@@ -17,11 +18,13 @@ import { reviewTools } from "./tools/reviews.js";
 import { repoTools } from "./tools/repos.js";
 import { branchTools } from "./tools/branches.js";
 
+const pkgJson = createRequire(import.meta.url)("../package.json") as { version: string };
+
 const plugin: KuzoPluginV2 = {
   name: "github",
   description:
     "GitHub integration — pull requests, reviews, repository management, branches, and file content. Auto-detects repo and branch via the git-context plugin.",
-  version: "1.0.0",
+  version: pkgJson.version,
   permissionModel: 1,
   capabilities: [
     {
