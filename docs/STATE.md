@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-04-21 (Part D.3 merged — `update`, `rollback`, `verify` commands landed; `kuzo plugins` CLI surface complete)
+**Last Updated:** 2026-04-21 (Part D.3 merged + phase-close bookkeeping done — SECURITY.md §8 rewritten, issue #26 filed for plugin-host freeze, pre-release secret scan clean. Next: first real npm release — see handoff runbook below.)
 
 ---
 
@@ -249,21 +249,150 @@ Two pnpm-config additions in root `package.json` beyond the literal spec, both f
 
 ### ⏭️ Fresh-session handoff — when user says "next"
 
-**2.5e IS COMPLETE, code-wise.** PR #25 merged 2026-04-21 at `a316c9d`. `kuzo plugins` has `install / list / uninstall / update / rollback / verify / refresh-trust-root` — the full command surface from spec §D.1. All three first-party plugins build, verify, install, and load under the V2 permission + consent model.
+**2.5e IS COMPLETE, code-wise AND bookkeeping-wise.** PR #25 merged 2026-04-21 at `a316c9d`. `kuzo plugins` has `install / list / uninstall / update / rollback / verify / refresh-trust-root` — the full command surface from spec §D.1. `docs/SECURITY.md §8` updated with the shipped supply-chain narrative. GitHub issue #26 filed for the `plugin-host.ts` prototype-freeze cleanup.
 
-Only **phase-close bookkeeping** and the **first real npm release** remain. Neither is code-heavy.
+**Pre-release security scan: CLEAN** (2026-04-21). Git history + current tree scanned for `.env`, `.npmrc` with auth, private keys, GitHub/npm/OpenAI/Anthropic/AWS/Slack/Google token shapes. Zero real secrets ever committed. `.env.example` only holds literal `x` placeholders. `.npmrc` at root is pnpm workspace config (no `_authToken`). All 6 packages' `files` fields whitelist `dist/**/*.{js,d.ts,*.map}` only — source, tests, fixtures never ship. `release.yml` uses tokenless OIDC Trusted Publishing with `permissions: {}` at workflow scope + fork guard + explicit "DO NOT SET NPM_TOKEN" comment. Safe to publish.
 
-**Phase-close bookkeeping (pick one, or batch in a single PR):**
-1. Update `docs/SECURITY.md` §5 (supply chain) per spec §E.1 — describe the Sigstore/TUF verification story, the trust policy, the consent model, and the audit log as shipped. Mostly narrative prose referencing what's now in `packages/core/src/{provenance,consent,audit}.ts`.
-2. File a GitHub issue for `plugin-host.ts` prototype freeze — not urgent (process isolation already limits blast radius) but belongs in the hardening cleanup list. Open cross-phase note.
+**What's next: the first real npm release.** This is a **runbook**, not a bug fix. Follow it top-to-bottom.
 
-**First real release (high-leverage, independent of bookkeeping):**
-- Make a changeset for `@kuzo-mcp/types` only (canary per spec §B.7), merge the release PR, push. `release.yml` publishes `0.0.x` with real Sigstore provenance attestations.
-- Verify post-publish: `npm view @kuzo-mcp/types@0.0.1 dist.attestations` returns the attestation URL. Sigstore badge visible on npmjs.com.
-- Once `@kuzo-mcp/types@0.0.1` exists, `kuzo plugins install git-context@0.0.0-bootstrap.0 --trust-unsigned` will succeed end-to-end (peer dep finally resolves). Re-run that live install smoke + a live `update` + `rollback` dry-run at that point to close the D.3 "e2e gap" noted above.
-- After the types canary: changesets for the remaining 5 packages. Publish order doesn't matter — pnpm workspace publishing handles the dep graph.
+---
 
-**Open cross-phase note:** `plugin-host.ts` still doesn't freeze prototypes in child processes. Worth filing an issue at 2.5e close.
+#### Release runbook — `@kuzo-mcp/types@0.0.1` canary
+
+**Why types first:** It's the root of the dep graph — every plugin package declares it as a peer (locked decision #10). Until types is on npm at a version the plugins can resolve, `kuzo plugins install --trust-unsigned` hits `ETARGET` on the peer dep. Releasing just `types` alone proves the whole pipeline (OIDC, Changesets, Sigstore provenance, dist-tag handling) with the lowest-risk artifact (no runtime code — just .d.ts).
+
+#### Step 0 — Preflight (5 min)
+
+Do these even if nothing changed since 2026-04-21:
+
+1. **npm org + publisher config.** `npm whoami` (Sean). Check that the npm org `kuzo-mcp` exists and this account has publisher access: https://www.npmjs.com/settings/kuzo-mcp/packages . If not, create the org (free for public scoped packages).
+2. **Trusted Publishing setup.** On npmjs.com for `@kuzo-mcp/types`: Settings → "Trusted Publishing" → ensure the GitHub repo `seantokuzo/seantokuzo-mcp` + workflow `release.yml` is linked. Without this, the OIDC publish 401s. `@kuzo-mcp/types@0.0.0-bootstrap.0` already exists, so the package is registered — TP just needs enabling.
+3. **Re-run secret scan** if it's been days: `git log --all -p 2>/dev/null | grep -nE 'ghp_|ghs_|npm_[A-Za-z0-9]{36}|sk-ant-|-----BEGIN.*PRIVATE KEY-----' | grep -v xxxxxxxx | head` — expect zero matches.
+4. **Main is clean.** `git status` shows nothing tracked to commit. `git log --oneline -3` shows `d1fafb1` (docs handoff), `a316c9d` (PR #25 merge), `2eeadfe` (D.3 fixes).
+5. **CI green on main.** `gh run list --branch main --limit 3` — latest should be `completed` + `success`.
+
+#### Step 1 — Create the changeset (2 min)
+
+```bash
+pnpm changeset
+```
+
+Interactive prompts:
+- Which packages to include? → Select **only `@kuzo-mcp/types`** (space to toggle, enter to confirm). NOT the other five.
+- What kind of change? → `patch` (we're going 0.0.0-bootstrap.0 → 0.0.1; this is a bootstrap → real-version transition, not a patch semantic, but changesets uses patch as the smallest bump from a 0.0.x base).
+- Summary → `First real release of @kuzo-mcp/types — canary to validate Trusted Publishing + Sigstore provenance.`
+
+This creates a markdown file under `.changeset/<random-name>.md`. Inspect it. `git diff` to confirm only the changeset file changed.
+
+#### Step 2 — Open the changeset PR (2 min)
+
+```bash
+git checkout -b release/types-0.0.1
+git add .changeset/
+git commit -m "chore(release): changeset for @kuzo-mcp/types@0.0.1 canary"
+git push -u origin release/types-0.0.1
+gh pr create --title "chore(release): @kuzo-mcp/types@0.0.1 canary" \
+  --body-file - <<'EOF'
+## Summary
+
+First real npm release of `@kuzo-mcp/types`. Bumps `0.0.0-bootstrap.0` → `0.0.1` via Changesets. This is the canary that validates the release pipeline end-to-end before we cut the other 5 packages.
+
+## What this unblocks
+
+- `release.yml` publishes with tokenless OIDC + Sigstore provenance
+- After merge + release: `kuzo plugins install git-context@0.0.0-bootstrap.0 --trust-unsigned` works end-to-end (peer dep `@kuzo-mcp/types@^0.0.1` finally resolves)
+- The other 5 packages get changesets in one batch afterwards
+
+## Test plan
+- [ ] CI green (lint / typecheck / build / parity / provenance)
+- [ ] Merge, then watch `release.yml` run to completion
+- [ ] Verify: `npm view @kuzo-mcp/types@0.0.1 dist.attestations`
+- [ ] Sigstore badge visible on npmjs.com/@kuzo-mcp/types
+EOF
+```
+
+Copilot will review. Expect `<5` comments on a 1-file changeset PR — merge immediately per the standard review pipeline.
+
+**Wait for user to confirm before merging.** Release PRs are high-stakes; no auto-merge on first-ever release.
+
+#### Step 3 — Merge, then let Changesets open the Version PR (2-5 min wait)
+
+After merging `release/types-0.0.1`, `release.yml` runs. First pass: Changesets detects pending changeset → opens a NEW PR titled `chore(release): version packages`. Do NOT touch this PR manually. Let it consume the `.changeset/*.md` file, bump `types/package.json#version` to `0.0.1`, and delete the changeset.
+
+- Watch the run: `gh run watch $(gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId')`
+- The Version PR URL is in the run logs. Also findable via `gh pr list --search "chore(release): version packages"`.
+
+#### Step 4 — Merge the Version PR → publish (1 min + OIDC time)
+
+Squash-merge the Version PR. `release.yml` runs AGAIN. This second run detects no pending changeset but sees the bumped version → calls `pnpm release` which is `changeset publish` → `pnpm --filter @kuzo-mcp/types publish --access public` under OIDC.
+
+**Success signals:**
+- Workflow step `Create Release PR or Publish` exits 0 (not "opened PR").
+- Output log contains: `@kuzo-mcp/types@0.0.1 published to https://registry.npmjs.org` + a Sigstore bundle URL.
+
+**Failure modes to catch here:**
+- `401 Unauthorized` → Trusted Publishing not wired (step 0.2).
+- `EPUBLISHCONFLICT` on `0.0.1` → someone else (probably me in an earlier session) pushed 0.0.1. Bump to `0.0.2` via another changeset.
+- Provenance step fails with "attestation storage unavailable" → transient; rerun the failed job (`gh run rerun <id> --failed`).
+
+#### Step 5 — Verify the publish (3 min)
+
+```bash
+# Replication lag is real — give npm 30-60s after publish confirmation, then:
+npm view @kuzo-mcp/types@0.0.1 dist.attestations
+# Should return a URL like https://registry.npmjs.org/-/npm/v1/attestations/@kuzo-mcp/types@0.0.1
+
+# If that 404s, query authoritative:
+curl -s https://registry.npmjs.org/@kuzo-mcp%2Ftypes | node -e "const p=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(Object.keys(p.versions))"
+# Expect: ['0.0.0-bootstrap.0', '0.0.1']
+
+# Sigstore badge (visual): https://www.npmjs.com/package/@kuzo-mcp/types
+# Look for "Published with provenance" + Sigstore logo.
+```
+
+#### Step 6 — Live end-to-end smoke (5 min) — closes the D.3 "e2e gap"
+
+With `@kuzo-mcp/types@0.0.1` on npm, the plugin packages' peer dep finally resolves:
+
+```bash
+# Clean slate:
+rm -rf ~/.kuzo/plugins/git-context ~/.kuzo/attestations-cache ~/.kuzo/tuf-cache
+
+# Full install path — real Sigstore verify, real pacote extract, real consent:
+node packages/cli/dist/index.js plugins install git-context@0.0.0-bootstrap.0 --trust-unsigned -y
+# Expect: ✓ Installed git-context@0.0.0-bootstrap.0
+
+# List:
+node packages/cli/dist/index.js plugins list
+# Expect: 1 row, Source=third-party (bootstrap versions aren't signed), Integrity=sha512-...
+
+# Verify against the bootstrap (will force re-verify since it has no policySnapshot):
+node packages/cli/dist/index.js plugins verify git-context
+# Expect: re-verify attempt → fails (bootstrap isn't signed); treat this as expected until plugin-git-context@0.0.1 also publishes
+```
+
+Note: the full verify flow only LGTMs against a Sigstore-signed package. The bootstrap-tagged versions were published with `--trust-unsigned` equivalents during the 2.5e migration, so verify WILL fail for them. That's expected. After step 7 (signed plugins), verify will pass cleanly.
+
+#### Step 7 — Batch-release the remaining 5 packages
+
+Once step 6 proves the pipeline works, batch the rest:
+
+```bash
+pnpm changeset  # select core, cli, plugin-git-context, plugin-github, plugin-jira
+# Same dance: PR → merge → Version PR → merge → publish
+```
+
+Publish order is handled by pnpm's workspace dep graph — no manual ordering needed. After this, every `@kuzo-mcp/*@0.0.1+` has real Sigstore provenance. The full `install → update → rollback → verify` lifecycle works against npm.
+
+#### Step 8 — Close Phase 2.5e
+
+- Verify `kuzo plugins verify git-context` succeeds against a freshly-installed signed version.
+- Update STATE.md: mark 2.5e fully closed including the live smoke pass. Append PR references for the release PRs.
+- (Optional) Transition to Phase 3 planning, or start hacking on the AppleTV plugin idea tracked in memory.
+
+---
+
+**Open cross-phase note:** `plugin-host.ts` prototype freeze tracked in issue #26. Low priority — process isolation already limits blast radius.
 
 **Gotchas carried forward (still relevant for any plugin-install-adjacent work):**
 - Don't try to use `npm token create --bypass-2fa --scopes ...` CLI — npm 11.6.2 rejects those flags as "Unknown cli config" despite the docs. Granular tokens must be created via web UI.

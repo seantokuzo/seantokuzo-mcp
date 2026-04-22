@@ -526,43 +526,163 @@ Prefixing should be done before open-sourcing (once) rather than after (breaking
 
 ## 8. Supply Chain Security
 
-### Decision: npm as Plugin Registry
+> **Status: shipped (Phase 2.5e).** This section describes the as-built implementation. Code lives in `packages/core/src/provenance/` (verification library) and `packages/cli/src/commands/plugins/` (CLI). Design origins are preserved in the git history of this file.
 
-**Naming convention:** `kuzo-mcp-plugin-*` (unscoped — more open-source-friendly than `@kuzo-mcp/plugin-*`)
+### 8.1 Decision: npm as the plugin registry
 
-**Why npm:**
-- Provenance via Sigstore — free, built-in, no infrastructure
-- Trusted Publishing (GA July 2025) — no npm tokens needed, OIDC from GitHub Actions
-- Zero hosting/maintenance burden
-- Existing discovery infrastructure
+**Naming convention:** `@kuzo-mcp/*` scoped packages. (The original design called for unscoped `kuzo-mcp-plugin-*`. Locked decision #2 during 2.5e migrated to scoped — scoped enables friendly-name resolution, `install github` → `@kuzo-mcp/plugin-github`, without squatting risk on unscoped names.)
 
-**Provenance requirement:** Published plugins MUST include npm provenance attestations. `kuzo plugins install` verifies provenance before installation. Packages without provenance are rejected (override with `--trust-unsigned`).
+**Why npm:** Sigstore provenance attestations are built-in and free, Trusted Publishing (GA July 2025) is tokenless, discovery + distribution are already solved. No infrastructure to run or rotate.
 
-**Current adoption reality:** Only ~7% of npm packages publish provenance. This is fine — we're setting a bar for our ecosystem, not conforming to the median.
+**Provenance policy:** Plugins MUST have Sigstore provenance attestations. `kuzo plugins install` refuses unsigned packages unless the user passes `--trust-unsigned` (printed in red boxen and logged to the audit file). Current adoption is ~7% of npm — that's a bar we're willing to set for our ecosystem.
 
-### Plugin Update Model
+### 8.2 Trusted Publishing — what ships from this repo
 
-**Manual update with notification.** Never auto-update. Adapted from the ShadyPanda lesson (Chrome extension campaign that silently pushed malware to 4.3M users via auto-update).
+All 6 `@kuzo-mcp/*` packages are published via OIDC Trusted Publishing from `.github/workflows/release.yml`. Operational guarantees:
 
-```bash
-kuzo plugins update         # Show available updates with changelog + provenance
-kuzo plugins update github  # Update specific plugin (previous version saved for rollback)
-kuzo plugins rollback github  # Instant rollback to previous version
+- **No npm token.** No `NPM_TOKEN` / `NODE_AUTH_TOKEN` is set in the workflow env; release.yml has an explicit comment forbidding them. Publishes use the short-lived OIDC ID token minted by `actions/setup-node@v4` + the `id-token: write` permission.
+- **`permissions: {}`** at workflow scope. The `release` job narrowly requests `id-token: write` (OIDC), `contents: write` (Version Packages PR + git push), `pull-requests: write`, `issues: write`. No other jobs, no other permissions.
+- **Fork guard:** `if: github.repository == 'seantokuzo/seantokuzo-mcp'` prevents forks from triggering publishes under our trust identity.
+- **`NPM_CONFIG_PROVENANCE: "true"`** + per-package `publishConfig: { "access": "public", "provenance": true }` double-arm the provenance attestation so a misconfiguration in either place alone wouldn't silently publish without one.
+- **Concurrency lock:** `concurrency: { group: release-<ref>, cancel-in-progress: false }` — two pushes to main cannot race Changesets into version-order drift.
+- **Package contents audited before every release.** Each package's `files` field is a whitelist of `dist/**/*.{js,d.ts,js.map,d.ts.map}`. Source files in `src/`, tests, fixtures, and secrets are never packed. Confirmed via `npm pack --dry-run` in CI.
+
+### 8.3 Verification at install time — the trust boundary
+
+`kuzo plugins install <name>` runs the `verifyPackageProvenance` pipeline from `@kuzo-mcp/core/provenance` BEFORE touching the filesystem with any plugin bytes. Algorithm (summarized from spec §C.1):
+
+1. Resolve friendly-name → npm package name (built-ins map + optional `kuzo.config.ts` override).
+2. Acquire the exclusive `~/.kuzo/plugins/.lock` (concurrent install/update/rollback/uninstall fail fast with exit 30).
+3. Fetch the npm packument to discover `dist.attestations.url`.
+4. Fetch both attestation bundles — the SLSA v1 provenance (keyless, Fulcio) AND the npm publish attestation (registry-keyed). Both must verify.
+5. Verify each bundle via `sigstore.verify()` (the meta-package, not `@sigstore/verify` directly — spec §C.10.10). TUF trust-root is fetched from Sigstore's TUF repo and cached under `~/.kuzo/tuf-cache/` with `tufForceCache: true` so installs don't depend on Sigstore reachability after the first successful fetch.
+6. Evaluate the `TrustPolicy` against the verified statement: subject digest must match the tarball's integrity, `certificateIdentityURI` (Fulcio SAN) must be prefix-matched against `allowedBuilders`, the builder repo must be in `firstPartyOrgs` or `allowThirdParty` must be true.
+7. Only on full success: `pacote.extract` the tarball — pinned to the verified integrity hash — into `~/.kuzo/plugins/<name>/.tmp/pkg/`, then `npm install --ignore-scripts --omit=dev` for transitive deps.
+8. Dynamic-import the staged manifest, run consent flow (§9), atomic rename `.tmp/` → `<version>/`, flip the `current` symlink, update `index.json`, prune retained versions beyond 3.
+
+**Integrity-pinned extraction** closes the verify→extract TOCTOU window. pacote rejects any downloaded tarball whose SHA doesn't match the verified integrity — so an attacker who could swap bytes between our verify call and our extract call would get an `EINTEGRITY` error instead of a successful install (spec §C.9 + §C.10.1).
+
+### 8.4 Default trust policy
+
+Defined in `packages/core/src/provenance/policy.ts`:
+
+```ts
+export const DEFAULT_POLICY: TrustPolicy = {
+  allowedBuilders: ["https://github.com/actions/runner"],
+  firstPartyOrgs: ["seantokuzo"],
+  allowThirdParty: true,
+};
 ```
 
-### Verification at Install Time
+- **`allowedBuilders`** are Fulcio certificate identity URI prefixes. Only builds whose workflow ran in one of these hosted runners will verify. Extend via `--allow-builder <url>` at install time; changes are scoped to the single invocation and never persisted.
+- **`firstPartyOrgs`** — SLSA `externalParameters.workflow.repository` must live under one of these GitHub orgs for the package to be classified `first-party`. Third-party packages still install (subject to `allowThirdParty`), but they go through the additional review prompt and get `source: "third-party"` in the local index.
+- **`allowThirdParty: true`** — third-party plugins are permitted by default. Set to false to lock the install surface to `firstPartyOrgs` only. This is the knob to flip for enterprise / paranoid deployments.
 
-```bash
-kuzo plugins install kuzo-mcp-plugin-notion
+### 8.5 Cached verification evidence
 
-# Internally:
-# 1. npm install kuzo-mcp-plugin-notion
-# 2. Verify npm provenance attestation (reject if missing)
-# 3. Parse plugin manifest, extract capabilities
-# 4. Run consent flow (show capabilities, get user approval)
-# 5. Store consent in ~/.kuzo/consent.json
-# 6. Register plugin in kuzo.config.ts
+Per-version evidence lives at `~/.kuzo/plugins/<name>/<version>/verification.json` with the shape defined in `verification-cache.ts`:
+
+```ts
+interface CachedVerification {
+  schemaVersion: 1;
+  package: { name: string; version: string; integrity: string };
+  verifiedAt: string;             // ISO 8601
+  firstParty: boolean;
+  repo: string;
+  builder: string;
+  predicateTypes: string[];
+  attestationsCount: number;
+  policySnapshot?: TrustPolicy;   // optional only for back-compat with D.1/D.2
+}
 ```
+
+The cache is **non-authoritative**. It accelerates `kuzo plugins verify <name>` (no network round-trip when `policySnapshot` still equals the active policy) but can never GRANT verification status — any install/update re-runs the full sigstore verify pipeline. An attacker with write access to `~/.kuzo/` can forge cache entries and will still fail to cause an install because verification always runs anew.
+
+Cache invalidation rules:
+- **Policy snapshot mismatch** → re-verify and rewrite on next `kuzo plugins verify`.
+- **Missing `policySnapshot` field** (pre-Phase-2.5e-D.3 install) → treated as a forced cache miss; same re-verify path.
+- **`kuzo plugins refresh-trust-root`** → wipes `~/.kuzo/tuf-cache/` AND `~/.kuzo/attestations-cache/` so the next install re-fetches Sigstore state from the source.
+- **Plugin uninstall** → cache entry remains on disk (if `--keep-versions`). Non-authoritative, so leaving it costs nothing.
+
+### 8.6 Plugin update model — never auto-update
+
+Deliberate adaptation from the ShadyPanda lesson (a Chrome extension campaign that silently pushed malware to 4.3M users via auto-update). `kuzo plugins update` is manual, one-plugin-at-a-time or all-at-once, always explicit:
+
+```
+kuzo plugins update               # update all installed (summary at end)
+kuzo plugins update github        # update single plugin
+kuzo plugins update --to 1.3.0    # pin to a specific version
+kuzo plugins update --dry-run     # verify + print plan, no writes
+```
+
+Every update path re-runs the full verification pipeline on the new version (no cache reuse on install/update paths — §C.8), stages the new tarball under a lock, and diffs the new manifest's `capabilities` against the user's existing consent record:
+
+- **Subset or equal** → silently reuse consent, refresh the stored `pluginVersion` field so `isConsentStale` doesn't re-fire.
+- **Added or removed capabilities** → surface a `+ / -` diff table and re-prompt. Declining aborts that plugin only; the rest of the update batch proceeds.
+
+There is no background update daemon. The MCP server never mutates installed plugins. `kuzo plugins update` is the ONLY write path other than `install` / `rollback` / `uninstall`.
+
+### 8.7 Rollback is NOT implicitly safer than upgrade
+
+`kuzo plugins rollback <name> [version]` defaults to the previous version (`retainedVersions[1]`). The target may declare **different** capabilities than the current install — older versions can be narrower OR broader. Rollback therefore runs the same consent-diff flow as update. "Downgrade" is never treated as automatically trusted.
+
+Rollback does NOT re-verify provenance (the target version was verified at original install time and its `verification.json` still lives on disk). Users who want to re-confirm after a rollback run `kuzo plugins verify <name>` explicitly; that re-fetches Sigstore and refreshes the per-version cache.
+
+### 8.8 Retention + concurrency
+
+- **Retention:** last 3 versions per plugin on disk, enforced on every write in `state.ts#upsertEntry`. Pruning deletes the oldest versioned directory.
+- **Concurrency:** single exclusive lock at `~/.kuzo/plugins/.lock` (`O_CREAT | O_EXCL`). Stale-pid detection via `process.kill(pid, 0)`. Lock payload records `{ pid, command, startedAt }` so the error message can name the holder. Read-only commands (`list`, `verify`) do not acquire the lock.
+- **Atomic writes:** `index.json` writes are tmp-file + rename; staging-to-versioned promotion is a single `rename()` within the same filesystem; symlink flips are `unlink` + `symlink`. Commit order for multi-step writes is always metadata-first (index), then non-atomic (symlink), with a best-effort revert of the metadata if the non-atomic step fails.
+
+### 8.9 Audit log
+
+Every security-relevant plugin event is logged to `~/.kuzo/audit.log` as a JSON line and echoed to stderr via `KuzoLogger`. The closed `AuditAction` union in `packages/core/src/audit.ts` covers:
+
+```
+credential.{client_created, raw_access, raw_denied, fetch_created}
+consent.{granted, revoked, checked}
+plugin.{loaded, skipped, failed, installed, uninstalled, updated, rolled_back, trust_root_refreshed}
+```
+
+Each event records `timestamp`, `plugin` (friendly name, or `"system"` sentinel for trust-root refresh), `action`, `outcome` (`allowed | denied | error`), and a `details` object with context specific to the action (from/to version, integrity hash, consent outcome, etc.). Denials are logged too — `trust-unsigned`, consent-declined updates, verification failures all produce a record.
+
+Query the log with `kuzo audit --since 7d` (CLI command forthcoming in a post-2.5 phase) or a direct `jq` over the JSONL file.
+
+### 8.10 CLI surface + exit-code map
+
+```
+kuzo plugins install <name>[@version]   # verify → consent → commit
+kuzo plugins update [name]              # single or all; diffs capabilities
+kuzo plugins rollback <name> [version]  # restore retained version
+kuzo plugins verify <name>              # re-run provenance against installed
+kuzo plugins list [--json]              # show installed plugins + source
+kuzo plugins uninstall <name>           # remove + revoke consent
+kuzo plugins refresh-trust-root         # wipe TUF + attestations caches
+```
+
+Exit codes are structured so shell pipelines can act on them:
+
+| Range | Domain | Examples |
+|-------|--------|----------|
+| 10-19 | Provenance verification | 10 `E_NO_ATTESTATION`, 13 `E_THIRD_PARTY_BLOCKED`, 14 `E_SIGNATURE_INVALID` |
+| 20 | Rollback recovery | `E_NO_RETAINED_TARGET` — hint: `install <pkg>@<version>` |
+| 30 | Concurrency | `E_PLUGINS_LOCKED` — holder PID in error message |
+| 40-46 | Install domain | 40 `E_INVALID_SPEC`, 41 `E_UNSUPPORTED_REGISTRY`, 45 `E_LEGACY_MANIFEST`, 46 `E_NAME_MISMATCH` / `E_VERSION_MISMATCH` |
+| 42-44 | Staging | 42 extract, 43 deps install, 44 manifest load |
+| 47 | Uninstall | `E_NOT_INSTALLED` (uninstall-specific code kept for backward-compat) |
+| 48-53 | Update / verify / rollback | 48 `E_NOT_INSTALLED`, 49 partial-failure (multi-plugin update), 50 resolve, 51 version-dir-missing, 52 version-not-retained, 53 already-current |
+
+### 8.11 Threat model for third-party plugin authors
+
+If you're publishing a `@your-org/kuzo-plugin-*` and want it verifiable by Kuzo users:
+
+1. **Publish via GitHub Actions with Trusted Publishing.** No long-lived npm tokens. The release must run inside a workflow that Kuzo's policy accepts — any workflow on the `actions/runner` hosted runner qualifies for `allowedBuilders` by default.
+2. **Pass `--access public` + `--provenance`** (or set `publishConfig` in package.json). Both attestations (SLSA + npm publish) must land.
+3. **Follow the V2 plugin manifest contract** defined in `@kuzo-mcp/types`. `capabilities` and `optionalCapabilities` are the trust boundary with the installer — every capability is shown to the user during install + on any capability change.
+4. **Don't ship anything outside `dist/`.** Your `files` field is the audit trail users will read. Source files, lockfiles, CI scripts, `.env.example` — none of it should be in the tarball.
+5. **If Kuzo users want to install from an org not in `firstPartyOrgs`,** they need `--allow-third-party` (permissive by default but a policy flip could lock it). No way around signing.
+
+If you want your plugin accepted into `firstPartyOrgs`: open a PR against `packages/core/src/provenance/policy.ts`. The first-party list is a short, auditable constant — not a registry or a database.
 
 ---
 
