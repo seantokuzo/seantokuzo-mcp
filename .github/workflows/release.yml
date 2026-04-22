@@ -41,8 +41,10 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: pnpm
 
-      - name: Upgrade npm CLI
-        run: npm install -g npm@10.9.2
+      - name: Upgrade npm CLI for Trusted Publishing
+        # Trusted Publishing (OIDC → publish-token exchange) requires npm >=11.5.1.
+        # Node 22 ships with npm 10.x, so we upgrade explicitly.
+        run: npm install -g npm@11
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
