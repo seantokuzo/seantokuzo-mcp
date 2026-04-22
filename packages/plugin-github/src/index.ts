@@ -16,12 +16,13 @@ import { pullRequestTools } from "./tools/pulls.js";
 import { reviewTools } from "./tools/reviews.js";
 import { repoTools } from "./tools/repos.js";
 import { branchTools } from "./tools/branches.js";
+import pkgJson from "../package.json" with { type: "json" };
 
 const plugin: KuzoPluginV2 = {
   name: "github",
   description:
     "GitHub integration — pull requests, reviews, repository management, branches, and file content. Auto-detects repo and branch via the git-context plugin.",
-  version: "1.0.0",
+  version: pkgJson.version,
   permissionModel: 1,
   capabilities: [
     {

@@ -19,12 +19,13 @@ import { ticketTools } from "./tools/tickets.js";
 import { transitionTools } from "./tools/transitions.js";
 import { subtaskTools } from "./tools/subtasks.js";
 import { commentTools } from "./tools/comments.js";
+import pkgJson from "../package.json" with { type: "json" };
 
 const plugin: KuzoPluginV2 = {
   name: "jira",
   description:
     "Jira Cloud integration — tickets, workflow transitions, subtasks, and comments. Uses the Atlassian REST API v3 with Basic auth.",
-  version: "1.0.0",
+  version: pkgJson.version,
   permissionModel: 1,
   capabilities: [
     {

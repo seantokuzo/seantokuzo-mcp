@@ -8,12 +8,13 @@
 import type { KuzoPluginV2 } from "@kuzo-mcp/types";
 import { getGitContextTool } from "./tools/context.js";
 import { gitContextResource } from "./resources/context.js";
+import pkgJson from "../package.json" with { type: "json" };
 
 const plugin: KuzoPluginV2 = {
   name: "git-context",
   description:
     "Detects the current git repository, branch, and working tree state from the local filesystem",
-  version: "1.0.0",
+  version: pkgJson.version,
   permissionModel: 1,
   capabilities: [
     {
