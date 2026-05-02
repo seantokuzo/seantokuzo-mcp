@@ -1,6 +1,6 @@
 {
   "name": "@kuzo-mcp/core",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Core MCP server, plugin registry, loader, IPC, and plugin-host for Kuzo MCP.",
   "type": "module",
   "license": "MIT",
