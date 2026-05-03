@@ -1,0 +1,411 @@
+name: Claude Deep Review
+
+# Tier 3: opt-in heavy review for security-sensitive or large PRs.
+# Same 3 specialists as Tier 2 BUT at --effort max + --max-turns 30,
+# PLUS a 4th THREAT-MODEL specialist that does STRIDE-style deep analysis.
+# Auto-fires when the Tier 2 verdict applies the `claude-deep-review` label.
+# Manually fires via label add or workflow_dispatch.
+#
+# Tools: still READ-ONLY. The depth comes from effort + turns + an extra
+# specialist, not from write access.
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to deep-review
+        required: true
+        type: number
+
+permissions: {}
+
+concurrency:
+  group: claude-deep-review-${{ github.event.pull_request.number || inputs.pr_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    if: |
+      github.repository == 'seantokuzo/seantokuzo-mcp' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+        github.event.label.name == 'claude-deep-review' &&
+        github.event.pull_request.draft != true))
+    outputs:
+      pr_number: ${{ steps.set.outputs.pr_number }}
+    steps:
+      - id: set
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "pr_number=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr_number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  security-deep:
+    needs: preflight
+    name: 🔒 Security (deep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          additional_permissions: |
+            actions: read
+          prompt: |
+            You are the SECURITY SPECIALIST in DEEP REVIEW mode for Kuzo MCP.
+
+            PR: #${{ needs.preflight.outputs.pr_number }} in ${{ github.repository }}
+
+            Deep review means: take your time, read the full transitive surface, run
+            the build/typecheck/test if it helps, fetch CI logs, follow imports across
+            packages, and produce a thorough security review.
+
+            FIRST: read CLAUDE.md, docs/STATE.md, docs/SECURITY.md, docs/PLANNING.md.
+            For any release/install/publish/changeset file in the diff, read SECURITY.md
+            §8 and the corresponding spec section.
+
+            YOUR LANE (depth this round):
+            - Supply chain: full audit of npm publish surface, OIDC token claims,
+              Trusted Publishing flow, Sigstore attestation chain, dependency confusion,
+              typosquat risk on package names, transitive deps changes
+            - Secret leakage: trace every env var read site, every error path, every
+              log call; check for accidental inclusion in published artifacts
+            - Prompt injection: trace every untrusted input (PR/issue body, commit
+              messages, jira ticket text, github API responses, file contents from
+              git-context plugin) into MCP tool descriptions / inputs / outputs
+            - Install CLI safety: full path-traversal audit, command injection vectors,
+              tarball extraction (zip-slip), signature verification correctness, post-
+              install hook surface
+            - Auth: PAT scope analysis, refresh flow race conditions, storage at rest,
+              clearing on logout, accidental persistence in dotfiles
+            - GitHub Actions safety: pull_request_target audit, write-permission justification,
+              third-party action SHA pinning, workflow_dispatch input validation
+
+            SKEPTICISM RULES (per CLAUDE.md): same as Tier 2 — no hypothetical defensive
+            code, no decisions-already-locked re-litigation, no "add tests" without a
+            test framework wired.
+
+            STEPS:
+            1. gh pr diff ${{ needs.preflight.outputs.pr_number }}
+            2. Inspect each touched file in full (not just the hunk)
+            3. Use mcp__github_ci__* tools to inspect any failing CI logs
+            4. Inline-comment findings; pushback explicitly if a finding is wrong
+            5. Top-level summary with sentinel:
+
+            <!-- KUZO-REVIEW-JSON-SECURITY
+            {"verdict":"...","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":bool,"top_issues":[...],"rationale":"...","tier":"deep"}
+            -->
+
+            ## 🔒 Security Review (Deep)
+
+            **Verdict**: <verdict>
+            **Blocking**: <N> | **Advisory**: <M>
+            **Threat surface touched**: <description>
+
+            <findings>
+          claude_args: |
+            --model claude-opus-4-7
+            --effort max
+            --max-turns 30
+            --disallowedTools "Edit,Write,NotebookEdit"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/contents/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/commits/*),Bash(gh run list:*),Bash(gh run view:*),Bash(gh run view --log:*),Bash(pnpm typecheck),Bash(pnpm lint),Bash(pnpm build),Bash(pnpm test),Bash(pnpm prettier --check:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
+
+  architecture-deep:
+    needs: preflight
+    name: 🏗️ Architecture (deep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          additional_permissions: |
+            actions: read
+          prompt: |
+            You are the ARCHITECTURE SPECIALIST in DEEP REVIEW mode for Kuzo MCP.
+
+            PR: #${{ needs.preflight.outputs.pr_number }} in ${{ github.repository }}
+
+            Deep mode: read the full plugin contract surface, every package's exports,
+            every imports site, look for emergent contract drift across packages.
+
+            FIRST: CLAUDE.md (Architecture + Anti-Patterns), docs/PLANNING.md,
+            packages/types/src/ (the canonical KuzoPlugin contract).
+
+            YOUR LANE (depth this round):
+            - KuzoPlugin contract: every plugin file fully audited; lifecycle hooks
+              correct; configuration declared honestly; resources / tools registered
+              through the canonical paths
+            - Cross-plugin imports: trace every import in packages/plugin-* — flag
+              ANY import path crossing into another plugin
+            - PluginContext usage: callTool boundaries respected; no PluginContext
+              hoarding; no shared mutable state via context
+            - Zod coverage: every tool input has a Zod schema with .describe() on
+              every field; output schemas where applicable
+            - Monorepo boundaries: pnpm workspace dep declarations match real imports;
+              package.json exports map declares the public API; no deep imports past
+              exports; transitive deps not relied upon
+            - File organization (CLAUDE.md): plugin types in plugin/types.ts, tool
+              groups, plugin entry, client wrapper — full conformance audit
+            - Anti-patterns: god files, singletons, inline handlers, premature
+              abstraction (DI, hot-reload, plugin versioning) — call them all out
+
+            SKEPTICISM RULES: same as Tier 2.
+
+            STEPS: same as Tier 2 + read every imported file's exports section.
+            Sentinel:
+
+            <!-- KUZO-REVIEW-JSON-ARCHITECTURE
+            {"verdict":"...","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":bool,"top_issues":[...],"rationale":"...","tier":"deep"}
+            -->
+
+            ## 🏗️ Architecture Review (Deep)
+
+            <findings>
+          claude_args: |
+            --model claude-opus-4-7
+            --effort max
+            --max-turns 30
+            --disallowedTools "Edit,Write,NotebookEdit"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/contents/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/commits/*),Bash(gh run list:*),Bash(gh run view:*),Bash(gh run view --log:*),Bash(pnpm typecheck),Bash(pnpm lint),Bash(pnpm build),Bash(pnpm test),Bash(pnpm prettier --check:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
+
+  correctness-deep:
+    needs: preflight
+    name: ✅ Correctness (deep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          additional_permissions: |
+            actions: read
+          prompt: |
+            You are the CORRECTNESS SPECIALIST in DEEP REVIEW mode for Kuzo MCP.
+
+            PR: #${{ needs.preflight.outputs.pr_number }} in ${{ github.repository }}
+
+            Deep mode: run the build / typecheck / test / lint locally, fetch CI logs,
+            chase down every type assertion, every unhandled Promise, every `any` slip.
+
+            FIRST: CLAUDE.md (Code Conventions), .github/instructions/ci.instructions.md.
+
+            YOUR LANE (depth this round):
+            - Run pnpm install --frozen-lockfile, then pnpm typecheck, pnpm lint,
+              pnpm build, pnpm test — surface any failure as blocking
+            - TypeScript: full `any` audit (must be `unknown`+narrow), type-only
+              imports, ESM .js suffixes
+            - async/await: trace every async function; flag `async` without `await`,
+              missing `await` on Promise-returning calls, unhandled rejections,
+              floating promises
+            - Null/undefined: every `||` that could mask 0/false/empty; every non-null
+              assertion (`!`) without justification; missing optional chaining
+            - Error handling: MCP tool errors must be Claude-readable; no silent
+              catches; error messages actionable
+            - Race conditions / shared state in plugin lifecycle, tool exec, async
+              event handlers
+            - Zod schema correctness (Architecture handles coverage)
+
+            STEPS: run the full local CI; fetch failing logs via mcp__github_ci__*;
+            audit the diff with pnpm typecheck output context.
+
+            <!-- KUZO-REVIEW-JSON-CORRECTNESS
+            {"verdict":"...","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":false,"ci_failing":bool,"top_issues":[...],"rationale":"...","tier":"deep"}
+            -->
+
+            ## ✅ Correctness Review (Deep)
+
+            <findings>
+          claude_args: |
+            --model claude-opus-4-7
+            --effort max
+            --max-turns 30
+            --disallowedTools "Edit,Write,NotebookEdit"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/contents/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/commits/*),Bash(gh run list:*),Bash(gh run view:*),Bash(gh run view --log:*),Bash(pnpm install --frozen-lockfile),Bash(pnpm typecheck),Bash(pnpm lint),Bash(pnpm build),Bash(pnpm test),Bash(pnpm prettier --check:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
+
+  threatmodel-deep:
+    needs: preflight
+    name: 🎯 Threat Model (deep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          additional_permissions: |
+            actions: read
+          prompt: |
+            You are the THREAT-MODEL SPECIALIST for Kuzo MCP — only runs in deep review.
+
+            PR: #${{ needs.preflight.outputs.pr_number }} in ${{ github.repository }}
+
+            FIRST: read docs/SECURITY.md (the canonical threat model + §8 shipped state),
+            CLAUDE.md, docs/PLANNING.md.
+
+            YOUR JOB: STRIDE-style adversarial review of the changes:
+            - Spoofing: identity / auth assumptions broken? token confusion? UA spoofing?
+            - Tampering: integrity guarantees on artifacts? lockfile / manifest /
+              attestation tamper resistance?
+            - Repudiation: actions logged / attested? could an attacker cover tracks?
+            - Information disclosure: what new data flows are introduced? could any
+              cross trust boundaries unintentionally?
+            - Denial of service: amplification, resource exhaustion, infinite loops
+              triggered by adversarial input?
+            - Elevation of privilege: privilege boundaries respected? new sudo paths?
+
+            FOR EACH AFFECTED COMPONENT: write out
+            - Threat: <what could go wrong>
+            - Attacker: <who, what capability they need>
+            - Path: <how the attack works step by step>
+            - Severity: <blocking / advisory>
+            - Mitigation: <existing? new? recommended?>
+            - Post-exploitation: <if attack succeeds, what else falls?>
+
+            DO NOT duplicate findings the Security specialist will catch (you read
+            the same file BUT focus on attacker-perspective scenarios, not defect-
+            perspective findings).
+
+            DO NOT enumerate impossible threats — be honest about likelihood.
+
+            <!-- KUZO-REVIEW-JSON-THREATMODEL
+            {"verdict":"...","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":bool,"threats":[{"category":"S|T|R|I|D|E","severity":"...","summary":"..."}],"rationale":"...","tier":"deep"}
+            -->
+
+            ## 🎯 Threat Model Review (Deep)
+
+            **Verdict**: <verdict>
+            **Top threats**: <count>
+
+            <STRIDE walkthrough by component>
+          claude_args: |
+            --model claude-opus-4-7
+            --effort max
+            --max-turns 30
+            --disallowedTools "Edit,Write,NotebookEdit"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/contents/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/commits/*),Bash(gh run list:*),Bash(gh run view:*),Bash(pnpm typecheck),Bash(pnpm lint),Bash(pnpm build),Bash(pnpm test),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
+
+  verdict-deep:
+    needs: [preflight, security-deep, architecture-deep, correctness-deep, threatmodel-deep]
+    name: 📋 Deep verdict synthesizer
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: always() && needs.preflight.result == 'success'
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the DEEP VERDICT SYNTHESIZER for Kuzo MCP.
+
+            PR: #${{ needs.preflight.outputs.pr_number }} in ${{ github.repository }}
+
+            Specialists this round:
+            - Security: ${{ needs.security-deep.result }}
+            - Architecture: ${{ needs.architecture-deep.result }}
+            - Correctness: ${{ needs.correctness-deep.result }}
+            - Threat Model: ${{ needs.threatmodel-deep.result }}
+
+            STEPS:
+
+            1. Fetch PR comments:
+               gh api "repos/${{ github.repository }}/issues/${{ needs.preflight.outputs.pr_number }}/comments?per_page=100"
+
+            2. Extract MOST RECENT JSON sentinel for each:
+               - <!-- KUZO-REVIEW-JSON-SECURITY ... -->  (deep tier preferred)
+               - <!-- KUZO-REVIEW-JSON-ARCHITECTURE ... -->  (deep tier preferred)
+               - <!-- KUZO-REVIEW-JSON-CORRECTNESS ... -->  (deep tier preferred)
+               - <!-- KUZO-REVIEW-JSON-THREATMODEL ... -->
+
+            3. Aggregate:
+               - verdict: rethink if any = rethink, else fix-then-ship if blocking>0, else ship
+               - total_blocking, total_advisory
+               - top threats list from threat model
+
+            4. Round number: find <!-- KUZO-DEEP-VERDICT-STICKY --> and increment.
+               HARD CAP at 4 — if exceeded, set verdict = rethink + escalate to human.
+
+            5. Find existing deep verdict sticky and PATCH, or post new.
+
+            STICKY BODY:
+
+            <!-- KUZO-DEEP-VERDICT-STICKY -->
+            <!-- DEEP_VERDICT_ROUND: N -->
+
+            ## 📋 Deep Review Verdict — Round N
+
+            **Verdict**: <ship | fix-then-ship | rethink>
+            **Blocking**: <N> | **Advisory**: <M>
+
+            ### Specialists (deep mode)
+            - 🔒 Security: <verdict> (B blocking, A advisory)
+            - 🏗️ Architecture: <verdict> (B blocking, A advisory)
+            - ✅ Correctness: <verdict> (B blocking, A advisory)
+            - 🎯 Threat Model: <verdict> (B blocking, A advisory)
+
+            ### Top action items
+            - [ ] item 1 — `file:line`
+            - ... up to 7
+
+            ### Top threats (from threat model)
+            - <category>: <summary>
+
+            ---
+
+            🤖 _Synthesized by Claude Opus 4.7 (max effort) from 4 deep specialists._
+          claude_args: |
+            --model claude-opus-4-7
+            --effort high
+            --max-turns 8
+            --disallowedTools "Edit,Write,NotebookEdit"
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/issues/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api -X PATCH repos/seantokuzo/seantokuzo-mcp/issues/comments/*),Bash(jq:*)"

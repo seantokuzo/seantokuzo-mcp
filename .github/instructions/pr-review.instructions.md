@@ -2,109 +2,95 @@
 applyTo: "**/*"
 ---
 
-# PR Review — Addressing Review Comments
+# PR Review — Addressing Claude Auto-Review
 
-## Comment Categorization
+**Canonical workflow lives in `~/.claude/CLAUDE.md` "PR Review Workflow (canonical)".** This file is project-specific extension only.
 
-When Copilot comments on a PR, categorize each comment:
+## Tier configuration (this project)
 
-| Category | Action | When to Use |
+See `CLAUDE.md` "Reviewing with @claude" for the full tier table. TL;DR:
+- **Tier 1**: `@claude` mention → Opus 4.6 max effort, single Q&A response (`.github/workflows/claude.yml`)
+- **Tier 2**: every non-draft PR → 3 parallel specialists (Security / Architecture / Correctness) at Opus 4.7 xhigh + verdict synthesizer (`.github/workflows/claude-code-review.yml`)
+- **Tier 3**: label `claude-deep-review` (manual or auto-escalated) → Opus 4.7 max effort + 4 specialists (adds Threat Model) (`.github/workflows/claude-deep-review.yml`)
+
+All tiers READ-ONLY (`Edit`, `Write`, `NotebookEdit` disallowed at the workflow level).
+
+## Sentinels and stickies
+
+Each specialist embeds a JSON sentinel in its top-level summary comment for the synthesizer to parse:
+
+```html
+<!-- KUZO-REVIEW-JSON-{SECURITY|ARCHITECTURE|CORRECTNESS|THREATMODEL}
+{"verdict":"...","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":bool,"top_issues":[...],"rationale":"..."}
+-->
+```
+
+The verdict synthesizer posts/updates the round sticky:
+- Tier 2: `<!-- KUZO-VERDICT-STICKY -->` + `<!-- VERDICT_ROUND: N -->`
+- Tier 3: `<!-- KUZO-DEEP-VERDICT-STICKY -->` + `<!-- DEEP_VERDICT_ROUND: N -->`
+
+The sticky is the round-completion signal. Its body is the canonical verdict for the round.
+
+## Comment categorization (skepticism applies)
+
+For every comment Claude posts, decide:
+
+| Category | Action | When to use |
 |----------|--------|-------------|
-| **fix-now** | Fix in current PR | Real bugs, type errors, security issues |
-| **respond** | Reply explaining why no change | Intentional design, false positives, not applicable |
-| **defer** | Acknowledge, note for later | Valid but out of scope for this PR |
+| **fix-now** | Fix in current PR | Real bugs, type errors, security issues, missing Zod, cross-plugin imports |
+| **respond** | Reply explaining why no change | Intentional design, false positive, framework guarantee makes it impossible |
+| **defer** | File a follow-up issue, link it in reply | Valid but out-of-scope for the PR's stated goal |
 
-## Skeptical Review (CRITICAL)
+**You have MORE context than the reviewer.** Push back inline when:
 
-**You have MORE context than automated reviewers.** Before accepting a suggestion, ask:
+1. The comment suggests defensive code for impossible cases (type system / framework guarantees)
+2. It recommends architecture changes already locked in `docs/PLANNING.md`
+3. It asks for tests when vitest isn't wired in CI yet
+4. It conflicts with conventions documented in `CLAUDE.md`
+5. It proposes premature abstraction (three similar lines is fine)
 
-1. **Does this apply to our setup?** (e.g., SSR concerns in an SPA)
-2. **Is this already handled elsewhere?** (e.g., guards upstream)
-3. **Is this a real problem or theoretical?** (e.g., edge cases that can't happen)
-4. **Does the fix add complexity for marginal benefit?**
-5. **Would a human reviewer make this same comment with full project context?**
-
-### Default Posture
-
-| Suggestion Type | Default | Reasoning |
-|-----------------|---------|-----------|
-| Actual bugs | **Fix** | Real runtime errors |
-| Security vulnerabilities | **Fix** | XSS, injection, auth bypass |
-| Type errors | **Fix** | Will break CI |
-| Memory leaks | **Fix** | Will degrade performance |
-| Platform-specific concerns | **Evaluate** | May or may not apply |
-| Over-engineering suggestions | **Respond** | Adds complexity without value |
-| Future feature requests | **Respond** | Out of scope |
-| Architecture opinions | **Respond** | Design decisions already made |
-| Valid but out of scope | **Defer** | Note for future work |
-
-## Workflow
-
-### 1. Fetch Comments
+## Reply protocol
 
 ```bash
-gh api repos/seantokuzo/seantokuzo-mcp/pulls/{number}/comments
+# Read PR comments — use per_page=100 to avoid silent truncation
+gh api "repos/seantokuzo/seantokuzo-mcp/pulls/{number}/comments?per_page=100"
+
+# Reply to each comment in its thread (never batch into one PR comment)
+gh api repos/seantokuzo/seantokuzo-mcp/pulls/{number}/comments/{comment_id}/replies \
+  -f body="Fixed in {sha} — {what changed}"
 ```
 
-### 2. Categorize
-
-Sort every comment into fix-now / respond / defer.
-
-### 3. Fix
-
-Address all fix-now items. Run CI after fixes. Commit with descriptive message.
-
-### 4. Reply to EVERY Comment
-
-Reply individually to each comment in its own thread:
-
-```bash
-# Fixed
-gh api repos/seantokuzo/seantokuzo-mcp/pulls/{number}/comments/{id}/replies \
-  -f body="Fixed in commit abc1234."
-
-# Not applicable
-gh api repos/seantokuzo/seantokuzo-mcp/pulls/{number}/comments/{id}/replies \
-  -f body="Not applicable — {specific reason}."
-
-# Deferred
-gh api repos/seantokuzo/seantokuzo-mcp/pulls/{number}/comments/{id}/replies \
-  -f body="Valid point. Tracked as Issue #XX for future work."
-```
-
-### 5. Summary Comment
-
-After addressing all comments:
-
-```bash
-gh pr comment {number} --body "Addressed review comments:
-- Fixed: [list]
-- Responded: [list]
-- Deferred: [list]
-
-All CI passing."
-```
-
-## Response Templates
+**Templates:**
 
 ```markdown
 # Fixed
-Fixed in commit abc1234.
+Fixed in {sha} — {what changed}.
 
-# Not applicable
-Not applicable — [specific reason why this doesn't apply to our architecture].
+# Intentional / framework guarantee
+Intentional — `{type}` in `{path}` makes this case unreachable: the loader
+narrows to `{X}` before {Y} is called. See `packages/core/src/loader/{file}:{line}`.
 
-# Intentional
-Intentional design decision — [reason]. See PLANNING.md [section].
+# Out of scope (deferred)
+Valid concern. Tracked as #{issue} for a follow-up PR — out of scope for
+this {scope-description} PR.
 
-# Deferred
-Valid improvement. Tracked as Issue #XX.
+# Pushback (incorrect comment)
+This recommendation conflicts with `CLAUDE.md` "Anti-Patterns": no
+premature abstraction. Three similar lines is preferred to a wrapper that
+locks future flexibility.
 ```
 
-## Key Principles
+## When to trigger Tier 1 / Tier 3 manually
 
-- **Don't blindly fix everything** — Automated reviewers lack project context
-- **Always reply** — Close the loop on every comment
-- **Include commit links** — When fixing, reference the specific commit
-- **Batch fixes** — Fix all issues, run CI once, then reply to all
-- **Be specific** — "Not applicable because X" not just "Not applicable"
+- **`@claude check why CI is failing`** — Tier 1, Opus 4.6 inspects logs via `mcp__github_ci__*` tools
+- **`@claude review the install CLI for prompt-injection vectors`** — Tier 1, targeted security read
+- **Label `claude-deep-review`** — when you suspect the auto-review missed something or the PR is large/sensitive
+- **`gh workflow run claude-deep-review.yml -f pr_number=N`** — same, via CLI
+
+## What NOT to do
+
+- **Don't fix silently** — every comment gets an inline reply (fix or pushback)
+- **Don't batch replies** in one top-level PR comment
+- **Don't manually request the Claude bot** as a reviewer — it auto-runs from the workflow
+- **Don't paste sentinel JSON** into your replies — the synthesizer regenerates them
+- **Don't use `--squash` merge** unless project conventions say otherwise
