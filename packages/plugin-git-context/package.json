@@ -1,6 +1,6 @@
 {
   "name": "@kuzo-mcp/plugin-git-context",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Git context plugin for Kuzo MCP — detects repo, branch, and working tree state.",
   "type": "module",
   "license": "MIT",

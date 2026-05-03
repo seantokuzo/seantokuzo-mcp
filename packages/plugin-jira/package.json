@@ -1,6 +1,6 @@
 {
   "name": "@kuzo-mcp/plugin-jira",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Jira Cloud integration for Kuzo MCP — tickets, workflow transitions, subtasks, comments.",
   "type": "module",
   "license": "MIT",
