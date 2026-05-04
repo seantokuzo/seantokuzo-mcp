@@ -260,16 +260,16 @@ The first real release shipped after a 4-PR fixup saga uncovered three real bugs
 
 ### ⏭️ Fresh-session handoff — when user says "next"
 
-**No active phase.** Phase 2.5e fully closed (2026-05-03 — see "First real npm release" entry above for the saga + the live e2e smoke that closed the D.3 gap). When the user says "next" without context, **ask which direction** — do not auto-resume any phase.
+**No active phase.** Phase 2.5e fully closed (2026-05-03 — see "First real npm release" entry above for the saga + the live e2e smoke that closed the D.3 gap).
 
-**Active candidate directions** (per the post-2.5e session, in rough priority order Sean has flagged):
+**Locked next-session plan (agreed 2026-05-03):**
 
-1. **AppleTV plugin (per memory `project_appletv_plugin.md`).** Expand beyond developer tools. First step is research: Node.js library landscape for Apple TV protocols (pyatv-equivalent? native?), MCP tool surface (remote, now-playing, search, app launch), draft a plugin spec mirroring github/jira decompositions.
-2. **Hosted deployment + Claude.ai custom connector.** Get the MCP server running cheaply remote (Fly.io / Railway / Cloudflare). Trade-off: stdio transport works for Claude Code locally; Claude.ai custom connectors need SSE/HTTP. May require a thin transport adapter on top of `@kuzo-mcp/core`.
-3. **Phase 3 — plugin expansions on existing 3.** GitHub: releases, actions, labels, issues. Jira: more workflow/board operations. Driven by what Sean actually uses day-to-day.
-4. **Real-life testing first.** Register the published `@kuzo-mcp/cli` (or local build) as a Claude Code MCP server in `~/.claude/settings.json` and just use it for a few sessions. Bake-time before adding scope.
+1. **NEXT SESSION — Real-life QA via Claude Code.** Hook up the published `@kuzo-mcp/cli` (`npm i -g @kuzo-mcp/cli@0.0.2` from a fresh location, not the local repo build) as an MCP server in `~/.claude/settings.json`. Use it across normal daily work for a stretch — natural QA. File issues for whatever surfaces. NO new feature work; just bake-time on the published artifacts. Surfaces packaging/registration/install bugs we never saw with local dev.
+2. **AFTER QA SETTLES — AppleTV plugin.** See memory `project_appletv_plugin.md`. First session is research-heavy: Node.js library landscape (pyatv-equivalent? native MediaRemote/MRP?), MCP tool surface (remote, now-playing, search, app launch, screenshot), capability profile (network: LAN; credentials: pairing token), plugin spec mirroring the github/jira decompositions. Build it as `@kuzo-mcp/plugin-appletv` following the locked decisions (pnpm workspaces, scoped name, KuzoPluginV2 manifest, version derived from package.json via createRequire).
+3. **AFTER APPLETV SHIPS — Hosted deployment + Claude.ai custom connector.** AppleTV is the forcing function: Sean wants AppleTV control from Claude.ai mobile, which only works if the MCP server is reachable remotely. Get the server running cheaply somewhere (Fly.io / Railway / Cloudflare). Add a thin SSE/HTTP transport adapter on top of `@kuzo-mcp/core` (current stdio transport is local-only).
+4. **AFTER HOSTING — Plugin expansion wave.** Build out more integrations and fill gaps in existing plugins. Driven by what Sean actually uses day-to-day rather than a pre-planned "Phase 3" scope. This is the long-tail expansion work — no defined scope yet.
 
-**If asked which to recommend:** pairing #4 (1 day) → #1 (research-heavy) → #2 (deployment) is a coherent arc that gets real usage early, expands the surface where it matters, then makes the surface portable. Skip #3 unless a specific GitHub/Jira gap surfaces during #4.
+**On a fresh session, when user says "next":** start at step 1 unless they redirect. Don't skip ahead unless explicitly asked.
 
 **Open cross-phase note:** `plugin-host.ts` prototype freeze tracked in issue #26. Low priority — process isolation already limits blast radius.
 
