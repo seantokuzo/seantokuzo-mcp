@@ -1,23 +1,51 @@
 name: Claude Auto Review
 
-# Tier 2: multi-specialist auto-review on every PR.
+# Tier 2: multi-specialist auto-review on PR open / draft -> ready.
 # Three concurrent specialists (Security / Architecture / Correctness) each
 # Opus 4.7 + --effort xhigh, then a synthesizer job (also Opus 4.7) reads
 # their JSON sentinels, posts a verdict sticky, and auto-applies the
 # `claude-deep-review` label when escalation criteria are met.
 #
+# Round 1 fires automatically on PR open / ready_for_review. Subsequent
+# rounds are MANUAL via workflow_dispatch — Claude Code (the assistant)
+# judges whether the fix-push warrants another review (e.g. behavioural
+# changes, new code paths) instead of auto-spawning style-nit loops on
+# every push. Dispatch can request all specialists or just one (security /
+# architecture / correctness), useful for re-checking a single lane after
+# targeted fixes. Single-specialist runs skip the verdict synthesizer
+# (it needs all 3 sentinels to compute the aggregate verdict).
+#
 # Tools: READ-ONLY. Write tools (Edit/Write/NotebookEdit) disallowed.
 # The verdict job is the only one allowed to apply the deep-review label.
+#
+# UPSTREAM: this workflow was forked from the get-sean-done template.
+# Re-sync from `../get-sean-done/.github/workflows/claude-code-review.yml`
+# and re-fill the project-specific lane rules / sensitive paths / skepticism
+# rules below if the template gets meaningful updates.
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review]
+    # Only auto-fire round 1 (PR open / draft -> ready). Subsequent rounds
+    # are MANUAL via workflow_dispatch — Claude Code judges whether the
+    # fix-push warrants another review (e.g. behavioural changes, new code
+    # paths) instead of auto-spawning style-nit loops on every push.
+    types: [opened, ready_for_review]
   workflow_dispatch:
     inputs:
       pr_number:
         description: PR number to review
         required: true
         type: number
+      specialist:
+        description: Which specialist(s) to run (default = all 3 + verdict)
+        required: false
+        type: choice
+        default: all
+        options:
+          - all
+          - security
+          - architecture
+          - correctness
 
 permissions: {}
 
@@ -27,7 +55,7 @@ concurrency:
 
 jobs:
   preflight:
-    name: Preflight (skip drafts/release/forks)
+    name: Preflight (skip drafts/forks)
     runs-on: ubuntu-latest
     if: |
       github.repository == 'seantokuzo/seantokuzo-mcp' &&
@@ -51,6 +79,10 @@ jobs:
   security-review:
     needs: preflight
     name: 🔒 Security specialist
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      inputs.specialist == 'all' ||
+      inputs.specialist == 'security'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -58,6 +90,7 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,40 +106,58 @@ jobs:
 
             PR: #${{ needs.preflight.outputs.pr_number }} in ${{ github.repository }}
 
-            FIRST: read CLAUDE.md (especially "Reviewing with @claude"), docs/STATE.md, and
-            docs/SECURITY.md if any release/install/publish/changeset files changed.
+            FIRST: read CLAUDE.md (especially any "Reviewing with @claude" section),
+            docs/STATE.md and docs/PLANNING.md if present, plus any project-specific
+            security doc (e.g. docs/SECURITY.md) when release / install / auth /
+            workflow files are touched.
 
-            YOUR LANE (only flag these):
+            YOUR LANE (only flag these — generic defaults; project-specific rules
+            below override / extend):
+            - Secret leakage: env vars, logs, error messages, fixtures, snapshot
+              files, .env handling, token storage paths, accidental commit of keys
+            - Auth / token handling: scope minimization, refresh flow, storage at
+              rest, accidental network exfiltration, missing CSRF / origin checks
+            - Input validation at trust boundaries: every untrusted field reaching
+              an external system / a child process / a database is validated
+            - Injection surfaces: command injection (child_process, exec, spawn),
+              SQL injection, path traversal, unsafe deserialization, template
+              injection
+            - Prompt injection: user input flowing into LLM prompts, tool
+              descriptions, tool inputs/outputs that another agent might re-execute
+            - GitHub Actions safety: pull_request_target misuse, fork-trigger
+              guards, `permissions:` write surface justification, third-party
+              action SHA pinning, workflow_dispatch input validation
+            - Supply chain: dependency add/upgrade scrutiny, lockfile drift,
+              postinstall hooks, package-publish surface, OIDC / Trusted
+              Publishing config
+
+            Project-specific lane rules:
             - Supply chain: npm publish surface, OIDC / Trusted Publishing config drift,
-              Sigstore / provenance attestation correctness, dependency injection points
-            - Secret leakage: env vars, logs, error messages, fixtures, snapshot files,
-              .env handling, token storage paths
-            - Prompt injection: user input flowing into MCP tool descriptions / inputs /
-              outputs that an LLM might re-execute (especially github / jira / git-context
-              plugin tool outputs)
-            - Install CLI safety: path traversal, command injection, signature verification,
-              tarball extraction safety, post-install hooks
-            - Auth / token handling: PAT scope minimization, refresh flow, storage at rest,
-              accidental network exfiltration
-            - GitHub Actions safety: pull_request_target misuse, fork-trigger guards,
-              permissions: write surface, third-party action pinning
+              Sigstore / provenance attestation correctness on @kuzo-mcp/* packages
+            - Prompt injection: especially user input flowing into github / jira /
+              git-context plugin tool outputs that another agent might re-execute
+            - Install CLI safety: path traversal, command injection, signature
+              verification, tarball extraction safety, post-install hooks
+            - PAT scope minimization for first-party plugin clients
 
             NOT YOUR LANE (let other specialists handle):
-            - Plugin contract violations → Architecture specialist
-            - Type errors / async hygiene / `any` usage → Correctness specialist
-            - Naming / formatting → ignore (Prettier handles it)
+            - Component boundaries / contracts / file organization -> Architecture
+            - Type errors / async hygiene / null-handling -> Correctness
+            - Naming / formatting -> ignore (formatter handles it)
 
-            SKEPTICISM RULES (per CLAUDE.md):
-            - Do NOT flag defensive code for cases the type system / framework rules out
-            - Do NOT re-litigate decisions already locked in docs/PLANNING.md
-            - Do NOT suggest "add tests" — vitest is not wired in CI yet
+            SKEPTICISM RULES:
+            - Do NOT flag defensive code for cases the type system / framework
+              rules out
+            - Do NOT re-litigate decisions already locked in CLAUDE.md / PLANNING.md
+            - Do NOT suggest "add tests" unless a test framework is wired
             - Do NOT suggest scope creep beyond the PR's stated goal
+            - Do NOT suggest "add tests" — vitest is not wired in CI yet
 
             STEPS:
-            1. gh pr diff ${{ needs.preflight.outputs.pr_number }} (read full diff)
-            2. gh pr view ${{ needs.preflight.outputs.pr_number }} --json title,body,additions,deletions,files
-            3. For each finding, post an inline comment via mcp__github_inline_comment__create_inline_comment
-            4. Post ONE top-level summary comment via gh pr comment with this exact structure:
+            1. `gh pr diff ${{ needs.preflight.outputs.pr_number }}` (read full diff)
+            2. `gh pr view ${{ needs.preflight.outputs.pr_number }} --json title,body,additions,deletions,files`
+            3. For each finding, post inline via mcp__github_inline_comment__create_inline_comment
+            4. Post ONE top-level summary via `gh pr comment` with this exact structure:
 
             <!-- KUZO-REVIEW-JSON-SECURITY
             {"verdict":"ship|fix-then-ship|rethink","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":true|false,"top_issues":[{"file":"path","line":N,"severity":"blocking|advisory","summary":"..."}],"rationale":"..."}
@@ -122,18 +173,27 @@ jobs:
             ---
 
             sensitive_paths_touched should be `true` if the diff includes any of:
-            packages/core/src/loader/, packages/core/src/install/, packages/cli/src/install,
-            docs/SECURITY.md, .github/workflows/release.yml, .changeset/*.md, packages/*/package.json (publishConfig changes)
+            - packages/core/src/loader/
+            - packages/core/src/install/
+            - packages/cli/src/install*
+            - docs/SECURITY.md
+            - .github/workflows/release.yml
+            - .changeset/*.md
+            - packages/*/package.json (publishConfig changes)
           claude_args: |
             --model claude-opus-4-7
             --effort xhigh
-            --max-turns 12
+            --max-turns 18
             --disallowedTools "Edit,Write,NotebookEdit"
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/contents/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/commits/*),Bash(gh run list:*),Bash(gh run view:*),Bash(pnpm typecheck),Bash(pnpm lint),Bash(pnpm build),Bash(pnpm test),Bash(pnpm prettier --check:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
+            --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/contents/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/commits/*),Bash(gh run list:*),Bash(gh run view:*),Bash(pnpm typecheck),Bash(pnpm lint),Bash(pnpm build),Bash(pnpm test),Bash(pnpm prettier --check:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
 
   architecture-review:
     needs: preflight
     name: 🏗️ Architecture specialist
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      inputs.specialist == 'all' ||
+      inputs.specialist == 'architecture'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -141,6 +201,7 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -156,44 +217,67 @@ jobs:
 
             PR: #${{ needs.preflight.outputs.pr_number }} in ${{ github.repository }}
 
-            FIRST: read CLAUDE.md (especially Architecture + Anti-Patterns sections + the
-            "Reviewing with @claude" section) and docs/PLANNING.md for the architecture spec.
+            FIRST: read CLAUDE.md (especially Tech Stack & Conventions, Architecture,
+            and What NOT To Do sections) and docs/PLANNING.md for the architecture spec.
 
-            YOUR LANE (only flag these):
+            YOUR LANE (only flag these — generic defaults; project-specific rules
+            below override / extend):
+            - Component / package boundaries: every cross-component or cross-package
+              import respects the declared public API (`exports`, barrel files,
+              re-exports). Flag deep imports into another package's `dist/` or `src/`.
+            - Contract compliance: every plugin / adapter / handler implements the
+              interface its registry expects (lifecycle hooks, required config,
+              registration shape). Flag any signature drift.
+            - File organization (per CLAUDE.md): types live where the convention
+              says (per-feature `types.ts`, not flat shared); handlers split per
+              concern; entry points unchanged unless the diff justifies it.
+            - Anti-patterns: god files, singleton-as-state, premature abstraction
+              (DI frameworks, hot reload, plugin versioning), inline handlers
+              instead of named, scope creep beyond the PR's stated goal.
+            - Convention drift: imports follow project alias / ordering rules; no
+              accidental introduction of a parallel pattern; existing primitives
+              reused before new ones are added.
+            - Public API stability: exported types / functions changed only with
+              justification; backwards compatibility considered for protocol /
+              schema changes.
+
+            Project-specific lane rules:
             - KuzoPlugin contract: every plugin in packages/plugin-* implements the
-              KuzoPlugin interface from packages/types correctly (lifecycle, requiredConfig,
-              tool registration, ResourceDefinition shape)
-            - NO cross-plugin imports: plugins MUST NOT import from other plugins; they use
-              callTool() via PluginContext. Any import like `from '@kuzo-mcp/plugin-X'`
-              from inside another plugin is a HARD blocking issue.
-            - Zod coverage: every MCP tool input must have a Zod schema with .describe()
-              on every field; outputs should be typed
-            - Monorepo boundaries: each package's package.json `dependencies` lists every
-              package it imports from; no missing peer deps; `exports` map declares public
-              API; no deep imports into another package's `dist/` or `src/`
+              KuzoPlugin interface from packages/types correctly (lifecycle,
+              tool registration, ResourceDefinition shape, capability model)
+            - NO cross-plugin imports: plugins MUST NOT import from other plugins;
+              they use callTool() via PluginContext. Any import like
+              `from '@kuzo-mcp/plugin-X'` from inside another plugin is a HARD
+              blocking issue.
+            - Zod coverage: every MCP tool input must have a Zod schema with
+              .describe() on every field; outputs should be typed
+            - Monorepo boundaries: each package's package.json `dependencies` lists
+              every package it imports from; no missing peer deps; `exports` map
+              declares public API; no deep imports into another package's
+              `dist/` or `src/`
             - File organization (per CLAUDE.md): plugin types live in
-              packages/plugin-{name}/src/types.ts (NOT a shared types file); tool groups
-              in tools/*.ts; plugin entry in src/index.ts; client in src/client.ts
-            - Anti-patterns (per CLAUDE.md): god files, singletons (e.g. getGitHubService),
-              cross-plugin imports, flat shared type files, inline tool handlers,
-              silent config failures, premature abstraction (DI frameworks, hot reload, etc.)
+              packages/plugin-{name}/src/types.ts (NOT a shared types file);
+              tool groups in tools/*.ts; plugin entry in src/index.ts;
+              client in src/client.ts
 
             NOT YOUR LANE:
-            - Security findings → Security specialist
-            - Type errors / async hygiene → Correctness specialist
-            - Formatting / naming → ignore
+            - Security findings -> Security specialist
+            - Type errors / async hygiene -> Correctness specialist
+            - Formatting / naming -> ignore
 
-            SKEPTICISM RULES (per CLAUDE.md):
-            - Do NOT re-litigate plugin architecture — it's locked
+            SKEPTICISM RULES:
+            - Do NOT re-litigate locked architecture decisions
             - Do NOT suggest abstractions for hypothetical future requirements
-            - Do NOT flag "could be more DRY" if the alternative is a premature abstraction
-            - Three similar lines is BETTER than a premature abstraction
+            - Do NOT flag "could be more DRY" if the alternative is a premature
+              abstraction. Three similar lines is BETTER than a brittle abstraction.
+            - Do NOT propose "add a test" without confirming a test framework is wired
+            - Do NOT re-litigate the plugin architecture — locked in docs/PLANNING.md
 
             STEPS:
-            1. gh pr diff ${{ needs.preflight.outputs.pr_number }}
-            2. gh pr view ${{ needs.preflight.outputs.pr_number }} --json files
-            3. For each finding, inline comment via mcp__github_inline_comment__create_inline_comment
-            4. Post ONE top-level summary comment with this exact structure:
+            1. `gh pr diff ${{ needs.preflight.outputs.pr_number }}`
+            2. `gh pr view ${{ needs.preflight.outputs.pr_number }} --json files`
+            3. Inline-comment each finding via mcp__github_inline_comment__create_inline_comment
+            4. Post ONE top-level summary via `gh pr comment` with this exact structure:
 
             <!-- KUZO-REVIEW-JSON-ARCHITECTURE
             {"verdict":"ship|fix-then-ship|rethink","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":true|false,"top_issues":[{"file":"path","line":N,"severity":"blocking|advisory","summary":"..."}],"rationale":"..."}
@@ -209,18 +293,25 @@ jobs:
             ---
 
             sensitive_paths_touched should be `true` if the diff includes any of:
-            packages/core/src/loader/, packages/core/src/registry/, packages/types/src/,
-            packages/*/package.json (exports/dependencies changes)
+            - packages/core/src/loader/
+            - packages/core/src/registry/
+            - packages/types/src/
+            - packages/*/package.json (exports/dependencies changes)
+            - docs/PLANNING.md
           claude_args: |
             --model claude-opus-4-7
             --effort xhigh
-            --max-turns 12
+            --max-turns 18
             --disallowedTools "Edit,Write,NotebookEdit"
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/contents/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/commits/*),Bash(gh run list:*),Bash(gh run view:*),Bash(pnpm typecheck),Bash(pnpm lint),Bash(pnpm build),Bash(pnpm test),Bash(pnpm prettier --check:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
+            --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/contents/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/commits/*),Bash(gh run list:*),Bash(gh run view:*),Bash(pnpm typecheck),Bash(pnpm lint),Bash(pnpm build),Bash(pnpm test),Bash(pnpm prettier --check:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
 
   correctness-review:
     needs: preflight
     name: ✅ Correctness specialist
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      inputs.specialist == 'all' ||
+      inputs.specialist == 'correctness'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -228,6 +319,7 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -243,44 +335,67 @@ jobs:
 
             PR: #${{ needs.preflight.outputs.pr_number }} in ${{ github.repository }}
 
-            FIRST: read CLAUDE.md (Code Conventions section + the "Reviewing with @claude"
-            section) and the existing patterns in any file you find suspect.
+            FIRST: read CLAUDE.md (Code Conventions + Quality Gates) and the existing
+            patterns in any file you find suspect. The project's build pipeline gates
+            type errors and lint errors — surface anything that would break CI as a
+            blocking finding.
 
-            YOUR LANE (only flag these):
-            - TypeScript strict: NO `any` (must be `unknown` + narrowed); type-only imports
-              (`import type { Foo }` when only used as a type)
-            - ESM imports: every relative import path must end in `.js` (even for `.ts`
-              files) — required by node ESM resolver
-            - async/await hygiene: handlers without `await` must NOT be `async`; missing
-              `await` on Promise-returning calls; unhandled promise rejections
-            - Null/undefined: `??` not `||` for nullish coalescing; missing optional chaining;
-              non-null assertions (`!`) without justification
-            - Error handling: MCP tool error messages must be human/Claude-readable
-              (actionable, not stack traces); no silent catches that swallow errors
-            - Race conditions / shared mutable state in plugin lifecycle, tool execution,
-              or async event handlers
-            - Zod schema correctness: schemas match the actual usage; refinements where
-              needed; descriptions present (Architecture handles COVERAGE, you handle CORRECTNESS)
-            - Run pnpm typecheck and pnpm lint locally if needed to verify
-            - CI failures: if pnpm typecheck/lint/build/test failed in CI, inspect the
-              workflow logs via mcp__github_ci__* tools and surface the root cause
+            YOUR LANE (only flag these — generic defaults; project-specific rules
+            below override / extend):
+            - TypeScript strict (or equivalent): NO `any` (must be `unknown` +
+              narrowed); type-only imports (`import type { Foo }` when only used
+              as a type); no non-null assertions (`!`) without a justification
+              comment or framework guarantee.
+            - async/await hygiene: handlers without `await` MUST NOT be `async`;
+              missing `await` on Promise-returning calls; floating Promises;
+              silent `.catch(() => {})` that swallow errors.
+            - Null/undefined: `??` not `||` for nullish coalescing; missing
+              optional chaining; non-null assertions without justification.
+            - Error handling: user-facing error messages actionable; no silent
+              swallows; loading/error states reachable.
+            - Race conditions / shared mutable state in async event handlers,
+              lifecycle hooks, or message ordering.
+            - Schema correctness: any input validation library (Zod, valibot,
+              etc.) schemas match actual usage; refinements where needed;
+              descriptions present.
+            - Convention compliance:
+              * No `console.log` / `debugger` / `print(` / TODO-without-issue
+                committed.
+              * Imports follow project conventions (alias usage, ordering, `.js`
+                suffix on relative ESM imports if required).
+              * No unused exports / dead code that the diff introduces.
+            - Build hygiene: project's lint / typecheck / build / test commands
+              should pass. Run them locally if you suspect a regression.
+            - CI / build red? Inspect via mcp__github_ci__* tools, surface the
+              root cause as a blocking finding.
+
+            Project-specific lane rules:
+            - ESM `.js` suffix on every relative import path (Node ESM resolver
+              requires it even for `.ts` source).
+            - MCP tool error messages must be human/Claude-readable (actionable,
+              not stack traces) — Claude reads these in tool output.
+            - Build commands: `pnpm typecheck && pnpm lint && pnpm build` is
+              the gate per CLAUDE.md Quality Gates section. Run locally if a
+              regression is suspected.
 
             NOT YOUR LANE:
-            - Security findings → Security specialist
-            - Plugin contract / monorepo boundaries → Architecture specialist
-            - Formatting → Prettier handles it; ignore
+            - Security findings -> Security specialist
+            - Component / package boundaries / file organization -> Architecture specialist
+            - Formatting -> formatter handles it; ignore
 
-            SKEPTICISM RULES (per CLAUDE.md):
+            SKEPTICISM RULES:
             - Do NOT flag defensive code for cases the type system rules out
             - Do NOT suggest comments that explain WHAT — only WHY-when-non-obvious
             - Do NOT add error handling for scenarios that can't happen
-            - Do NOT suggest validation at internal call boundaries — only system boundaries
+            - Do NOT validate at internal call boundaries — only system boundaries
+            - Do NOT propose backwards-compat / removed-comment artefacts. Just delete.
+            - Do NOT suggest "add tests" — vitest is not wired in CI yet
 
             STEPS:
-            1. gh pr diff ${{ needs.preflight.outputs.pr_number }}
+            1. `gh pr diff ${{ needs.preflight.outputs.pr_number }}`
             2. If CI is red, fetch the failing job logs via mcp__github_ci__download_job_log
-            3. Inline comment each finding
-            4. Post ONE top-level summary with:
+            3. Inline-comment each finding via mcp__github_inline_comment__create_inline_comment
+            4. Post ONE top-level summary via `gh pr comment` with this exact structure:
 
             <!-- KUZO-REVIEW-JSON-CORRECTNESS
             {"verdict":"ship|fix-then-ship|rethink","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":false,"ci_failing":true|false,"top_issues":[{"file":"path","line":N,"severity":"blocking|advisory","summary":"..."}],"rationale":"..."}
@@ -290,27 +405,33 @@ jobs:
 
             **Verdict**: <verdict>
             **Blocking**: <N> | **Advisory**: <M>
-            **CI status**: <green|red — root cause if red>
+            **CI status**: <green | red — root cause if red>
 
             <human-readable findings>
           claude_args: |
             --model claude-opus-4-7
             --effort xhigh
-            --max-turns 12
+            --max-turns 18
             --disallowedTools "Edit,Write,NotebookEdit"
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/contents/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/commits/*),Bash(gh run list:*),Bash(gh run view:*),Bash(gh run view --log:*),Bash(pnpm typecheck),Bash(pnpm lint),Bash(pnpm build),Bash(pnpm test),Bash(pnpm prettier --check:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
+            --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/contents/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/commits/*),Bash(gh run list:*),Bash(gh run view:*),Bash(gh run view --log:*),Bash(pnpm typecheck),Bash(pnpm lint),Bash(pnpm build),Bash(pnpm test),Bash(pnpm prettier --check:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
 
   verdict:
     needs: [preflight, security-review, architecture-review, correctness-review]
     name: 📋 Verdict synthesizer
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: always() && needs.preflight.result == 'success'
+    # Skip on single-specialist re-reviews — synthesizer needs all 3
+    # sentinels to compute the aggregate verdict; a single-specialist run
+    # would mix new + stale specialist results.
+    if: |
+      always() && needs.preflight.result == 'success' &&
+      (github.event_name != 'workflow_dispatch' || inputs.specialist == 'all')
     permissions:
       contents: read
       pull-requests: write
       issues: write
       id-token: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -329,16 +450,23 @@ jobs:
             - Architecture: ${{ needs.architecture-review.result }}
             - Correctness: ${{ needs.correctness-review.result }}
 
+            EFFICIENCY: prefer parallel tool calls in a single assistant turn.
+            Multiple Bash invocations in one assistant message cost ONE turn total.
+            Fetch comments once at the start — that single response gives you BOTH
+            the specialist sentinels AND the existing verdict sticky id (if any).
+
             STEPS:
 
-            1. Fetch PR comments:
-               gh api "repos/${{ github.repository }}/issues/${{ needs.preflight.outputs.pr_number }}/comments?per_page=100"
+            1. Fetch PR comments (one turn):
+               `gh api "repos/${{ github.repository }}/issues/${{ needs.preflight.outputs.pr_number }}/comments?per_page=100"`
 
-            2. Extract every JSON sentinel:
-               - <!-- KUZO-REVIEW-JSON-SECURITY ... -->
-               - <!-- KUZO-REVIEW-JSON-ARCHITECTURE ... -->
-               - <!-- KUZO-REVIEW-JSON-CORRECTNESS ... -->
-               (Take the MOST RECENT instance of each — earlier rounds are stale.)
+            2. From step 1, extract every JSON sentinel AND the existing
+               <!-- KUZO-VERDICT-STICKY --> id (if any):
+               - `<!-- KUZO-REVIEW-JSON-SECURITY ... -->`
+               - `<!-- KUZO-REVIEW-JSON-ARCHITECTURE ... -->`
+               - `<!-- KUZO-REVIEW-JSON-CORRECTNESS ... -->`
+               (Take the MOST RECENT instance of each — earlier rounds are stale.
+               Use `jq` to parse: `jq '.[] | select(.body | contains("KUZO-REVIEW-JSON-SECURITY"))'`.)
 
             3. Compute aggregate verdict:
                - "rethink" if any specialist verdict is "rethink"
@@ -350,7 +478,7 @@ jobs:
                - ci_failing = correctness specialist's ci_failing (or unknown)
 
             4. Compute round number:
-               - Find existing <!-- KUZO-VERDICT-STICKY --> comment via gh api
+               - Find existing <!-- KUZO-VERDICT-STICKY --> comment via the step-1 fetch
                - If exists, parse `VERDICT_ROUND: N` from its body and increment to N+1
                - If not, round = 1
                - HARD CAP: if round would exceed 4, set verdict to "rethink" and add a
@@ -360,21 +488,18 @@ jobs:
                escalate = (verdict == "rethink") OR
                           (sensitive_paths_touched AND total_blocking > 0) OR
                           (total_blocking > 5) OR
-                          (PR additions+deletions > 500 — get via gh pr view --json additions,deletions)
+                          (PR additions+deletions > 500 — get via `gh pr view --json additions,deletions`)
                If `claude-deep-review` label already present, do not re-apply.
 
-            6. Find existing verdict sticky:
-               gh api "repos/${{ github.repository }}/issues/${{ needs.preflight.outputs.pr_number }}/comments?per_page=100" | jq '.[] | select(.body | contains("<!-- KUZO-VERDICT-STICKY -->"))'
-
-            7. Post or update sticky body. If existing, PATCH:
-               gh api -X PATCH "repos/${{ github.repository }}/issues/comments/<comment_id>" -f body='<NEW_BODY>'
+            6. Post or update sticky body. If existing, PATCH:
+               `gh api -X PATCH "repos/${{ github.repository }}/issues/comments/<comment_id>" -f body='<NEW_BODY>'`
                If new, post:
-               gh pr comment ${{ needs.preflight.outputs.pr_number }} --body '<BODY>'
+               `gh pr comment ${{ needs.preflight.outputs.pr_number }} --body '<BODY>'`
 
-            8. If escalating and label not present:
-               gh pr edit ${{ needs.preflight.outputs.pr_number }} --add-label claude-deep-review
+            7. If escalating and label not present:
+               `gh pr edit ${{ needs.preflight.outputs.pr_number }} --add-label claude-deep-review`
                (Create the label first if it doesn't exist:
-                gh label create claude-deep-review --color B60205 --description "Trigger deep multi-specialist review" || true)
+                `gh label create claude-deep-review --color B60205 --description "Trigger deep multi-specialist review" || true`)
 
             STICKY BODY FORMAT (use this exactly — round number, verdict, counts substituted):
 
@@ -414,4 +539,4 @@ jobs:
             --effort high
             --max-turns 8
             --disallowedTools "Edit,Write,NotebookEdit"
-            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr edit --add-label:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/issues/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api -X PATCH repos/seantokuzo/seantokuzo-mcp/issues/comments/*),Bash(gh label create:*),Bash(gh label list:*),Bash(jq:*)"
+            --allowedTools "Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr edit --add-label:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/issues/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api -X PATCH repos/seantokuzo/seantokuzo-mcp/issues/comments/*),Bash(gh label create:*),Bash(gh label list:*),Bash(jq:*)"

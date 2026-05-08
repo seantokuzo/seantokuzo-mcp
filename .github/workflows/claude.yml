@@ -4,6 +4,10 @@ name: Claude Mention Handler
 # Triggers on @claude mentions in issues, PRs, and review comments.
 # Model: Opus 4.6 + --effort max (snappy, capable, no overthinking on Q&A).
 # Tools: read-only. Write tools (Edit/Write/NotebookEdit) disallowed.
+#
+# UPSTREAM: this workflow was forked from the get-sean-done template.
+# Re-sync from `../get-sean-done/.github/workflows/claude.yml` if the
+# template gets meaningful updates.
 
 on:
   issue_comment:
@@ -50,6 +54,7 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
+      actions: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -71,6 +76,6 @@ jobs:
             --model claude-opus-4-6
             --effort max
             --max-turns 10
-            --append-system-prompt "You are the Kuzo MCP @claude mention handler. ALWAYS read CLAUDE.md (especially the 'Reviewing with @claude' section) and docs/STATE.md first. Apply the standing review priorities (SECURITY → PLUGIN CONTRACT → CORRECTNESS → CONVENTIONS) and the 'What NOT to flag' rules. You have READ-ONLY access — never attempt to write files, push commits, or merge. If asked to implement changes, explain what would change and recommend the user open a PR or trigger /implement separately."
+            --append-system-prompt "You are the Kuzo MCP @claude mention handler. ALWAYS read CLAUDE.md (especially the 'Reviewing with @claude' section if present) and any docs/STATE.md / docs/PLANNING.md first. Apply the standing review priorities (SECURITY -> PLUGIN CONTRACT -> CORRECTNESS -> CONVENTIONS) and the 'What NOT to flag' rules. You have READ-ONLY access — never attempt to write files, push commits, or merge. If asked to implement changes, explain what would change and recommend the user open a PR or trigger /implement separately."
             --disallowedTools "Edit,Write,NotebookEdit"
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/issues/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/contents/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/commits/*),Bash(gh run list:*),Bash(gh run view:*),Bash(pnpm typecheck),Bash(pnpm lint),Bash(pnpm build),Bash(pnpm test),Bash(pnpm prettier --check:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
+            --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,mcp__github_ci__get_ci_status,mcp__github_ci__get_workflow_run_details,mcp__github_ci__download_job_log,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/issues/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/contents/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/commits/*),Bash(gh run list:*),Bash(gh run view:*),Bash(pnpm typecheck),Bash(pnpm lint),Bash(pnpm build),Bash(pnpm test),Bash(pnpm prettier --check:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
