@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-05-03 (Phase 2.5e fully closed — first real npm release lifecycle proven end-to-end. All 6 packages live on npm; plugin-* + core + cli at `0.0.2`, types at `0.0.1`. Live `kuzo plugins install/list/verify` smoke green against published packages with real Sigstore TUF + Rekor verification. No active phase — awaiting user direction.)
+**Last Updated:** 2026-05-12 (Phase 2.6 credentials spec round-3 revision merged via PR #38 — 1426 → 2428 lines, all 44 round-3 items applied + 2 round-1 Security advisories + 4 round-2 Security advisories. Spec is implementation-ready. Follow-up issue #39 tracks removal of `docs/credentials-spec-round3-notes.md` during phase-close. Next: Phase 2.6 implementation per §F.3 cutover plan.)
 
 ---
 
@@ -260,20 +260,37 @@ The first real release shipped after a 4-PR fixup saga uncovered three real bugs
 
 ### ⏭️ Fresh-session handoff — when user says "next"
 
-**Phase 2.6 spec landed (round 2, 2026-05-10), reviewed (round 3, 2026-05-10 — 23 BLOCKING / 26 ADVISORY / 24 NIT findings across parallel security/architecture/UX reviews). Remediation list at `docs/credentials-spec-round3-notes.md` (44 numbered items R1–R44, 9 themes, all 6 STRUCTURAL decisions confirmed 2026-05-10). Next session executes the round-3 revision against the spec — still no implementation code yet.**
+**Phase 2.6 credentials spec is implementation-ready as of 2026-05-12.** `docs/credentials-spec.md` (2428 lines) absorbed all 44 round-3 items + 2 round-1 Security advisories + 4 round-2 Security advisories via PR #38 (merged `47634f5`). The round-3 notes doc (`docs/credentials-spec-round3-notes.md`) is still in-tree for cross-reference during implementation; issue #39 tracks its removal during the Phase 2.6 phase-close commit per spec §F.3 step 9.
 
-**Locked next-session plan (updated 2026-05-11):**
+**Locked next-session plan (updated 2026-05-12):**
 
-1. **NEXT SESSION — Credential spec round-3 revision.** Read `docs/credentials-spec-round3-notes.md` first (the canonical hand-off — has every item, severity, source citation, structural verdict, and the pushback rationale on items I refused). Apply R1–R44 in theme order against `docs/credentials-spec.md`. Theme execution order: boot model → scrub → crypto → audit trust → migration → code grounding → UX → docs → nits. Expected spec delta: +400 to +600 lines (round-2 is 1426; round-3 lands ~1700-1900). **Still no implementation code this session — spec revision only.** The biggest single rewrite is §C.1 + §C.3 (R1 parent-eager decrypt model); start there.
-2. **AFTER REVISION LANDS — Credential implementation phase.** "Phase 2.6 — Credential Storage & Provisioning." Build per the revised spec's part-by-part order. Acceptance criteria includes end-to-end smoke against real keychain on macOS + Linux + CI passphrase mode.
+1. **NEXT SESSION — Phase 2.6 implementation: Credential Storage & Provisioning.** Build per the spec's §0 Cross-cutting build order (10 numbered groups, each one or more atomic commits on `phase-2.6/credentials`):
+   1. E.1–E.2: `KUZO_HOME` + shared `packages/core/src/paths.ts`
+   2. A.1–A.4: Storage primitives (cipher, key providers, store interface + impl)
+   3. A.5–A.6: CredentialSource + env-override collection
+   4. C.1–C.3 + C.9: Boot sequence rewrite + child_process ESLint rule
+   5. C.10: Plugin-host audit emissions over IPC (must land before write-side events per round-1 advisory R16)
+   6. C.4–C.6: Broker write-side audit events + shutdown hooks
+   7. B.1–B.3 + A.11: credentials set/list/delete/rotate/status/test/wipe + state machine
+   8. B.4: credentials migrate (highest-risk — symlink-safe + dotenv parser + post-rewrite verify per round-1 + round-2 advisories)
+   9. D.1–D.3 + C.11: `kuzo serve` bin + rotation cache invalidation (fs.watch + IPC refresh)
+   10. F: Docs + canary release (all 6 packages — core/cli/plugins to 0.1.0, types stays 0.0.1 if no contract changes)
+
+   Acceptance criteria in §F.1 are extensive — ~90 checkbox items covering all parts. Per-step build-greenness: `pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm test:parity` must remain clean.
+2. **AFTER IMPLEMENTATION LANDS — Phase 2.6 phase-close.** Update `SECURITY.md` §6, `PLANNING.md`, this file, `README.md` per §F.3 step 9. Delete `docs/credentials-spec-round3-notes.md` (closes issue #39). Cut coordinated release for all 6 packages.
 3. **AFTER CREDENTIALS SHIP — Real-life QA via Claude Code.** Hook up the published `@kuzo-mcp/cli` as an MCP server in `~/.claude/settings.json`. Use across normal daily work for a stretch — natural QA. File issues for whatever surfaces. NO new feature work; just bake-time on the published artifacts. Now actually viable because the user can provision credentials via the documented `kuzo credentials set` flow instead of hand-editing settings.json env blocks.
 4. **AFTER QA SETTLES — AppleTV plugin.** See memory `project_appletv_plugin.md`. First session is research-heavy: Node.js library landscape (pyatv-equivalent? native MediaRemote/MRP?), MCP tool surface (remote, now-playing, search, app launch, screenshot), capability profile (network: LAN; credentials: pairing token), plugin spec mirroring the github/jira decompositions. Build it as `@kuzo-mcp/plugin-appletv` following the locked decisions (pnpm workspaces, scoped name, KuzoPluginV2 manifest, version derived from package.json via createRequire).
 5. **AFTER APPLETV SHIPS — Hosted deployment + Claude.ai custom connector.** AppleTV is the forcing function: Sean wants AppleTV control from Claude.ai mobile, which only works if the MCP server is reachable remotely. Get the server running cheaply somewhere (Fly.io / Railway / Cloudflare). Add a thin SSE/HTTP transport adapter on top of `@kuzo-mcp/core` (current stdio transport is local-only).
 6. **AFTER HOSTING — Plugin expansion wave.** Build out more integrations and fill gaps in existing plugins. Driven by what Sean actually uses day-to-day rather than a pre-planned "Phase 3" scope. This is the long-tail expansion work — no defined scope yet.
 
-**On a fresh session, when user says "next":** start at step 1 unless they redirect. Don't skip to implementation. **Step 1 is a spec revision — do not write code.** Round-3 notes are pre-confirmed; the fresh session should NOT re-litigate the structural decisions or the pushback verdicts unless new evidence surfaces.
+**On a fresh session, when user says "next":** start at step 1 — Phase 2.6 implementation. The spec is locked; no more spec revision. Read `docs/credentials-spec.md` §0 + the part the next commit-group is implementing (e.g., §E.1-E.2 if starting fresh), then execute. Each numbered group in the build order is one or more atomic commits on `phase-2.6/credentials`.
 
-**Round-3 takeaway** (load-bearing context for any post-revision work): the round-3 review surfaced that the broker lives in the CHILD process per 2.5d isolation (`plugin-host.ts:114`), so any "lazy decrypt" design has a forced choice: parent-eager (one keychain prompt at boot if any plugin needs stored creds, zero in env-override-only mode) OR child-lazy (one prompt per plugin process, kills the VSCode-pattern UX win). R1 confirmed parent-eager. This decision shapes every credential-adjacent design choice from here forward.
+**Round-3 takeaway** (load-bearing context for any implementation work): the broker lives in the CHILD process per 2.5d isolation (`plugin-host.ts:114`). Parent-eager decrypt is the locked model — parent decrypts at boot when any plugin needs the store (during `loader.loadAll()`, not on first tool call); zero prompts if env overrides satisfy everything. Per-plugin Map ships to children via IPC. Child has no `KeyProvider`. Every credential-adjacent design choice flows from this.
+
+**Round-1 + round-2 review takeaways** (load-bearing for implementation):
+- **C.10 audit IPC routing MUST land before any write-side credential.* events** (the four read-side broker emissions are the only allowlisted child events; everything else through `audit.forged_action`). The `packages/core/src/audit-partition.ts` exhaustiveness-check is required to prevent drift.
+- **B.4 migrate is the highest-risk command.** Symlink triple-check + O_NOFOLLOW + snapshot-compare + dotenv parse-don't-line-strip + post-rewrite redaction-verify (parse with the loader's parser, assert zero matches, else E_READBACK_FAIL). The fixture in §F.1 with multi-line quoted value + export-prefixed entry + comments is the canonical test.
+- **A.3 generation-persists-first ordering is deliberate.** Crash window between step 10 (generation commit) and step 11 (file rename) leaves user in CORRUPTED state requiring wipe + full re-provision. Documented in §F.4 as a known UX cost; recovery via `wipe + migrate`. Reversed ordering loses to FS-write malware; ±1 tolerance halves rollback resistance — neither is acceptable. Real defense is the `kuzo credentials list --json` backup affordance.
 
 **Open cross-phase note:** `plugin-host.ts` prototype freeze tracked in issue #26. Low priority — process isolation already limits blast radius.
 
