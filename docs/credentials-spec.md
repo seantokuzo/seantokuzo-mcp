@@ -953,6 +953,7 @@ On confirm:
 
    **Why parse-don't-line-strip matters here.** Brief's vector 3 (dotfiles/backup leaks) is exactly what migrate exists to prevent. A line-strip that leaves `trailing-line-that-is-actually-part-of-the-value"` on disk is the worst-of-both: the user thinks they're protected (`kuzo credentials list` shows the token stored), but the source file has half the secret in cleartext. Specifying the parser closes the gap before code lands.
 4. **Editor-collision check (R19) — just before each rename:** re-read the source file with the same flags, byte-compare against the snapshot Buffer from step 1.e. If different → abort with `E_SOURCE_MUTATED` (exit 76) and instruct: "the source file `<path>` was modified during migration; close your editor and retry. Already-imported credentials remain in the store; re-running `kuzo credentials migrate` is safe (already-stored matching values are skipped per R20)."
+4b. **Post-rewrite redaction-verify (round-2 advisory).** After the rename succeeds but before reporting success to the user, re-read the on-disk file and parse it with the SAME parser that loadDotenv uses at boot (`dotenv.parse` for `.env`, `JSON.parse` for `settings.json` traversing to `mcpServers.kuzo.env`). Assert ZERO of the just-redacted credential names appear in the parsed output. If any do → abort with `E_READBACK_FAIL` (exit 60) and surface: "redaction completed but parser still finds `<NAME>` in `<source>` — possible parser drift between loader and migrate. The credential is stored; the source file may still contain it. Manually inspect `<source>` and re-run." This is the **self-healing defense against dotenv parse-semantics drift** between boot's `loadDotenv()` and migrate's redaction parser — if a minor dotenv bump under Tier-2 caret-range changes quoted-string handling, `export` matching, or escape semantics, the cross-version drift surfaces here as a hard failure instead of as a silent on-disk leak. Cheaper than pinning dotenv exact across both packages; the invariant is the actual property we care about (parser-of-record agrees that the secret is gone).
 5. If any source rewrite fails:
    - The credential is already in the store (succeeded at step 2).
    - The source file still has the cleartext value (worse — duplicated).
@@ -1803,11 +1804,58 @@ Every other audit action is parent-only:
 
 **`source: "parent" | "child"` field** is also stamped on every entry at write time. Audit consumers reading `audit.log` can filter by source to reason about trust without needing to know the allowlist. Add `source` to the `AuditEvent` shape in `packages/core/src/audit.ts`. Existing entries (pre-2.6) get `source` omitted; consumers treat missing as `"parent"` (the only writer pre-2.6 was the parent).
 
+**Allowlist drift defense — encode the partition as code (round-2 advisory).** The table above is the source of truth, but its in-spec form drifts the moment a developer adds an `AuditAction` variant without also classifying it parent-only or child-permitted. Mitigation: codify the partition in `packages/core/src/audit-partition.ts` as a TypeScript discriminated record that exhaustiveness-checks every variant of the `AuditAction` union. Adding a new variant without classifying it is a TYPE error, not a runtime surprise.
+
+```typescript
+// packages/core/src/audit-partition.ts
+import type { AuditAction } from "./audit.js";
+
+/**
+ * Exhaustive trust-partition of every AuditAction variant. New variants
+ * MUST be added here at the same time they're added to the union, or
+ * TypeScript will fail to compile this file.
+ */
+export const AUDIT_ACTION_PARTITION: Record<AuditAction, "parent-only" | "child-permitted"> = {
+  // child-permitted: read-side broker emissions in plugin-host
+  "credential.client_created": "child-permitted",
+  "credential.raw_access":     "child-permitted",
+  "credential.raw_denied":     "child-permitted",
+  "credential.fetch_created":  "child-permitted",
+
+  // parent-only: lifecycle / CLI / boot / parent-owned subsystems
+  "credential.store_unlocked":        "parent-only",
+  "credential.store_locked":          "parent-only",
+  "credential.set":                   "parent-only",
+  "credential.deleted":               "parent-only",
+  "credential.rotated":               "parent-only",
+  "credential.migrated":              "parent-only",
+  "credential.migration_partial":     "parent-only",
+  "credential.passphrase_consumed":   "parent-only",
+  "credential.scrub_disabled":        "parent-only",
+  "credential.wiped":                 "parent-only",
+  "credential.tested":                "parent-only",
+  "credential.refreshed_in_flight":   "parent-only",
+  "audit.forged_plugin_field":        "parent-only",
+  "audit.forged_action":              "parent-only",
+  // ... plus existing 2.5c/2.5e consent.* / plugin.* entries (all parent-only)
+};
+
+// Derived at module load — no runtime cost, single source of truth.
+export const CHILD_PERMITTED_AUDIT_ACTIONS: ReadonlySet<AuditAction> = new Set(
+  (Object.entries(AUDIT_ACTION_PARTITION) as [AuditAction, string][])
+    .filter(([, scope]) => scope === "child-permitted")
+    .map(([action]) => action),
+);
+```
+
+§C.10's IPC handler imports `CHILD_PERMITTED_AUDIT_ACTIONS` from this module — the in-handler `Set` literal in the §C.10 example code disappears. Acceptance criterion (§F.1): a unit test plants a new `AuditAction` variant in a fixture without updating `AUDIT_ACTION_PARTITION` and asserts the project fails `tsc --noEmit` with an "Property 'foo.bar' is missing in type" error before the test even runs.
+
 **Acceptance criterion update (§F.1).** Extend the audit-forgery synthetic test:
 
 1. Existing: plant a child emitting `plugin: "kuzo"` → assert `audit.forged_plugin_field` lands; the impersonated entry is NOT written.
 2. NEW: plant a child correctly claiming `plugin: "github"` but emitting `action: "credential.rotated"` → assert `audit.forged_action` lands with `details.attempted_action === "credential.rotated"` and `details.permitted` listing exactly the four read-side events; the impersonated entry is NOT written.
 3. NEW: plant a child legitimately emitting `action: "credential.client_created"` → assert it lands with `source: "child"` and the child's PID.
+4. NEW: TypeScript exhaustiveness — drop the `"credential.client_created"` entry from `AUDIT_ACTION_PARTITION` and assert `tsc --noEmit` fails red.
 
 **Child-side IPC sender protocol:**
 
@@ -2365,6 +2413,7 @@ These should all return the same base64 string. If they don't, the user has a mu
 - **Race between in-progress plugin install and credential write.** Shared lock at `~/.kuzo/.lock` prevents this. Verified by smoke (open two terminals, attempt concurrent `kuzo plugins install foo` and `kuzo credentials set X`; one waits or fails with exit 30).
 - **Encrypted file format v1 lock-in.** Adding fields to the JSON payload is forward-compatible (decryption just sees extra fields). Changing the header layout requires a new magic and a migration path. Keep v1 simple; bump magic to "KCR2" only if forced.
 - **Loss of master key.** If the user wipes their keychain (`security delete-generic-password -s kuzo-mcp`), `credentials.enc` becomes undecryptable. There is no recovery — the file is encrypted with that one key. Surfaced as `E_KEY_LOST` (exit 72) per §A.11. Recovery affordance: recommend periodic `kuzo credentials list --json > ~/.kuzo-creds-backup.json` so the user has a name-only manifest of what to re-provision after a `wipe`. The backup file contains only env-var names, never values.
+- **Generation-persists-first ordering trades crash-recovery cheapness for rollback-attack resistance — deliberate.** §A.3 write-path step 10 (commit new generation) precedes step 11 (rename `credentials.enc.tmp`). A process crash, OOM kill, or power-loss between those two steps leaves the on-disk file at `G_old` while the live counter is `G_new`. Next boot fails GCM verification → `E_FILE_CORRUPTED` → user must `kuzo credentials wipe --confirm` and re-provision **every** credential. The window is small (a few syscalls, sub-millisecond on local FS) but non-zero, especially on memory-constrained boxes doing the 256 MiB scrypt allocation right before. **Why we chose this anyway:** reversing the order (file-first, generation-second) makes the rollback attack trivial — any FS-write malware just doesn't bump the generation file after restoring an old encrypted blob, and AAD verification still succeeds. A ±1 tolerance window (accepting `G_file ∈ [G_live - 1, G_live]`) was considered and rejected: it halves the rollback-resistance bar (attacker needs to roll back ≥2 generations instead of any number), but the actual rollback attack is "restore the file from a backup taken N rotations ago," and N is almost always >1. The tolerance trades real security for an unlikely-on-modern-FS crash recovery. Documented as a known UX cost; `kuzo credentials wipe + migrate` is the documented recovery path; mitigation lives in the `credentials list --json` backup affordance above.
 - **Backup-rollback resistance breaks legitimate Time Machine restore.** Per R12, restoring `credentials.enc` from a Time Machine snapshot whose generation predates the live keychain entry's counter fails decrypt. Legitimate recovery path for users rebuilding a Mac:
   1. Restore the keychain via Migration Assistant / Time Machine keychain restore (one of the post-restore options).
   2. If only the file was restored (file-level backup, no keychain restore): run `kuzo credentials wipe --confirm`, then re-provision from source (`kuzo credentials migrate` or `kuzo credentials set ...`).
