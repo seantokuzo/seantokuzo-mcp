@@ -2,11 +2,12 @@
 
 > Implementation north star for Kuzo MCP's credential lifecycle phase: encrypted-on-disk storage with OS-keychain key wrap, `kuzo credentials` CLI surface, `process.env` scrub, and a friendly `kuzo serve` entry point that decouples the MCP server from plaintext-on-disk secret blocks.
 
-**Status:** Spec — not yet implemented. Every section below is binding unless marked `[uncertain]`.
+**Status:** Spec — not yet implemented. Round-4 (independent Security + Architecture + Correctness multi-reviewer pass) absorbed 2026-05-13. Every section below is binding unless marked `[uncertain]`.
 **Source brief:** `docs/credentials-spec-brief.md` (locked 2026-05-04 after two rounds of review advisories).
 **Predecessor research:** `docs/SECURITY.md` §6 (broker design — shipped in 2.5b/2.5c).
 **Source research:** completed 2026-05-10 against current tool versions (`@napi-rs/keyring@1.3.0` exact-pin, Node 20+, Inquirer 9.x, Commander 12.x).
 **Reference implementations cited:** `cli/cli` (gh), `microsoft/vscode` (SecretStorage + Electron safeStorage), `1Password/op` (app-integration), `Brooooooklyn/keyring-node`.
+**Round-4 triage notes:** `docs/credentials-spec-round4-notes.md` — 15 blocking + 13 advisory findings, disposition mapped section-by-section.
 
 ---
 
@@ -75,12 +76,13 @@ Numbered against `docs/credentials-spec-brief.md` §5 open questions. Three subs
 
 ### Cross-cutting build order
 
-The six parts have dependencies. Recommended order — each numbered group is one or more atomic commits on `phase-2.6/credentials`:
+The six parts have dependencies. Recommended order — each numbered group is one or more atomic commits on `phase-2.6/credentials`. **PR strategy is per-Theme** (one PR per numbered group), not per-Part (round-4 §F.3 step 10 update).
 
+0. **A.0.1: Bake `kuzoPlugin.capabilities` into first-party plugin `package.json` files (round-4 B1)** — `packages/plugin-{github,jira,git-context}/package.json` each gain `kuzoPlugin.capabilities` + `kuzoPlugin.optionalCapabilities` arrays that mirror the runtime `KuzoPluginV2` manifest exported from `src/index.ts`. Also add `scripts/check-plugin-manifest-parity.mjs` + a `prebuild` script wiring in each plugin package. Lands FIRST so subsequent commits can rely on the static field. Zero runtime behavior change.
 1. **E.1–E.2: `KUZO_HOME` + shared `packages/core/src/paths.ts`** — refactor existing path helpers; consent.ts and audit.ts pick up new helpers. Zero behavior change.
 2. **A.1–A.4: Storage primitives** — cipher, key providers (keychain + passphrase), `CredentialStore` interface, `EncryptedCredentialStore` impl. Unit tests against tmpdir + an `InMemoryKeyProvider` test double.
 3. **A.5–A.6: CredentialSource + env-override collection** — bridges store + env. Pure logic, easy to test.
-4. **C.1–C.3 + C.9: Boot sequence rewrite + child_process lint rule** — refactor `server.ts` `main()` → exported `runServer()` (keep the self-invocation guard at file bottom for `node server.js` + parity test); insert credential-source build + scrub before `loader.loadAll()`; `loader.ts` swaps `configManager.extractPluginConfig` → `credentialSource.extractForPlugin`; add the `node:child_process` ESLint ban to `eslint.config.js` scoped to `server.ts` + `loader.ts`. Existing parity test must stay green; a new boot-sequence smoke proves scrub happens before any plugin init AND `process.env.GITHUB_TOKEN === undefined` inside a freshly-forked plugin child.
+4. **C.1–C.3 + C.9: Boot sequence rewrite + child_process lint rule** — refactor `server.ts` `main()` → exported `runServer()` (**add** the self-invocation guard at file bottom — `server.ts` today calls `main().catch(...)` unconditionally with no `import.meta.url === pathToFileURL(...)` check; the round-4 B2 fix introduces the guard so CLI's `await import("@kuzo-mcp/core/server")` doesn't double-boot the server when `kuzo serve` already calls `runServer()` explicitly. The parity test `scripts/test-install-parity.mjs` boots `node packages/core/dist/server.js` directly and relies on the new guard); insert credential-source build + scrub before `loader.loadAll()`; `loader.ts` swaps `configManager.extractPluginConfig` → `credentialSource.extractForPlugin`; add the `node:child_process` ESLint ban to `eslint.config.js` scoped to `server.ts` + `loader.ts`. Existing parity test must stay green; a new boot-sequence smoke proves scrub happens before any plugin init AND `process.env.GITHUB_TOKEN === undefined` inside a freshly-forked plugin child.
 5. **C.10: Plugin-host audit emissions over IPC** — re-route `plugin-host.ts` writes through the parent's IPC channel; parent stamps PID + validates the `plugin` field against the child's declared identity; forgery attempts logged as `audit.forged_plugin_field`. MUST land BEFORE any of the §B.7 write-side audit events (`credential.set` / `.rotated` / `.migrated` / `.wiped` / `.tested`) go live — every new event compounds the impersonation surface.
 6. **C.4–C.6: Broker write-side audit events + shutdown hooks** — add `credential.set` etc. to `AuditAction` union; wire shutdown scrub via `wipeKeyCache`.
 7. **B.1–B.3 + A.11: `kuzo credentials set/list/delete/rotate/status/test/wipe`** — new command tree under `packages/cli/src/commands/credentials/`. Inquirer prompts; no flag/arg value for secrets. State machine from §A.11 wired into `set`/`rotate` (refuse KEY_LOST + CORRUPTED states with explicit exits 72/73). Lock file shared with `kuzo plugins` (single `~/.kuzo/.lock` for any write to the kuzo home — see E.2).
@@ -101,6 +103,55 @@ Per-step build-greenness: `pnpm install && pnpm build && pnpm typecheck && pnpm 
 **In:** cryptographic primitives (cipher, KDF), file format, `CredentialStore` interface + default impl, swappable `KeyProvider`, one-shot migration from `process.env` / `.env`, audit events on read/write, dependency policy for `@napi-rs/keyring`.
 
 **Out:** provisioning CLI (Part B), broker boot-integration (Part C), server entry point (Part D), KUZO_HOME plumbing (Part E).
+
+### A.0.1 Plugin manifest contract — `kuzoPlugin.capabilities` in `package.json` (round-4 B1)
+
+**Current state to be changed:** As of 2.5e A.5, the `kuzoPlugin` block in each first-party plugin's `package.json` contains exactly `{name, permissionModel, entry, minCoreVersion}` — **no `capabilities` field**. The runtime `KuzoPluginV2` object exported from `src/index.ts` is the only source of truth for declared capabilities today. Round-3 R3's claim that "capabilities are inert since 2.5e A.5" assumed this field exists; **it does not**.
+
+**Why this is a contract change for Phase 2.6.** The §C.1 step 5 `collectDeclaredCredentialEnvNames()` operation reads capability declarations BEFORE any plugin's entry module is dynamically imported (per invariant 6 — no `import()` of plugin entry pre-scrub, because third-party plugins ship arbitrary top-level code). If the only source of truth is the runtime manifest, the only way to read it pre-scrub is to dynamic-import — voiding the invariant. **The static `package.json#kuzoPlugin.capabilities` field is the contractual surface that makes pre-scrub manifest reads possible.** Without it, the scrub set is empty by accident and vector-2 defense (signed-but-evil plugin reading `process.env`) silently fails.
+
+**The contract (binding for all plugins post-2.6):**
+
+```jsonc
+// packages/plugin-github/package.json
+{
+  // ...
+  "kuzoPlugin": {
+    "name": "github",
+    "permissionModel": 1,
+    "entry": "./dist/index.js",
+    "minCoreVersion": "^0.1.0",
+    "capabilities": [
+      { "kind": "credentials", "env": "GITHUB_TOKEN", "access": "client", "reason": "Authenticates the @octokit/rest client used for every GitHub API call." },
+      { "kind": "credentials", "env": "GITHUB_USERNAME", "access": "raw", "optional": true, "reason": "Display-only; surfaces the GitHub handle in `kuzo` outputs." },
+      { "kind": "network", "domains": ["api.github.com"], "reason": "GitHub REST API endpoint." }
+    ],
+    "optionalCapabilities": []
+  }
+}
+```
+
+Rules:
+
+1. **`capabilities` MUST include every entry of the runtime `KuzoPluginV2.capabilities` array.** Same kinds, same fields, same values. The runtime manifest stays the in-process source of truth; the `package.json` copy is a static cache so the scrub set can be assembled without importing the entry module. Also export a type guard from `@kuzo-mcp/types` to make capability narrowing typesafe:
+   ```typescript
+   // packages/types/src/index.ts (addition — round-4 B8)
+   export function isCredentialCapability(c: Capability): c is CredentialCapability {
+     return c.kind === "credentials";
+   }
+   ```
+   Used by `extractForPlugin` (§A.6), §A.12 install-time validation, and any other capability-shape filter without an inline cast.
+2. **`optionalCapabilities` MUST mirror `KuzoPluginV2.optionalCapabilities` if present.** Used by §A.6 `extractForPlugin` to distinguish required-vs-optional credential capabilities (round-4 B4).
+3. **Drift between `package.json#kuzoPlugin.capabilities` and the runtime manifest is a hard load failure.** §C.1 step 10's `loader.loadAll()` does a parity check after dynamic-importing the entry module post-scrub: if the runtime `plugin.capabilities` doesn't deep-equal the static `package.json#kuzoPlugin.capabilities` (after JSON-normalize), the loader emits `plugin.failed` with `details.reason: "manifest_drift"`, the plugin is skipped, and an audit event records the drift. Reasoning: the static cache must be a faithful mirror — silent drift is exactly how an attacker would publish a plugin that declares minimal envs in `package.json` (to slip past install-time validation per §A.12) and then load arbitrary additional capabilities at runtime.
+4. **Build-time check for first-party plugins.** A new `scripts/check-plugin-manifest-parity.mjs` runs as part of `pnpm build` in each `packages/plugin-*` workspace: imports the built `dist/index.js`'s default export, compares its `capabilities` + `optionalCapabilities` against the package.json fields, fails the build if they disagree. Catches the drift at PR time rather than at install time.
+5. **Third-party plugin authors** are documented to follow the same rule. The §A.12 install-time validation (round-4 B13) reads `kuzoPlugin.capabilities` from the published tarball's `package.json` and rejects installs whose static + runtime declarations disagree.
+
+**Migration step for the existing first-party plugins (Part A commit list):** A dedicated commit `feat(plugins): A.0.1 — bake capabilities into package.json` adds the `capabilities` + `optionalCapabilities` fields to:
+- `packages/plugin-github/package.json` — `GITHUB_TOKEN` (client), `GITHUB_USERNAME` (raw, optional), + network capability.
+- `packages/plugin-jira/package.json` — `JIRA_HOST` / `JIRA_EMAIL` / `JIRA_API_TOKEN` (all client) + network capability.
+- `packages/plugin-git-context/package.json` — filesystem + exec:git capabilities only; no credentials.
+
+This commit lands FIRST in the §0 build order (new "step 0" — before any of the Part E refactors), so subsequent commits can rely on the field being present.
 
 ### A.1 Tier choice — the VSCode pattern as primary
 
@@ -125,7 +176,15 @@ Tier 4 (external secret managers like `op run -- kuzo serve`) is supported via t
 **KDF (passphrase mode only):** `crypto.scryptSync(passphrase, salt, 32, { N: 2**17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 })`. `N=2^17` (~130k iterations) is the OWASP 2023 recommendation; ~100ms cost on a 2024 laptop. The empirical memory required is ~128 MiB (`128 * r * N` bytes for scrypt's working set); the spec sets `maxmem` to 256 MiB to leave comfortable slack. **Lower values throw at runtime** — Node's 32-MiB default and the round-2 spec's claimed-as-verified 64-MiB both fail with `Invalid scrypt params: memory limit exceeded`. Salt is 16 bytes random, stored in the KDF params block of the file header.
 
 **Master key:** 32 bytes (AES-256). Either:
-- **Keychain mode**: stored as a JSON blob `{key: <base64-32-bytes>, generation: <integer>}` at `service="kuzo-mcp" account="master-key"` via `@napi-rs/keyring`. `generation` starts at 1 on `initializeKey()` and bumps on every successful write (`set` / `rotate` / `delete` / `migrate`); the file's AAD includes the current generation, so a rolled-back file (whose AAD-embedded generation is < the live keychain generation) fails GCM verification. Both the key and the generation live in a single keychain entry — `@napi-rs/keyring` doesn't expose enumeration, and a single JSON value is cheaper than two entries to keep in sync.
+- **Keychain mode**: stored as a JSON blob at `service="kuzo-mcp" account="master-key"` via `@napi-rs/keyring`. Schema:
+  ```jsonc
+  {
+    "format_version": 1,
+    "key": "<base64-encoded 32 bytes>",
+    "generation": <integer>
+  }
+  ```
+  `format_version` discriminates future schema changes (e.g., adding `hmac` per Security A6 fast-follow, or `created_at`/`last_rotated_at` fields). On read, unknown `format_version` → `E_FILE_CORRUPTED` (refuse to proceed; user must `wipe` and re-provision). `generation` starts at 1 on `initializeKey()` and bumps on every successful write (`set` / `rotate` / `delete` / `migrate`); the file's AAD includes the current generation, so a rolled-back file (whose AAD-embedded generation is < the live keychain generation) fails GCM verification. Both the key and the generation live in a single keychain entry — `@napi-rs/keyring` doesn't expose enumeration, and a single JSON value is cheaper than two entries to keep in sync. **Round-4 B5 note**: the round-2 spec drafted this format but the round-3 example code in §A.5 incorrectly treated the keychain value as raw base64; the §A.5 code is updated to JSON-parse this struct.
 - **Passphrase mode**: derived from `process.env.KUZO_PASSPHRASE` via the scrypt KDF over the salt in the file header. Passphrase never touches disk; salt does. The generation counter is stored in `~/.kuzo/credentials.generation` (a small 0600 file containing a base-10 integer) — passphrase mode has no keychain entry to hold it. The same AAD-binding rules apply: file's AAD includes the generation, mismatch fails decrypt.
 
 ### A.3 File format — `~/.kuzo/credentials.enc`
@@ -184,7 +243,7 @@ end-16    16     Tag                  (GCM tag)
 7. Generate fresh 12-byte nonce.
 8. Assemble AAD from header bytes 0..5+p plus the new generation (8-byte big-endian).
 9. Encrypt with the master key + nonce + AAD.
-10. Persist the new generation BEFORE writing the file: update the keychain entry (`{key, generation: G}`) OR write `~/.kuzo/credentials.generation.tmp` + fsync + rename. Generation-persists-first is critical — if the process crashes between step 10 and step 11, the next boot sees `G_live > G_file` and refuses to decrypt the file (treats it as rolled-back), forcing recovery via `wipe`. Reverse order (file first, generation second) would leave the file decryptable but rejected on next read; the conservative ordering treats the file as the authoritative "committed state" and the generation as the persistence barrier.
+10. Persist the new generation BEFORE writing the file: for keychain mode, call `keyProvider.bumpGeneration(G)` which rewrites the keychain blob to `{format_version: 1, key, generation: G}` (the key bytes do NOT change — only `generation` bumps). For passphrase mode, write `~/.kuzo/credentials.generation.tmp` + fsync + rename. Generation-persists-first is critical — if the process crashes between step 10 and step 11, the next boot sees `G_live > G_file` and refuses to decrypt the file (treats it as rolled-back), forcing recovery via `wipe`. Reverse order (file first, generation second) would leave the file decryptable but rejected on next read; the conservative ordering treats the file as the authoritative "committed state" and the generation as the persistence barrier.
 11. Write to `~/.kuzo/credentials.enc.tmp`; `fsync`; `rename` to `~/.kuzo/credentials.enc`. Atomic on POSIX, atomic-ish on Windows (NTFS `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`).
 12. Audit-emit `credential.set` / `.rotated` / `.deleted` / `.migrated` with key name + new generation — never the value.
 
@@ -218,8 +277,24 @@ export interface CredentialStore {
   /** Names of currently-set credentials. Never returns values. */
   list(): string[];
 
-  /** Whether a key is present, without RE-decrypting; requires at least one prior `get()` or `reload()` to have populated the cache. Returns `false` on a never-unlocked store. */
+  /** Whether a key is present, without RE-decrypting; requires at least one prior `get()` or `reload()` to have populated the cache. Returns `false` on a never-unlocked store. To check definitively (e.g. when the store may not yet be unlocked), call `get()` and treat `undefined` as absent. */
   has(key: string): boolean;
+
+  /**
+   * True if the store has been decrypted at least once during this process
+   * lifetime (i.e. the in-memory `cache` is populated). False before the first
+   * successful `get()`/`reload()`, OR after `close()`. Used by §C.11 to decide
+   * whether to install the rotation file-watch (no point watching a file the
+   * server has no current decrypted view of). Round-4 B8.
+   */
+  isUnlocked(): boolean;
+
+  /**
+   * Number of credentials currently in the in-memory cache. Useful for
+   * `kuzo credentials list` and §D.3 first-run UX. Returns 0 on a never-unlocked
+   * or closed store. Round-4 B8.
+   */
+  readonly size: number;
 
   /** Force a fresh load from disk (e.g. after external edit by the user). */
   reload(): void;
@@ -235,7 +310,7 @@ export interface CredentialStore {
 }
 ```
 
-Default implementation `EncryptedCredentialStore` in the same file. Constructor takes `{ filePath, keyProvider, auditLogger?, logger? }`.
+Default implementation `EncryptedCredentialStore` in the same file. Constructor takes `{ filePath, keyProvider, auditLogger?, logger? }`. `isUnlocked()` returns `this.cache !== undefined` (mirrors the lazy-init pattern in §C.3); `size` getter returns `this.cache?.size ?? 0`.
 
 ### A.5 `KeyProvider` interface
 
@@ -280,10 +355,19 @@ Implementations:
 ```typescript
 import { Entry } from "@napi-rs/keyring";
 
+const SUPPORTED_FORMAT_VERSIONS = new Set([1]);
+
+interface KeychainBlob {
+  format_version: number;
+  key: string;        // base64-encoded 32 bytes
+  generation: number; // monotonic, bumps on every successful write
+}
+
 export class KeychainKeyProvider implements KeyProvider {
   readonly id = "keychain";
   readonly kdfId = 0x00;
   private cached: Buffer | undefined;
+  private cachedGeneration: number | undefined;
   private readonly entry: Entry;
 
   constructor(opts: { service?: string; account?: string } = {}) {
@@ -298,26 +382,87 @@ export class KeychainKeyProvider implements KeyProvider {
     const stored = this.entry.getPassword();
     if (!stored) {
       throw new KeyProviderError(
-        "No master key in keychain. Run `kuzo credentials set <name>` to initialize.",
+        "E_KEY_LOST: No master key in keychain. If `credentials.enc` exists, run `kuzo credentials wipe --confirm`. Otherwise run `kuzo credentials set <name>` to initialize.",
       );
     }
-    this.cached = Buffer.from(stored, "base64");
-    if (this.cached.length !== 32) {
+    const blob = parseKeychainBlob(stored);
+    const key = Buffer.from(blob.key, "base64");
+    if (key.length !== 32) {
       throw new KeyProviderError(
-        `Keychain master key is ${this.cached.length} bytes; expected 32. Manual tamper?`,
+        `Keychain master key is ${key.length} bytes; expected 32. Possible tamper — refuse.`,
       );
     }
+    this.cached = key;
+    this.cachedGeneration = blob.generation;
     return this.cached;
+  }
+
+  /** Generation read alongside the master key. Used by EncryptedCredentialStore
+   *  to assemble AAD for the live counter. Available only after acquireKey()
+   *  has been called once (returns undefined before that). */
+  getGeneration(): number | undefined {
+    return this.cachedGeneration;
+  }
+
+  /** Atomic write of the keychain blob with a new generation. Called by the
+   *  store's write path AFTER the encrypted file's new generation has been
+   *  computed but BEFORE the file is renamed into place (§A.3 step 10). */
+  bumpGeneration(newGeneration: number): void {
+    if (!this.cached) {
+      throw new KeyProviderError("bumpGeneration called before acquireKey");
+    }
+    const blob: KeychainBlob = {
+      format_version: 1,
+      key: this.cached.toString("base64"),
+      generation: newGeneration,
+    };
+    this.entry.setPassword(JSON.stringify(blob));
+    this.cachedGeneration = newGeneration;
   }
 
   initializeKey(): { key: Buffer; kdfParams: Buffer } {
     const key = randomBytes(32);
-    this.entry.setPassword(key.toString("base64"));
+    const blob: KeychainBlob = {
+      format_version: 1,
+      key: key.toString("base64"),
+      generation: 1,
+    };
+    this.entry.setPassword(JSON.stringify(blob));
     this.cached = key;
+    this.cachedGeneration = 1;
     return { key, kdfParams: Buffer.alloc(0) };
   }
 }
+
+function parseKeychainBlob(raw: string): KeychainBlob {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new KeyProviderError(
+      "E_FILE_CORRUPTED: Keychain master-key entry is not valid JSON. " +
+      "Run `kuzo credentials wipe --confirm` to start over.",
+    );
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new KeyProviderError("E_FILE_CORRUPTED: Keychain blob is not an object.");
+  }
+  const blob = parsed as Record<string, unknown>;
+  if (typeof blob.format_version !== "number" || !SUPPORTED_FORMAT_VERSIONS.has(blob.format_version)) {
+    throw new KeyProviderError(
+      `E_FILE_CORRUPTED: Unsupported keychain blob format_version ${String(blob.format_version)}.`,
+    );
+  }
+  if (typeof blob.key !== "string" || typeof blob.generation !== "number") {
+    throw new KeyProviderError("E_FILE_CORRUPTED: Keychain blob is missing key or generation field.");
+  }
+  return { format_version: blob.format_version, key: blob.key, generation: blob.generation };
+}
 ```
+
+The round-4 B5 fix swaps the raw-base64 read for the JSON-blob read described in §A.2. The `getGeneration()` accessor lets `EncryptedCredentialStore` thread the live counter into AAD assembly without each call site doing its own keychain read. The `bumpGeneration()` mutator runs from the store's write path (§A.3 step 10) — the in-memory `cached` key never changes; only the persisted generation does.
+
+**Backwards compat (round-4 B5).** No pre-2.6 user has a `service=kuzo-mcp, account=master-key` entry (the feature lands fresh in this phase), so no migration is needed for the JSON-blob shape — every entry written by the released `KeychainKeyProvider` will already be in the new format. If `parseKeychainBlob` ever rejects a legitimately-old format in a future major bump, the error message tells the user to wipe.
 
 **`PassphraseKeyProvider`** — scrypt-derived:
 
@@ -365,7 +510,8 @@ export class PassphraseKeyProvider implements KeyProvider {
       plugin: "kuzo",
       action: "credential.passphrase_consumed",
       outcome: "allowed",
-      details: { provider: "passphrase", salt_fingerprint: saltFp },
+      // initialized: false discriminates ongoing-unlock from first-setup (round-4 B12)
+      details: { provider: "passphrase", salt_fingerprint: saltFp, initialized: false },
     });
     return this.cached;
   }
@@ -379,7 +525,20 @@ export class PassphraseKeyProvider implements KeyProvider {
     const salt = randomBytes(16);
     const key = scryptSync(this.passphrase, salt, 32, SCRYPT_PARAMS);
     this.cached = key;
+    // Round-4 B12: emit credential.passphrase_consumed on FIRST setup as well as
+    // every subsequent acquireKey. The `initialized: true` discriminant lets
+    // audit reviewers distinguish "first-time provisioning" from "ongoing
+    // unlock." Without this emit, the salt protecting every subsequent unlock
+    // never had its fingerprint recorded — defeats R8 salt-swap detection at
+    // exactly the moment it matters most.
+    const saltFp = createHash("sha256").update(salt).digest("hex").slice(0, 16);
     this.consumePassphrase();
+    this.auditLogger?.log({
+      plugin: "kuzo",
+      action: "credential.passphrase_consumed",
+      outcome: "allowed",
+      details: { provider: "passphrase", salt_fingerprint: saltFp, initialized: true },
+    });
     return { key, kdfParams: salt };
   }
 
@@ -490,25 +649,33 @@ export class CredentialSource {
   /**
    * Extract credential values for a plugin from its declared capabilities.
    *
-   * Caller passes a single combined list — both required capabilities (from
-   * `plugin.capabilities.filter(kind === "credentials")`) and optional ones
-   * (from `plugin.optionalCapabilities`). Each `CredentialCapability` carries
-   * an `optional?: boolean` field; only caps with `optional !== true` contribute
-   * to the returned `missing` array. Optional caps that are absent are silently
-   * omitted from `config` — the plugin sees `undefined` when it asks for them
-   * via `config.get(...)`.
+   * Caller passes required + optional caps as separate arrays — mirrors the
+   * existing `ConfigManager.extractPluginConfig(required, optional)` shape that
+   * `loader.ts` already uses. Required caps without a value populate `missing`;
+   * optional caps without a value are silently omitted (plugin sees `undefined`
+   * when it asks for them via `config.get(...)`). `CredentialCapability` itself
+   * does NOT carry an `optional?` field — required-vs-optional is captured by
+   * which manifest array the cap came from per Q10's "no schema changes" lock
+   * (round-4 B4 fix).
    */
-  extractForPlugin(
-    caps: readonly CredentialCapability[],
-  ): { config: Map<string, string>; missing: string[] } {
+  extractForPlugin(args: {
+    required: readonly CredentialCapability[];
+    optional: readonly CredentialCapability[];
+  }): { config: Map<string, string>; missing: string[] } {
     const config = new Map<string, string>();
     const missing: string[] = [];
-    for (const cap of caps) {
+    for (const cap of args.required) {
       const value = this.get(cap.env);
       if (value !== undefined) {
         config.set(cap.env, value);
-      } else if (!cap.optional) {
+      } else {
         missing.push(cap.env);
+      }
+    }
+    for (const cap of args.optional) {
+      const value = this.get(cap.env);
+      if (value !== undefined) {
+        config.set(cap.env, value);
       }
       // optional + missing: silent omission, plugin handles undefined itself.
     }
@@ -517,20 +684,24 @@ export class CredentialSource {
 }
 ```
 
-`extractForPlugin` is the drop-in replacement for `ConfigManager.extractPluginConfig`. Same return shape (`config` Map + `missing` string array), so `loader.ts` change is one line:
+`extractForPlugin` is the drop-in replacement for `ConfigManager.extractPluginConfig`. Same `{required, optional}` calling shape, same return shape (`config` Map + `missing` string array), so `loader.ts` change is mechanical:
 
 ```typescript
 // Before
 ({ config, missing } = this.configManager.extractPluginConfig(v2Config.required, v2Config.optional));
 
 // After
-({ config, missing } = this.credentialSource.extractForPlugin([
-  ...plugin.capabilities.filter(c => c.kind === "credentials") as CredentialCapability[],
-  ...(plugin.optionalCapabilities ?? []).filter(c => c.kind === "credentials") as CredentialCapability[],
-]));
+({ config, missing } = this.credentialSource.extractForPlugin({
+  required: plugin.capabilities.filter(
+    (c): c is CredentialCapability => c.kind === "credentials",
+  ),
+  optional: (plugin.optionalCapabilities ?? []).filter(
+    (c): c is CredentialCapability => c.kind === "credentials",
+  ),
+}));
 ```
 
-(Optional capabilities are extracted but never appear in `missing`.)
+(Optional capabilities are extracted but never appear in `missing`.) The type-guard predicate `(c): c is CredentialCapability => c.kind === "credentials"` narrows the union without a cast — matches the `isCredentialCapability` helper exported from `@kuzo-mcp/types` (round-4 B8). `Capability` is the discriminated union; the predicate is the safe narrowing.
 
 ### A.7 Env-override collection
 
@@ -571,24 +742,61 @@ export function collectEnvOverrides(
  * Delete the matched keys from process.env so plugins loaded later
  * (or their child processes) cannot read them directly.
  *
- * No-ops when KUZO_NO_ENV_SCRUB=1 (kill-switch). The kill-switch does NOT
- * exempt KUZO_PASSPHRASE, which is unconditionally scrubbed regardless.
+ * No-ops on declared keys when KUZO_NO_ENV_SCRUB=1 (kill-switch); KUZO_PASSPHRASE
+ * is always scrubbed regardless. ALSO scrubs KUZO_NO_ENV_SCRUB itself so plugin
+ * children never see the kill-switch (round-4 A2).
+ *
+ * Returns `{killSwitchActive, scrubbedCount}` so callers can audit-emit
+ * credential.scrub_disabled with the correct reason (round-4 B11). The
+ * auditLogger is threaded as an argument rather than via constructor so this
+ * remains a pure function — boot-step ordering relies on it being callable
+ * before any DI is set up.
  */
-const ALWAYS_SCRUB = ["KUZO_PASSPHRASE"] as const;
+const ALWAYS_SCRUB = ["KUZO_PASSPHRASE", "KUZO_NO_ENV_SCRUB"] as const;
 
-export function scrubProcessEnv(scrubKeys: readonly string[]): void {
+export interface ScrubProcessEnvResult {
+  killSwitchActive: boolean;
+  scrubbedCount: number;
+}
+
+export function scrubProcessEnv(
+  scrubKeys: readonly string[],
+  auditLogger?: AuditLogger,
+): ScrubProcessEnvResult {
   const killSwitch = process.env.KUZO_NO_ENV_SCRUB === "1";
   const targets = killSwitch
-    ? new Set(ALWAYS_SCRUB)
-    : new Set([...scrubKeys, ...ALWAYS_SCRUB]);
+    ? new Set<string>(ALWAYS_SCRUB)
+    : new Set<string>([...scrubKeys, ...ALWAYS_SCRUB]);
+  let scrubbedCount = 0;
   for (const key of targets) {
+    if (process.env[key] !== undefined) scrubbedCount++;
     delete process.env[key];
-    delete process.env[`KUZO_TOKEN_${key}`];
+    // The KUZO_TOKEN_* prefix is meaningful only for declared credential
+    // names — skip the prefix-delete for ALWAYS_SCRUB entries (they're
+    // system/meta names, not credential targets — round-4 nit N1).
+    if (!(ALWAYS_SCRUB as readonly string[]).includes(key)) {
+      delete process.env[`KUZO_TOKEN_${key}`];
+    }
   }
+
+  // Round-4 B11: audit the kill-switch path here, not at the call site, so
+  // both kill-switch surfaces (env-var and --no-scrub CLI flag) route to the
+  // single audit emit. The --no-scrub CLI flag in §C.1 step 7 still emits its
+  // own event with reason: "--no-scrub flag" — see boot wiring.
+  if (killSwitch && auditLogger) {
+    auditLogger.log({
+      plugin: "kuzo",
+      action: "credential.scrub_disabled",
+      outcome: "allowed",
+      details: { reason: "KUZO_NO_ENV_SCRUB=1", declared_skipped: scrubKeys.length },
+    });
+  }
+
+  return { killSwitchActive: killSwitch, scrubbedCount };
 }
 ```
 
-`declaredEnvNames` is built at boot from the union of all `CredentialCapability.env` values across all enabled plugin manifests. The names come from **`package.json#kuzoPlugin.capabilities`** read synchronously off disk — no plugin entry module is `import()`-ed before scrub completes (see §C.1 invariant 6 + §C.9 lint rule). The list is a small synchronous walk; cost is `O(plugin_count * fs.readFile + JSON.parse)` and lives entirely in the parent process.
+`declaredEnvNames` is built at boot from the union of all `CredentialCapability.env` values across all enabled plugin manifests. The names come from **`package.json#kuzoPlugin.capabilities`** read synchronously off disk — no plugin entry module is `import()`-ed before scrub completes (see §C.1 invariant 6 + §C.9 lint rule). The static field is contractually required per §A.0.1 (round-4 B1) — at the time the round-4 fix landed, no plugin's `package.json` carried this field; the manifest-bake commit in build-order step 0 is what makes this read non-empty. The list is a small synchronous walk; cost is `O(plugin_count * fs.readFile + JSON.parse)` and lives entirely in the parent process.
 
 ### A.8 Migration from `.env` (one-time on `kuzo credentials migrate`)
 
@@ -672,6 +880,100 @@ Reads `yes` (literal, case-sensitive) from stdin. Anything else aborts. Audit-em
 `wipe` MUST work in the `KEY_LOST` state (only the file exists) and in the `CORRUPTED` state (decrypt fails) — its job is precisely to clean up those states. It must NOT call `acquireKey()` first.
 
 After `wipe`, the next `kuzo credentials set <name>` lands in the `Fresh` state and goes through `initializeKey()` cleanly.
+
+### A.12 Capability env-naming policy (round-4 B13)
+
+**Threat closed by this section.** Without an install-time naming policy, a malicious-but-Sigstore-signed plugin can declare arbitrary `CredentialCapability.env` strings and exploit three vectors that the broker design assumes can't happen:
+
+1. **Boot breakage**: `env: "PATH"` → scrub deletes `process.env.PATH` → forks fail.
+2. **Cross-plugin credential aliasing**: `env: "GITHUB_TOKEN"` from a non-github third-party plugin → consent flow asks the user to grant the malicious plugin raw access to GITHUB_TOKEN under its own `reason` string; user familiar with granting GITHUB_TOKEN to "their" github plugin clicks through.
+3. **Passphrase capture**: `env: "KUZO_PASSPHRASE"` with `access: "raw"` → captures the master-key passphrase into the per-plugin scoped Map and exfiltrates.
+
+**Policy: strict per-plugin env-var reservation, enforced at install time. No collisions allowed.**
+
+#### A.12.1 First-party reservation table
+
+`@kuzo-mcp/core` ships a static map declaring which env names each first-party plugin owns. Hardcoded — NOT config-driven (security property per 2.5e §A.5 plugin-resolver convention).
+
+```typescript
+// packages/core/src/credentials/env-namespace.ts (new — round-4 B13)
+export const FIRST_PARTY_ENV_RESERVATIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  "@kuzo-mcp/plugin-github":     ["GITHUB_TOKEN", "GITHUB_USERNAME"],
+  "@kuzo-mcp/plugin-jira":       ["JIRA_HOST", "JIRA_EMAIL", "JIRA_API_TOKEN"],
+  "@kuzo-mcp/plugin-git-context": [],
+});
+```
+
+**Build-time parity check.** The same `scripts/check-plugin-manifest-parity.mjs` from §A.0.1 ALSO asserts each first-party plugin's `kuzoPlugin.capabilities` includes exactly the env set declared in `FIRST_PARTY_ENV_RESERVATIONS[<packageName>]` — drift between the reservation map and the actual manifest fails the build.
+
+#### A.12.2 Local namespace registry
+
+Third-party plugins claim their env names at install time. The registry lives at `${KUZO_HOME}/env-namespace.json`, mode `0600`:
+
+```jsonc
+{
+  "format_version": 1,
+  "lastUpdated": "2026-05-15T10:00:00Z",
+  "plugins": {
+    "@kuzo-mcp/plugin-github":     ["GITHUB_TOKEN", "GITHUB_USERNAME"],
+    "@kuzo-mcp/plugin-jira":       ["JIRA_HOST", "JIRA_EMAIL", "JIRA_API_TOKEN"],
+    "@kuzo-mcp/plugin-git-context": [],
+    "@third-party/plugin-stripe":  ["STRIPE_API_KEY", "STRIPE_WEBHOOK_SECRET"]
+  }
+}
+```
+
+First-party plugins ARE pre-registered: when `kuzo plugins install @kuzo-mcp/plugin-github` runs against a `format_version: 1` registry that lacks an entry for the first-party plugin, the entry is added (matching `FIRST_PARTY_ENV_RESERVATIONS`) at install time. The first-party reservation map is the source of truth; the local registry is the materialized union (first-party + installed third-party).
+
+#### A.12.3 Install-time validation order
+
+`kuzo plugins install <package>` performs ALL FOUR checks (in this exact order, before any state mutation) for every `CredentialCapability.env` value declared in the candidate plugin's `package.json#kuzoPlugin.capabilities` (per §A.0.1):
+
+1. **Format check (C3)** — every env name must match `^[A-Z][A-Z0-9_]{2,63}$`. Rejects shell-meta-character injection, lowercase env names, lone-digit-prefixed names, and over-length names. Failure → exit 70 `E_INVALID_ENV_NAME_FORMAT`.
+2. **Reserved-prefix denylist (C1)** — env name must NOT be in (or prefix-match) the reserved-system-env denylist:
+   ```typescript
+   const RESERVED_SYSTEM_ENVS: readonly RegExp[] = [
+     /^PATH$/,        /^HOME$/,       /^USER$/,        /^SHELL$/,
+     /^TERM$/,        /^LANG$/,       /^PWD$/,         /^OLDPWD$/,
+     /^TMPDIR$/,      /^TMP$/,        /^TEMP$/,        /^DISPLAY$/,
+     /^NODE_ENV$/,    /^NODE_OPTIONS$/, /^DEBUG$/,
+     /^NODE_.*/,      /^NPM_.*/,      /^npm_.*/,        /^XDG_.*/,
+     /^DBUS_.*/,      /^WAYLAND_.*/,  /^SSH_.*/,
+     /^KUZO_.*/,      // catches KUZO_PASSPHRASE, KUZO_HOME, KUZO_NO_ENV_SCRUB, etc.
+   ];
+   ```
+   Failure → exit 67 `E_RESERVED_SYSTEM_ENV` with message `"<NAME>" is a reserved system / kuzo env var; pick a different name`.
+3. **First-party reservation check (C2 — primary defense)** — env name must NOT appear in any row of `FIRST_PARTY_ENV_RESERVATIONS` UNLESS the candidate package is that row's plugin. Rationale: the github plugin owns `GITHUB_TOKEN` forever; no third-party plugin can declare it. Failure → exit 68 `E_RESERVED_FIRST_PARTY_ENV` with message:
+   ```
+   <pkg> declares CredentialCapability "<NAME>" which is reserved for <first-party-plugin>.
+   Pick a different env name (e.g. <PKG_SHORTNAME>_<NAME>). If your plugin needs <first-party-plugin>'s credential, declare a CrossPluginCapability that calls the first-party plugin's tool via callTool().
+   ```
+4. **Cross-plugin collision check (C2 — secondary defense)** — env name must NOT appear in any OTHER installed plugin's row in the local namespace registry. Failure → exit 69 `E_ENV_NAME_COLLISION` with message:
+   ```
+   <pkg> declares CredentialCapability "<NAME>" which is already claimed by <other-pkg>.
+   Pick a different env name, or uninstall <other-pkg> if you intended this plugin to replace it.
+   ```
+   **No `--allow-credential-aliasing` escape hatch.** Cross-plugin sharing of a credential goes through `callTool()` (cross-plugin capability), not through declaring the same env in two manifests.
+
+After all four checks pass for ALL of the candidate plugin's envs, the install proceeds (consent flow, tarball extraction, atomic commit — per 2.5e Part D). The local namespace registry is updated atomically as part of the same `~/.kuzo/.lock`-held write that publishes the plugin to `~/.kuzo/plugins/index.json`. On uninstall, the plugin's row is removed from the registry (its envs become reclaimable).
+
+#### A.12.4 Update / re-validation
+
+`kuzo plugins update <pkg>` re-validates the env set against all four rules:
+- envs being added: full four-check validation (the new env wasn't claimed before)
+- envs being kept: no-op (already claimed by this plugin, no other plugin can have grabbed them while the lock was held by THIS plugin)
+- envs being removed: the registry row shrinks; the removed envs become reclaimable on the next install
+
+Audit-emit `credential.namespace_validated` (new variant — added to AuditAction union; parent-only) with `details: { package, action: "installed" | "updated" | "uninstalled", envs_added: string[], envs_removed: string[] }`. Distinct from `plugin.installed` (which doesn't know about env names).
+
+#### A.12.5 Acceptance criteria (§F.1 extension)
+
+- [ ] First-party reservation: install a fixture plugin declaring `env: "GITHUB_TOKEN"` from a non-first-party package name → exit 68 `E_RESERVED_FIRST_PARTY_ENV`; nothing written to `~/.kuzo/plugins/`.
+- [ ] Cross-plugin collision: install `@a/foo` with `env: "MYAPI_KEY"`, then install `@b/bar` with `env: "MYAPI_KEY"` → second install exits 69 `E_ENV_NAME_COLLISION`.
+- [ ] System reserved denylist: install a fixture plugin declaring `env: "PATH"` → exit 67. Also test `env: "KUZO_PASSPHRASE"` (catches the passphrase-capture variant of vector 3).
+- [ ] Format reject: `env: "lowercase_var"`, `env: "1STARTS_WITH_DIGIT"`, `env: "HAS-DASH"`, `env: "TOO_LONG_____________________________________________________________"` (>64 chars) → all exit 70.
+- [ ] Build-time parity: edit `packages/plugin-github/src/index.ts` to declare a `CredentialCapability` not present in `FIRST_PARTY_ENV_RESERVATIONS["@kuzo-mcp/plugin-github"]` → `pnpm --filter @kuzo-mcp/plugin-github build` fails.
+- [ ] Uninstall releases claim: `kuzo plugins uninstall @b/bar` followed by re-install of `@b/bar` with `env: "MYAPI_KEY"` succeeds (the prior collision is resolved by the removal).
 
 ---
 
@@ -766,7 +1068,10 @@ Examples:
 
 Exit codes:
    0  success
-  60  read-back verification failed (impossible if scrub semantics are sane)
+  60  read-back verification failed (encryption round-trip mismatch — file an issue with the audit log)
+  61  post-redact parser still finds the credential in the source file
+  62  rollback of the encrypted store failed (check `kuzo credentials list` + audit log)
+  63  mutually-exclusive flags (e.g. --force-source with --yes)
   74  source file is a symlink
   75  source path is not a regular file
   76  source file was modified during migration (close your editor and retry)
@@ -930,14 +1235,34 @@ On confirm:
    b. `fs.stat(path)` — fail with `E_NOT_REGULAR_FILE` (exit 75) if not `isFile()` (directories, FIFOs, sockets, etc. all rejected).
    c. Open with `fs.open(path, "r")` + `fs.fstat(fd)` and compare the (`dev`, `ino`) pair to the `lstat` result. Mismatch → fail with `E_SYMLINK_REFUSE` (race-condition guard: attacker swapped the file between `lstat` and `open`).
    d. On Linux, pass `O_NOFOLLOW` (`fs.constants.O_NOFOLLOW`) to `fs.openSync` for both the read AND the tmp write paths.
-   e. Take a **content snapshot** (Buffer) of the source file at this point — used for the editor-collision check at step 4.
+   e. Take a **content snapshot** (Buffer) of the source file at this point — used for the editor-collision check inside step 3.
+   f. **Snapshot the encrypted store file (round-4 B7).** Before any `store.set()` call, capture the current state of `credentials.enc`:
+      - If the file exists: `const storeSnapshot = { kind: "exists", bytes: fs.readFileSync(credentialsFilePath()) };` (the buffer is ciphertext — no plaintext leak).
+      - If the file does not exist: `const storeSnapshot = { kind: "absent" };`.
+      Also capture the live generation counter (`keyProvider.getGeneration?.() ?? readGenerationFile()`) into `storeSnapshot.generationBefore` so rollback can re-pin the counter alongside the file restore. The snapshot's lifetime is bounded to this migrate invocation — the buffer is zeroed in step 6.
 2. For each credential:
-   a. `store.set(name, value)` — encrypts + writes.
-   b. **Read-back-verify**: `store.get(name) === value`. Byte compare. If mismatch, abort the entire migration (rollback any earlier `store.set` calls for this run by restoring the original encrypted file from a memory copy taken at the start), surface `E_READBACK_FAIL`, exit 60.
-   c. Audit `credential.migrated` with key name only and `source: "claude-settings" | "env-file"`.
+   a. `store.set(name, value)` — encrypts + writes (bumps generation per §A.3 step 10).
+   b. **Read-back-verify**: `store.get(name) === value`. Byte compare. If mismatch, abort the entire migration (see step 2.c for rollback), surface `E_READBACK_FAIL`, exit 60.
+   c. **Rollback path (round-4 B7).** On mismatch (or any later step's hard failure that requires rolling back already-imported credentials):
+      - If `storeSnapshot.kind === "absent"`: atomic `fs.unlink(credentialsFilePath())` + revert the generation counter (keychain mode: `keyProvider.bumpGeneration(storeSnapshot.generationBefore ?? 0)`; passphrase mode: atomic-write the prior `credentials.generation` value back).
+      - If `storeSnapshot.kind === "exists"`: atomic tmp-write `credentialsFilePath() + ".tmp"` with `storeSnapshot.bytes` → fsync → rename over `credentialsFilePath()` → revert the generation counter to `storeSnapshot.generationBefore`.
+      - Audit-emit `credential.migration_partial` with `details: { rollback_attempted: true, rollback_kind: storeSnapshot.kind }`. Distinct from the §B.4 step 5 partial-success path (which keeps already-imported credentials and surfaces a manual remediation block).
+      - Rollback failures (rename throws, keychain throws) are themselves surfaced as `E_ROLLBACK_FAIL` (exit 62, new code in round-4 B10). The audit entry includes both the originating exit code (60 for readback) and the rollback failure detail so post-mortem reads can distinguish "migration aborted cleanly" from "migration aborted but rollback was incomplete."
+   d. Audit `credential.migrated` with key name only and `source: "claude-settings" | "env-file"`.
 3. After **all** read-backs pass, rewrite each source file. **Both formats parse → drop → re-serialize; neither uses line-strip.** This matters: `.env` syntax supports quoted multi-line values, escape sequences, and `export` prefixes (the `dotenv` library handles them at boot via `loadDotenv`); a naive line-strip would leave orphaned cleartext on disk for any credential whose value spans multiple lines. The redaction parser MUST be the SAME one the loader uses at boot — `dotenv@latest`'s `parse()` for `.env` and `JSON.parse` for `settings.json` — so what we drop is exactly what would have been loaded.
-   - `settings.json`: `JSON.parse` the in-memory snapshot from step 1.e → delete each migrated key from the kuzo MCP entry's `env` block → `JSON.stringify(..., null, 2)` (preserve indentation per repo convention; falls back to original-source-detected indent if the file used 4-space or tabs) → write to `settings.json.tmp` (open with `O_NOFOLLOW | O_CREAT | O_WRONLY`, mode `0600`), `fs.fsync(fd)` on the data, `rename` over `settings.json`, `fs.fsync` the **containing directory's** fd so the rename hits disk. **No `.bak` file.**
-   - `.env` files: same atomic dance with the parser swap. `import { parse } from "dotenv"` (the actual loader dep already in our tree) → drop matching keys from the parsed Record → re-serialize. Re-serialization is the only step `dotenv` doesn't ship today; implement it as a small helper that emits one `KEY="value"` line per key with values escaped per dotenv's quoted-string rules (`\n` → literal `\n`, `"` → `\"`, etc.). Preserve comments AND blank lines from the source by walking the source lines and, for each non-`KEY=` line, copying it verbatim into the output between the dropped/kept key entries. Acceptance fixture (§F.1): a `.env` with:
+
+   **Step 3 substep ordering (round-4 B6 fix).** The editor-collision check and post-rewrite redaction-verify (formerly enumerated as separate top-level steps 4 and 4b — which placed them AFTER the rename and produced the contradiction that the byte-compare would always fail against a redacted file) are now sub-steps INSIDE step 3, executed per source file in this exact order:
+
+   - **3.a — Build the rewrite tmp file in memory:**
+     - `settings.json`: `JSON.parse` the in-memory snapshot from step 1.e → delete each migrated key from the kuzo MCP entry's `env` block → `JSON.stringify(..., null, 2)` (preserve indentation per repo convention; falls back to original-source-detected indent if the file used 4-space or tabs) → buffer the resulting string.
+     - `.env` files: `import { parse } from "dotenv"` (the actual loader dep already in our tree) → drop matching keys from the parsed Record → re-serialize. Re-serialization is the only step `dotenv` doesn't ship today; implement it as a small helper that emits one `KEY="value"` line per key with values escaped per dotenv's quoted-string rules (`\n` → literal `\n`, `"` → `\"`, etc.). Preserve comments AND blank lines from the source by walking the source lines and, for each non-`KEY=` line, copying it verbatim into the output between the dropped/kept key entries.
+   - **3.b — Editor-collision check (R19), just BEFORE the rename:** re-read the source file with the same `O_NOFOLLOW`-style flags as step 1, byte-compare against the snapshot Buffer from step 1.e. If different → abort the rewrite of THAT source with `E_SOURCE_MUTATED` (exit 76) and instruct: "the source file `<path>` was modified during migration; close your editor and retry. Already-imported credentials remain in the store; re-running `kuzo credentials migrate` is safe (already-stored matching values are skipped per R20)." Other sources may still complete; the failure is scoped to this source.
+   - **3.c — Atomic write tmp + rename:** open `<source>.tmp` with `O_NOFOLLOW | O_CREAT | O_WRONLY`, mode `0600` → `fs.fsync(fd)` on the data → `rename` over `<source>` → `fs.fsync` the **containing directory's** fd so the rename hits disk. **No `.bak` file.**
+   - **3.d — Post-rewrite redaction-verify (round-2 advisory):** re-read the newly-on-disk file and parse it with the SAME parser that loadDotenv uses at boot (`dotenv.parse` for `.env`, `JSON.parse` for `settings.json` traversing to `mcpServers.kuzo.env`). Assert ZERO of the just-redacted credential names appear in the parsed output. If any do → abort with `E_REDACTION_VERIFY_FAIL` (exit 61, round-4 B10 split from 60) and surface: "redaction completed but parser still finds `<NAME>` in `<source>` — possible parser drift between loader and migrate. The credential is stored; the source file may still contain it. Manually inspect `<source>` and re-run." Self-healing defense against dotenv parse-semantics drift between boot's `loadDotenv()` and migrate's redaction parser — if a minor dotenv bump under Tier-2 caret-range changes quoted-string handling, `export` matching, or escape semantics, the cross-version drift surfaces here as a hard failure instead of as a silent on-disk leak.
+
+   **Why parse-don't-line-strip matters here.** Brief's vector 3 (dotfiles/backup leaks) is exactly what migrate exists to prevent. A line-strip that leaves `trailing-line-that-is-actually-part-of-the-value"` on disk is the worst-of-both: the user thinks they're protected (`kuzo credentials list` shows the token stored), but the source file has half the secret in cleartext. Specifying the parser closes the gap before code lands.
+
+   Acceptance fixture (§F.1): a `.env` with:
      ```
      # leading comment, preserved
      GITHUB_TOKEN="ghp_xxxxx
@@ -949,10 +1274,7 @@ On confirm:
      ```
      After migrate, the rewritten file MUST contain ONLY the comments, blank line, `LOG_LEVEL=info`, and `export OPENAI_API_KEY=sk-...` lines — no fragment of the `GITHUB_TOKEN` quoted-value second line. Round-trip via `dotenv.parse(read(.env))` after the rewrite to confirm the result is parseable (no orphan quote-state).
 
-   **Why parse-don't-line-strip matters here.** Brief's vector 3 (dotfiles/backup leaks) is exactly what migrate exists to prevent. A line-strip that leaves `trailing-line-that-is-actually-part-of-the-value"` on disk is the worst-of-both: the user thinks they're protected (`kuzo credentials list` shows the token stored), but the source file has half the secret in cleartext. Specifying the parser closes the gap before code lands.
-4. **Editor-collision check (R19) — just before each rename:** re-read the source file with the same flags, byte-compare against the snapshot Buffer from step 1.e. If different → abort with `E_SOURCE_MUTATED` (exit 76) and instruct: "the source file `<path>` was modified during migration; close your editor and retry. Already-imported credentials remain in the store; re-running `kuzo credentials migrate` is safe (already-stored matching values are skipped per R20)."
-4b. **Post-rewrite redaction-verify (round-2 advisory).** After the rename succeeds but before reporting success to the user, re-read the on-disk file and parse it with the SAME parser that loadDotenv uses at boot (`dotenv.parse` for `.env`, `JSON.parse` for `settings.json` traversing to `mcpServers.kuzo.env`). Assert ZERO of the just-redacted credential names appear in the parsed output. If any do → abort with `E_READBACK_FAIL` (exit 60) and surface: "redaction completed but parser still finds `<NAME>` in `<source>` — possible parser drift between loader and migrate. The credential is stored; the source file may still contain it. Manually inspect `<source>` and re-run." This is the **self-healing defense against dotenv parse-semantics drift** between boot's `loadDotenv()` and migrate's redaction parser — if a minor dotenv bump under Tier-2 caret-range changes quoted-string handling, `export` matching, or escape semantics, the cross-version drift surfaces here as a hard failure instead of as a silent on-disk leak. Cheaper than pinning dotenv exact across both packages; the invariant is the actual property we care about (parser-of-record agrees that the secret is gone).
-5. If any source rewrite fails:
+4. If any source rewrite fails (any of 3.b, 3.c, 3.d):
    - The credential is already in the store (succeeded at step 2).
    - The source file still has the cleartext value (worse — duplicated).
    - Audit `credential.migration_partial` with the failed source path.
@@ -977,9 +1299,9 @@ To complete redaction manually:
 Your credentials are stored securely. The source file still contains them as a fallback until you complete step 3.
 ```
 
-   The exit code is non-zero (path-specific — `E_PERMISSION_DENIED`, `E_SOURCE_MUTATED`, etc.), so CI runs that swallow the human-formatted block can still react.
-   - **Do NOT roll back the store** — the user has the source as a fallback. Better duplicate than missing.
-6. After source rewrites: zero all in-memory cleartext per §C.5 honest-zero-fill conventions (the master key Buffer overwrites are real; the per-credential string drops are reference-only).
+   The exit code is non-zero (path-specific — `E_PERMISSION_DENIED`, `E_SOURCE_MUTATED`, `E_REDACTION_VERIFY_FAIL`, etc.), so CI runs that swallow the human-formatted block can still react.
+   - **Do NOT roll back the store** in this branch — the user has the source as a fallback. Better duplicate than missing. (The rollback-store path in step 2.c fires ONLY when step 2 itself fails, before any source file is rewritten — at that point there is no source-as-fallback yet because nothing was redacted.)
+5. After source rewrites: zero the `storeSnapshot.bytes` buffer (overwrite with zeros, then drop reference) AND zero all in-memory cleartext per §C.5 honest-zero-fill conventions (the master key Buffer overwrites are real; the per-credential string drops are reference-only).
 
 **Failure-mode invariants**:
 - **No `.bak` files anywhere.** Atomic tmp+rename only. Reason: `.bak` files are exactly the kind of forgotten plaintext leak that the brief's vector 3 (backups / dotfiles commits) talks about.
@@ -1091,7 +1413,51 @@ The 0.0.2 → 0.1.0 upgrade moves the lock from `~/.kuzo/plugins/.lock` to `~/.k
 **Mitigation: the new CLI (0.1.0) acquires BOTH locks during the transition window.**
 
 ```typescript
-// packages/cli/src/lock.ts (new)
+// packages/cli/src/lock.ts (new) — uses proper-lockfile @latest behind the scenes
+//
+// The existing 2.5e plugin install code uses proper-lockfile synchronously
+// (sync release on process exit). The credentials path needs async because
+// it composes with the migrate flow's async fsync sequence. We expose async
+// helpers; the sync call sites in plugins/install.ts wrap with .then(() =>
+// release).
+//
+// Round-4 B8 — every type below is NEW in 2.6:
+
+/** Returned by `acquireFileLock`. Holds the underlying proper-lockfile token. */
+export interface LockHandle {
+  release(): Promise<void>;
+}
+
+/** Thrown when the target lock file is held by another process. */
+export class LockBusyError extends Error {
+  override name = "LockBusyError" as const;
+  constructor(public readonly lockPath: string) {
+    super(`Lock at ${lockPath} is held by another process`);
+  }
+}
+
+/** Thrown when the legacy (pre-0.1.0) lock is held — see B.6.1 transition. */
+export class LockCrossVersionError extends Error {
+  override name = "LockCrossVersionError" as const;
+  constructor(message: string) { super(message); }
+}
+
+/** Acquire an exclusive file lock at the given absolute path. The parent
+ *  directory is auto-created at mode 0700 if missing (consistent with
+ *  `ensureKuzoHome()` semantics). Throws `LockBusyError` if held. */
+export async function acquireFileLock(path: string): Promise<LockHandle> {
+  fs.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  try {
+    const release = await lockfile.lock(path, { retries: 0, realpath: false });
+    return { release: async () => { await release(); } };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ELOCKED") {
+      throw new LockBusyError(path);
+    }
+    throw err;
+  }
+}
+
 export async function acquireKuzoLock(): Promise<LockHandle> {
   // 1. Canonical (new) lock
   const canonical = await acquireFileLock(kuzoHomeLockPath());
@@ -1108,7 +1474,8 @@ export async function acquireKuzoLock(): Promise<LockHandle> {
         "Another kuzo process is running (possibly an older version). Wait for it to finish and retry."
       );
     }
-    // Legacy lock dir doesn't exist (fresh install) — that's fine.
+    // Other errors (e.g. legacy dir missing on fresh install) — that's fine,
+    // there's no pre-0.1.0 process to clash with.
   }
 
   return {
@@ -1145,6 +1512,9 @@ Extend the `AuditAction` union (`packages/core/src/audit.ts`) with:
 | "credential.refreshed_in_flight"  // file-watch IPC refresh propagated to running plugins (R34)
 | "audit.forged_plugin_field"       // parent caught a child impersonating another plugin (R16)
 | "audit.forged_action"             // parent caught a child emitting a non-allowlisted action (round-1 advisory)
+| "audit.rate_limited"              // parent dropped a child audit emission due to rate limit (round-4 B15)
+| "audit.partition_initialized"     // parent emitted one-shot meta entry at boot listing permitted-child-actions (round-4 nit N3)
+| "credential.namespace_validated"  // install-time env-name validation completed (round-4 §A.12)
 ```
 
 `AuditEvent` shape additionally gains a `source: "parent" | "child"` field, stamped at write time by the parent (see §C.10 action-class allowlist). Existing entries (pre-2.6) have no `source` field — consumers MUST treat missing as `"parent"` because pre-2.6 only the parent wrote to `audit.log`.
@@ -1234,9 +1604,17 @@ Implementers need one place to look up exit-code semantics. The mapper lives at 
 | 0 | OK | any | Success |
 | 30 | `E_LOCK_CONTENTION` | shared | Another kuzo process holds the lock |
 | 30 | `E_LOCK_CROSS_VERSION` | credentials/plugins | A 0.0.2 process holds the legacy lock (R27) |
-| 60 | `E_READBACK_FAIL` | migrate | Read-back-verify did not match the stored value |
+| 60 | `E_READBACK_FAIL` | migrate | `store.set()` returned but `store.get()` byte-compare disagreed (encryption round-trip mismatch — file an issue with the audit log). Distinct from 61 (round-4 B10 split). |
+| 61 | `E_REDACTION_VERIFY_FAIL` | migrate | Post-redact parser still finds the credential in `<source>` (round-4 B10 — split from 60). Indicates parser-of-record drift between loader's `loadDotenv()` and migrate's redaction. The credential is stored; the source file may still contain it. |
+| 62 | `E_ROLLBACK_FAIL` | migrate | Rollback of the encrypted store after a step-2 abort failed (round-4 B7). Migration is in indeterminate state — audit log + `kuzo credentials list` to diagnose. |
+| 63 | `E_INVALID_FLAG_COMBO` | migrate | Mutually-exclusive flags supplied (e.g. `--force-source --yes` per round-4 A8). |
+| 64 | `E_WIPE_CANCELLED` | wipe | User typed something other than `yes` at the confirmation prompt (round-4 A7). |
 | 65 | `E_NO_INPUT_MODE` | set/rotate | stdin not TTY and `--stdin` not passed |
 | 66 | `E_EMPTY_VALUE` / `E_INVALID_VALUE` | set/rotate | Value rejected (empty / NUL / embedded newline) |
+| 67 | `E_RESERVED_SYSTEM_ENV` | plugins install | Plugin's `CredentialCapability.env` collides with a reserved system env name (round-4 B13 §A.12 denylist) |
+| 68 | `E_RESERVED_FIRST_PARTY_ENV` | plugins install | Third-party plugin tried to declare an env reserved to a first-party plugin (round-4 B13 §A.12) |
+| 69 | `E_ENV_NAME_COLLISION` | plugins install | Plugin's env collides with another already-installed plugin's claimed env (round-4 B13 §A.12) |
+| 70 | `E_INVALID_ENV_NAME_FORMAT` | plugins install | Plugin's env doesn't match `^[A-Z][A-Z0-9_]{2,63}$` (round-4 B13 §A.12) |
 | 71 | `E_NO_KEY_PROVIDER` | serve/set | `KUZO_DISABLE_KEYCHAIN=1` without `KUZO_PASSPHRASE` (now resolved to `NullKeyProvider` per R10 — the exit code remains reserved for any future hard-fail path that requires a real key provider but lacks one) |
 | 72 | `E_KEY_LOST` | set/serve | `credentials.enc` exists but keychain entry missing |
 | 73 | `E_FILE_CORRUPTED` | any | GCM verification failed (bad key OR tampered file OR generation mismatch) |
@@ -1246,7 +1624,7 @@ Implementers need one place to look up exit-code semantics. The mapper lives at 
 | 77 | `E_CONFLICT` | migrate | Source value differs from stored value |
 | 78 | `E_CRED_INVALID` | test | API rejected the credential |
 | 79 | `E_TEST_UNAVAILABLE` | test | Plugin doesn't expose `testCredential` |
-| 80 | `E_SERVER_BOOT_FAILED` | serve | `runServer()` threw before MCP transport connect. **Moved from 70 per R44 to avoid the sysexits.h `EX_SOFTWARE=70` overlap.** |
+| 80 | `E_SERVER_BOOT_FAILED` | serve | `runServer()` threw before MCP transport connect. **Moved from 70 per R44 to avoid the sysexits.h `EX_SOFTWARE=70` overlap.** Note: code 70 was reused for `E_INVALID_ENV_NAME_FORMAT` in round-4 — no actual conflict because the original 70 was already vacated. |
 
 (Plugin-domain codes 10–19 from §C.7 of 2.5e provenance, 40–53 from 2.5e install/D.3 stay unchanged; cross-referenced via the existing `packages/cli/src/commands/plugins/errors.ts`.)
 
@@ -1270,7 +1648,7 @@ New `credentials` and `serve` subcommands MUST be in `noConfigCommands`, otherwi
 
 ### C.0 Scope
 
-**In:** `server.ts` boot refactor (extract `runServer()`, keep self-invocation guard for direct-node parity test); `loader.ts` source swap (CredentialSource for ConfigManager.extractPluginConfig); env-override collection + scrub at boot; parent-eager decrypt in the store (one keychain prompt during `loader.loadAll()` for the first stored credential needed, zero prompts if env overrides satisfy everything); third-party `getClient` factory registration on `PluginContext.credentials`; shutdown hooks; new audit events plumbed; `node:child_process` ESLint ban in `server.ts` + `loader.ts`.
+**In:** `server.ts` boot refactor (extract `runServer()`, **add** the self-invocation guard at file bottom — see §C.1 and round-4 B2; today `server.ts` ends with an unconditional `main().catch(...)` call); `loader.ts` source swap (CredentialSource for ConfigManager.extractPluginConfig); env-override collection + scrub at boot; parent-eager decrypt in the store (one keychain prompt during `loader.loadAll()` for the first stored credential needed, zero prompts if env overrides satisfy everything); third-party `getClient` factory registration on `PluginContext.credentials`; shutdown hooks; new audit events plumbed; `node:child_process` ESLint ban in `server.ts` + `loader.ts`.
 
 **Out:** the storage itself (Part A); the CLI (Part B); the `kuzo serve` bin wrapping (Part D).
 
@@ -1332,14 +1710,20 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
   //    captured the value at construction in step 4 and overwrites its field once
   //    acquireKey() runs in step 10.
   if (doScrub) {
-    scrubProcessEnv([
-      ...declaredEnvNames,
-      ...Object.keys(envOverrides),
-    ]);
+    // The auditLogger is threaded into scrubProcessEnv so it can audit-emit
+    // credential.scrub_disabled on the KUZO_NO_ENV_SCRUB=1 path (round-4 B11).
+    // No emit at this call site for the env-var kill-switch — scrubProcessEnv
+    // handles it.
+    scrubProcessEnv(
+      [...declaredEnvNames, ...Object.keys(envOverrides)],
+      auditLogger,
+    );
   } else {
     // --no-scrub: declared-env-names stay in process.env, but KUZO_PASSPHRASE
-    // is still removed by the always-scrub path inside scrubProcessEnv.
-    scrubProcessEnv([]);
+    // is still removed by the always-scrub path inside scrubProcessEnv. The
+    // CLI-flag kill-switch is audited here (distinct reason from the env-var
+    // kill-switch); scrubProcessEnv handles the env-var case internally.
+    scrubProcessEnv([], auditLogger);
     logger.warn(
       "process.env scrubbing DISABLED (--no-scrub). Plugin children may inherit credential env vars. KUZO_PASSPHRASE is still scrubbed.",
     );
@@ -1358,8 +1742,9 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
   // 9. plugin loader — note the registry argument is FIRST per loader.ts:38-44.
   //    Hoist the registry instance so the shutdown hook (step 13) can reach it
   //    without going through loader.registry (cleaner separation, matches the
-  //    pre-2.6 code's top-level handle).
-  const registry = new PluginRegistry();
+  //    pre-2.6 code's top-level handle). PluginRegistry constructor takes
+  //    `(logger: KuzoLogger)` per registry.ts:30 — round-4 B3 fix.
+  const registry = new PluginRegistry(new KuzoLogger("registry"));
   const loader = new PluginLoader(
     registry,
     configManager,
@@ -1415,9 +1800,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
 1. `collectEnvOverrides()` must execute **before** `scrubProcessEnv()` (otherwise the values are gone before we capture them).
 2. `scrubProcessEnv()` must execute **before** `loader.loadAll()` (otherwise plugins / their children see unfiltered `process.env`).
 3. `loader.loadAll()` must execute **before** `freezePrototypes()` (preserved from 2.5e A.9 — protects plugin manifest imports from frozen-prototype issues).
-4. `credentialStore.close()` must execute **after** `loader.shutdownAll()` (plugins may make final credential reads during shutdown).
+4. `credentialStore.close()` must execute **after** `loader.shutdownAll()`. Rationale: the §C.11 file-watch handler is still active until loader teardown completes; closing the store while a `credential.refresh` IPC is in flight would race the `reload()` call against the file-handle close. The cache and the file-watch debounce timer share a lifetime, and the loader's shutdown is what stops new IPC events from reaching the parent. (Round-4 A2 corrects the round-3 rationale "plugins may make final credential reads during shutdown" — that's incorrect because per §C.3 the child has no path back to the parent's store.)
 5. **No `child_process.fork/spawn/exec/execFile/spawnSync/execSync/execFileSync`** between `ConfigManager` construction (step 2) and `scrubProcessEnv()` (step 7). The existing code base satisfies this — `PluginProcess` only forks on the first `callTool`, which can't fire before `loader.loadAll()` completes. Enforced by ESLint rule scoped to `packages/core/src/server.ts` + `packages/core/src/loader.ts`; only `packages/core/src/plugin-process.ts` is permitted to import from `node:child_process`. See §C.9.
-6. `collectDeclaredCredentialEnvNames()` MUST read static `package.json#kuzoPlugin.capabilities` only. No dynamic `import()` of plugin entry modules before step 7 — third-party plugins ship arbitrary top-level code, and importing them pre-scrub voids the scrub guarantee.
+6. `collectDeclaredCredentialEnvNames()` MUST read static `package.json#kuzoPlugin.capabilities` only (the contract surface defined in §A.0.1). No dynamic `import()` of plugin entry modules before step 7 — third-party plugins ship arbitrary top-level code, and importing them pre-scrub voids the scrub guarantee. The pre-scrub read implies first-party plugins MUST carry `kuzoPlugin.capabilities` in their `package.json` (round-4 B1 + §A.0.1).
 7. `KUZO_PASSPHRASE` is scrubbed unconditionally at step 7 regardless of the `doScrub` flag. The kill-switch is for declared credential names only — the passphrase is never exempt.
 
 ### C.2 Env-var-first precedence (gh-style)
@@ -1478,6 +1863,36 @@ class EncryptedCredentialStore implements CredentialStore {
 - The keychain prompt happens during `loader.loadAll()` — between server-process startup and the MCP transport `connect()`. The MCP client (Claude Code) sees no response on stdio until the prompt is resolved. This is consistent with how 2.5e plugin install already blocks on user input.
 - If a child process is later spawned for the first tool call, no further keychain interaction is needed — the child already has its resolved credentials from the IPC handshake.
 - If the user runs `kuzo credentials rotate <name>` while the server is running, the parent's `cache` is invalidated via the file-watch + IPC refresh path described in §C.11.
+
+**Pre-2.6 cleanup (round-4 A1).** The current `credentials.ts` keeps `clientFactories` as a module-level singleton (line 46) and `serviceEnvMapping` similarly (line 35). The brief's constraint #7 ("no singletons") was relaxed for first-party factories as accepted coupling, but the spec's §C.4 third-party registration path is the right time to retire the module-level Maps entirely. Move both into the broker constructor:
+
+```typescript
+class DefaultCredentialBroker implements CredentialBroker {
+  private readonly clientFactories = new Map<string, ClientFactory>();
+  private readonly serviceEnvMapping = new Map<string, readonly string[]>();
+
+  constructor(options: CredentialBrokerOptions) {
+    // ...existing init
+    this.installDefaultClientFactories();   // hardcoded github + jira, per-instance
+  }
+
+  registerClientFactory(service: string, factory: ClientFactory): void {
+    if (this.clientFactories.has(service)) {
+      throw new Error(`Factory for service "${service}" is already registered`);
+    }
+    this.clientFactories.set(service, factory);
+  }
+
+  private installDefaultClientFactories(): void {
+    this.clientFactories.set("github", githubFactory);
+    this.clientFactories.set("jira", jiraFactory);
+    this.serviceEnvMapping.set("github", ["GITHUB_TOKEN", "GITHUB_USERNAME"]);
+    this.serviceEnvMapping.set("jira", ["JIRA_HOST", "JIRA_EMAIL", "JIRA_API_TOKEN"]);
+  }
+}
+```
+
+Per-broker = per-plugin scoping; matches the brief's no-singletons rule. The github+jira factory function definitions stay imported from their respective plugin client modules (existing 2.5b coupling — out of scope to retire in 2.6).
 
 ### C.4 Third-party `getClient` factory registration
 
@@ -1808,6 +2223,8 @@ Every other audit action is parent-only:
 
 **Allowlist drift defense — encode the partition as code (round-2 advisory).** The table above is the source of truth, but its in-spec form drifts the moment a developer adds an `AuditAction` variant without also classifying it parent-only or child-permitted. Mitigation: codify the partition in `packages/core/src/audit-partition.ts` as a TypeScript discriminated record that exhaustiveness-checks every variant of the `AuditAction` union. Adding a new variant without classifying it is a TYPE error, not a runtime surprise.
 
+**Round-4 B9.** The `Record<AuditAction, ...>` literal must enumerate EVERY variant — TS `Record<>` is exhaustive by type, and a missing key fails compile. The "plus existing 2.5c/2.5e consent.* / plugin.*" ellipsis comment in the round-3 draft made the literal unimplementable. Enumerated below in full so an implementer can copy-paste:
+
 ```typescript
 // packages/core/src/audit-partition.ts
 import type { AuditAction } from "./audit.js";
@@ -1824,7 +2241,7 @@ export const AUDIT_ACTION_PARTITION: Record<AuditAction, "parent-only" | "child-
   "credential.raw_denied":     "child-permitted",
   "credential.fetch_created":  "child-permitted",
 
-  // parent-only: lifecycle / CLI / boot / parent-owned subsystems
+  // parent-only: lifecycle / CLI / boot / parent-owned subsystems (2.6 new)
   "credential.store_unlocked":        "parent-only",
   "credential.store_locked":          "parent-only",
   "credential.set":                   "parent-only",
@@ -1839,7 +2256,24 @@ export const AUDIT_ACTION_PARTITION: Record<AuditAction, "parent-only" | "child-
   "credential.refreshed_in_flight":   "parent-only",
   "audit.forged_plugin_field":        "parent-only",
   "audit.forged_action":              "parent-only",
-  // ... plus existing 2.5c/2.5e consent.* / plugin.* entries (all parent-only)
+  "audit.rate_limited":               "parent-only",  // round-4 B15
+  "audit.partition_initialized":      "parent-only",  // round-4 nit N3
+  "credential.namespace_validated":   "parent-only",  // round-4 §A.12
+
+  // parent-only: existing 2.5c consent flow events
+  "consent.granted":                  "parent-only",
+  "consent.revoked":                  "parent-only",
+  "consent.checked":                  "parent-only",
+
+  // parent-only: existing 2.5c/2.5e plugin lifecycle events
+  "plugin.loaded":                    "parent-only",
+  "plugin.skipped":                   "parent-only",
+  "plugin.failed":                    "parent-only",
+  "plugin.installed":                 "parent-only",  // 2.5e Part D
+  "plugin.uninstalled":               "parent-only",  // 2.5e Part D
+  "plugin.updated":                   "parent-only",  // 2.5e Part D
+  "plugin.rolled_back":               "parent-only",  // 2.5e Part D
+  "plugin.trust_root_refreshed":      "parent-only",  // 2.5e Part C
 };
 
 // Derived at module load — no runtime cost, single source of truth.
@@ -1860,6 +2294,24 @@ export const CHILD_PERMITTED_AUDIT_ACTIONS: ReadonlySet<AuditAction> = new Set(
 4. NEW: TypeScript exhaustiveness — drop the `"credential.client_created"` entry from `AUDIT_ACTION_PARTITION` and assert `tsc --noEmit` fails red.
 
 **Child-side IPC sender protocol:**
+
+**Refactor `audit.ts` to an interface + concrete class (round-4 A3).** Today `packages/core/src/audit.ts` exports `class AuditLogger` (concrete, file-backed). The IPC proxy below uses `implements AuditLogger` — TS allows `implements` against a class but it's structurally awkward and couples the proxy to the file-backed class's private fields. Clean it up:
+
+```typescript
+// packages/core/src/audit.ts (refactored — round-4 A3)
+export interface AuditLogger {
+  log(event: AuditEvent): void;
+  query(filters?: AuditQueryFilters): AuditEvent[];
+}
+
+/** Default file-backed implementation. The only consumer of `appendFileSync` /
+ *  `readFileSync` against `audit.log`. Imported only by `server.ts` and CLI
+ *  command modules — the plugin-host (child) imports only the IpcAuditLogger
+ *  proxy below. */
+export class FileBackedAuditLogger implements AuditLogger { /* ...existing impl + §C.10.1 rotation */ }
+```
+
+Update `packages/core/src/server.ts` + all CLI command imports from `AuditLogger` (class) → `FileBackedAuditLogger`. `IpcAuditLogger` and `FileBackedAuditLogger` both implement the `AuditLogger` interface; plugin-host imports only the interface + the `IpcAuditLogger` class.
 
 ```typescript
 // packages/core/src/plugin-host.ts — replace direct appendFileSync usage
@@ -1888,19 +2340,178 @@ The child's `DefaultCredentialBroker` is constructed with the `IpcAuditLogger` i
 
 **Implementation order.** The IPC routing MUST land before any of the new write-side audit events from §B.7 (`credential.set` / `.rotated` / `.migrated` / `.wiped` / `.tested`) ship to production, because every one of those events compounds the impersonation surface. Build-order tweak: Theme 4 (audit IPC) lands first in the §0 cross-cutting build order's Part C wave, before the §C.4-C.6 write-side audit events.
 
+#### C.10.1 Child→parent audit rate limit + log retention (round-4 B15)
+
+The IPC routing closes plugin-impersonation but also makes audit emissions a plugin-controlled write surface into the parent's filesystem. Without limits, a compromised plugin child can spam `credential.raw_denied` (or any other `CHILD_PERMITTED_AUDIT_ACTIONS` member) in a tight loop, filling `~/.kuzo/audit.log` to 100% of the disk in seconds. Downstream parent writes (`credential.set`, `credential.rotated`, `credential.wiped`, store atomic-rename) then start throwing ENOSPC, and the §F.4 generation-persists-first crash-window becomes plugin-triggerable.
+
+Brief Q14's "audit log rotation policy unresolved" combines with this DoS vector into one structural fix.
+
+**Rate-limit policy:**
+- Per `(child PID, declared plugin name)` token bucket inside `PluginProcess`.
+- **100 events/sec sustained**, **200 burst capacity**, refill rate 100/sec.
+- Excess events are dropped, NOT queued. The parent emits one `audit.rate_limited` event per second (parent-only, with `details: { plugin, child_pid, drops_in_window }`) — itself NOT rate-limited (parent emissions never are).
+- Refill is wall-clock based (`Date.now()`) — a slow plugin that emits 10 events/sec for an hour never has its burst capacity consumed.
+
+**Log rotation policy:**
+- `audit.log` rotation triggers when the file exceeds **50 MiB** (`fs.statSync(auditFilePath()).size`). Check fires inside the parent's `AuditLogger.log()` slow path — every Nth write (N=100 amortizes the stat cost) OR on any write that returns ENOSPC.
+- Rotation: `audit.log` → `audit.log.1`; existing `audit.log.1` → `audit.log.2`; ...; `audit.log.5` is deleted. **5 rotated files** retained. Effectively keeps the most recent 250 MiB of audit history.
+- Rotation is atomic per-file (rename only; no copy) so concurrent readers (`kuzo audit --since 7d`) see consistent files even mid-rotation.
+- `kuzo audit` queries glob across `audit.log` + `audit.log.{1..5}` to render historical entries.
+
+**Implementation outline:**
+
+```typescript
+// packages/core/src/plugin-process.ts (extension — round-4 B15)
+class PluginProcess {
+  // ... existing fields
+  private readonly auditBucket: TokenBucket;
+  private rateLimitedSinceReport = 0;
+  private lastRateLimitReportAt = 0;
+
+  constructor(/* ...existing args */) {
+    // ...existing init
+    this.auditBucket = new TokenBucket({ capacity: 200, refillPerSec: 100 });
+  }
+
+  private handleAuditEvent(event: AuditEvent): void {
+    // 1. Rate-limit check FIRST — before pid stamp, before plugin validation,
+    //    before action allowlist. A child spamming forged events should still
+    //    count toward its own rate limit (otherwise the rate-limit is bypassed
+    //    by emitting only forged events).
+    if (!this.auditBucket.consume(1)) {
+      this.rateLimitedSinceReport++;
+      this.reportRateLimitIfDue();
+      return;
+    }
+    // 2. ... rest of validation per §C.10 (pid stamp, plugin field, action class)
+  }
+
+  private reportRateLimitIfDue(): void {
+    const now = Date.now();
+    if (now - this.lastRateLimitReportAt < 1000) return; // 1/sec cap on the report itself
+    this.auditLogger.log({
+      plugin: "kuzo",
+      action: "audit.rate_limited",
+      outcome: "denied",
+      source: "parent",
+      details: {
+        plugin: this.declaredPluginName,
+        child_pid: this.childPid,
+        drops_in_window: this.rateLimitedSinceReport,
+      },
+    });
+    this.lastRateLimitReportAt = now;
+    this.rateLimitedSinceReport = 0;
+  }
+}
+
+// packages/core/src/audit.ts (extension — round-4 B15)
+const ROTATE_THRESHOLD_BYTES = 50 * 1024 * 1024;
+const RETAIN_ROTATED_COUNT = 5;
+let writesSinceLastStat = 0;
+
+class FileBackedAuditLogger implements AuditLogger {
+  log(event: AuditEvent): void {
+    appendFileSync(this.path, JSON.stringify(event) + "\n", { mode: 0o600 });
+    if (++writesSinceLastStat >= 100) {
+      writesSinceLastStat = 0;
+      this.maybeRotate();
+    }
+  }
+
+  private maybeRotate(): void {
+    let stat: fs.Stats;
+    try { stat = fs.statSync(this.path); } catch { return; }
+    if (stat.size < ROTATE_THRESHOLD_BYTES) return;
+
+    // Rename audit.log.N → audit.log.(N+1) from highest to lowest, dropping
+    // the oldest. Atomic on POSIX; sequential, not transactional, so a crash
+    // mid-rotation can leave gaps in numbering — readers tolerate this.
+    for (let i = RETAIN_ROTATED_COUNT; i >= 1; i--) {
+      const src = `${this.path}.${i}`;
+      const dst = `${this.path}.${i + 1}`;
+      if (fs.existsSync(src)) {
+        if (i === RETAIN_ROTATED_COUNT) {
+          fs.unlinkSync(src); // drop the oldest
+        } else {
+          fs.renameSync(src, dst);
+        }
+      }
+    }
+    fs.renameSync(this.path, `${this.path}.1`);
+    // Next log() reopens audit.log via appendFileSync's create-if-missing semantics.
+  }
+}
+```
+
+**Boot-time partition meta entry (round-4 nit N3).** The `details.permitted` field on every `audit.forged_action` event was wasteful — the partition module is the source of truth and embedding the list per-entry pollutes the log. Drop `details.permitted`. Emit a one-time `audit.partition_initialized` event at boot listing the permitted child actions exactly once per server lifetime, which forensic readers can correlate with subsequent `audit.forged_action` events. Update §C.10's example accordingly.
+
+**Acceptance criteria (§F.1 extension):**
+- [ ] A plugin emitting 10,000 audit events in a tight loop produces ≤ 200 written entries (the burst) plus subsequent throttled drops. `audit.rate_limited` events appear at most once per second.
+- [ ] `audit.log` exceeding 50 MiB triggers atomic rotation to `audit.log.1` on the next write; existing `audit.log.5` is deleted. `kuzo audit --since 30d` reads across all rotated files in chronological order.
+- [ ] After rotation, the parent process still writes new entries to a fresh `audit.log` (no file handle staleness).
+- [ ] Forensic correlation: `audit.partition_initialized` appears exactly once per `kuzo serve` boot, before any `audit.forged_action` event in the same log file.
+
 ### C.11 Rotation cache invalidation — file watch + IPC refresh (R34)
 
 `kuzo credentials rotate GITHUB_TOKEN` writes to disk. The running `kuzo serve` parent's `EncryptedCredentialStore.cache` still holds the old decrypted value. Plugin children also hold the old value (they got their resolved Map at fork time). Tool calls keep using the stale token until the user restarts Claude Code — which they didn't do, because rotating a token shouldn't require a full restart.
 
-**Solution:** the parent watches the credentials file and propagates refreshes to children via IPC.
+**Solution:** the parent watches the **credentials file's parent directory** (NOT the file itself — round-4 B14) and propagates refreshes to children via IPC.
+
+**Why directory-watch, not file-watch (round-4 B14).** The store's atomic write path is `tmp + rename` (§A.3 step 11). On macOS and Linux, `fs.watch(path)` watches the inode the path resolved to at watch-creation time. After the first `rename`, the old inode is unlinked and the watcher becomes silent — it's still pointing at the now-orphaned inode, not the new file at the same path. Rotation #1 propagates; rotation #2+ silently fails. Watching the parent directory and filtering on `filename === "credentials.enc"` survives the rename because the dir's inode is stable. The handler re-checks `existsSync(credentialsFilePath())` to ignore unlink-only events (e.g. transient gap during `wipe`).
+
+**New helper definitions used by this section (round-4 B8):**
+
+```typescript
+// packages/core/src/credentials/debounce.ts (new)
+/** Returns a Promise that resolves after `ms` milliseconds. Used by the
+ *  file-watch debouncer below. Distinct from `setTimeout` — returns a Promise
+ *  so the handler can `await` it cleanly. */
+export function debounce(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    t.unref?.();
+  });
+}
+
+// packages/core/src/loader.ts (extension)
+/** Live plugin processes currently spawned. Mirrors `registry.runningPlugins`
+ *  but exposes the `PluginProcess` handles needed for rotation IPC.
+ *  Returns a fresh readonly array on each call (callers should not mutate). */
+runningProcesses(): readonly PluginProcess[];
+
+// packages/core/src/plugin-process.ts (extension)
+class PluginProcess {
+  // ... existing fields/methods
+
+  /** The capability list snapshot used by extractForPlugin. Populated at
+   *  spawn time from the runtime KuzoPluginV2 manifest. Read-only after
+   *  spawn — capability changes require a plugin restart per 2.5c semantics.
+   *  Shape: { required: readonly CredentialCapability[]; optional: readonly CredentialCapability[] } */
+  readonly declaredCapabilities: {
+    required: readonly CredentialCapability[];
+    optional: readonly CredentialCapability[];
+  };
+
+  /** Send a fire-and-forget IPC notification to the child. Currently used for
+   *  `credential.refresh`. The child's IPC handler is registered in
+   *  plugin-host.ts. Returns void; the child's processing is asynchronous. */
+  notify(method: string, params: unknown): void;
+}
+```
 
 **Parent side (`runServer()`):**
 
 ```typescript
-// After step 10 (loader.loadAll), once we know the first store unlock happened:
+// After step 10 (loader.loadAll), once we know the first store unlock happened.
+// Watch the PARENT DIRECTORY, not the file itself (B14).
 let watcher: fs.FSWatcher | undefined;
 if (credentialStore.isUnlocked()) {
-  watcher = fs.watch(credentialsFilePath(), (eventType) => {
+  const watchDir = path.dirname(credentialsFilePath());
+  watcher = fs.watch(watchDir, (eventType, filename) => {
+    // Only react to events that touch credentials.enc; ignore audit.log /
+    // consent.json / plugins/ activity in the same dir.
+    if (filename !== "credentials.enc") return;
     if (eventType !== "change" && eventType !== "rename") return;
     handleCredentialFileChange().catch((err) =>
       logger.error(`credential refresh failed: ${err}`),
@@ -1909,21 +2520,45 @@ if (credentialStore.isUnlocked()) {
 }
 
 async function handleCredentialFileChange() {
-  // Debounce: rotate is a tmp+rename, which fires multiple events.
+  // Debounce: rotate is tmp+rename, fires multiple events; wipe is unlink, fires
+  // a rename event. 250ms collapses bursts without making rotation feel laggy.
   await debounce(250);
-  credentialStore.reload();      // re-decrypts; bumps cache generation
+
+  // Ignore unlink-only events (file gone, e.g. mid-wipe). On next set/rotate
+  // the file reappears and the watcher's rename event fires again — that
+  // invocation will see existsSync === true and proceed to reload().
+  if (!existsSync(credentialsFilePath())) {
+    return;
+  }
+
+  try {
+    credentialStore.reload();      // re-decrypts; bumps cache generation
+  } catch (err) {
+    // Reload can fail with E_FILE_CORRUPTED (generation mismatch, tamper, etc).
+    // Don't crash the server; log + audit and leave the in-flight cache as-is.
+    // The user's next `kuzo credentials status` will surface the broken state.
+    auditLogger.log({
+      plugin: "kuzo",
+      action: "credential.refreshed_in_flight",
+      outcome: "error",
+      details: { error: (err as Error).message },
+    });
+    return;
+  }
+
   // For each running PluginProcess, recompute the per-plugin Map.
-  for (const proc of loader.runningProcesses()) {
+  const procs = loader.runningProcesses();
+  for (const proc of procs) {
     const refreshedConfig = credentialSource.extractForPlugin(
       proc.declaredCapabilities,
     );
-    proc.notify("credential.refresh", { config: refreshedConfig.config });
+    proc.notify("credential.refresh", { config: Object.fromEntries(refreshedConfig.config) });
   }
   auditLogger.log({
     plugin: "kuzo",
     action: "credential.refreshed_in_flight",
     outcome: "allowed",
-    details: { count_refreshed: loader.runningProcesses().length },
+    details: { count_refreshed: procs.length },
   });
 }
 ```
@@ -1953,7 +2588,7 @@ replaceConfigAtomically(newConfig: Map<string, string>): void {
 
 The first-party plugins (`github`, `jira`) go through `broker.getClient` on every tool-call → their clients ARE invalidated on refresh. Third-party plugins are responsible for following the same pattern; the §C.4 third-party factory documentation calls this out.
 
-**Why we still do the partial mitigation.** Daily-use case: developer rotates `GITHUB_TOKEN` because they got a notification email. The first-party github plugin picks up the new token on the next tool call without any user action. Better UX than "restart Claude Code." Acceptance criterion (§F.1): smoke test rotates a credential, verifies the next first-party tool call uses the new token without restart.
+**Why we still do the partial mitigation.** Daily-use case: developer rotates `GITHUB_TOKEN` because they got a notification email. The first-party github plugin picks up the new token on the next tool call without any user action. Better UX than "restart Claude Code." Acceptance criterion (§F.1): smoke test rotates a credential **three times within a single server lifetime**, verifies the next first-party tool call after EACH rotation uses the new token without restart (round-4 B14 — rotation #2+ regression detection). Implementation: snapshot the parent's `credentialSource.envOverrides + credentialStore.cache` (via a test-only inspector) after each rotation; assert the value matches the just-set token.
 
 **Edge case: NullKeyProvider mode.** The store never unlocks, so `credentialStore.isUnlocked()` is `false` and the watcher is never installed. Rotation in NullKeyProvider mode is a no-op (the user is in env-override-only territory; "rotation" is "restart with a new env var"). Documented.
 
@@ -2124,7 +2759,7 @@ Already specified in §C.1. Restated as a checklist for D-acceptance:
 - **`--no-scrub` is debug-only.** Emit `process.stderr.write("WARNING: scrub disabled\n")` and an audit `credential.scrub_disabled` event on use. CI must reject `--no-scrub` in release-build smoke tests.
 - **Top-level `await import` cost.** The `kuzo serve` entry point dynamic-imports `@kuzo-mcp/core/server` so the CLI binary doesn't pay the core's startup cost for `kuzo credentials list` etc. Static-imported `@kuzo-mcp/core/server` would force the full server module graph on every CLI invocation. Stick with dynamic import.
 - **`runServer()` may throw before MCP connect.** Catch in `serveCommand.action` and exit non-zero with a friendly message (path 80 = `E_SERVER_BOOT_FAILED`; see §B.10). If it throws **after** MCP connect, the exit guard handles it.
-- **Two boot entry points: `kuzo serve` (CLI) AND direct `node packages/core/dist/server.js`.** Both reach the same `runServer()`. The CLI imports `runServer` from `@kuzo-mcp/core/server` and calls it; the direct-node path uses the `if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)` self-invocation guard at the bottom of `server.ts`. The 2.5e parity test (`scripts/test-install-parity.mjs:115-119`) uses the direct-node path and must keep working — DO NOT remove the self-invocation guard when refactoring the top-level `main()` into the exported `runServer()`. Verified in §F.1 acceptance: parity test continues to pass via the guard.
+- **Two boot entry points: `kuzo serve` (CLI) AND direct `node packages/core/dist/server.js`.** Both reach the same `runServer()`. The CLI imports `runServer` from `@kuzo-mcp/core/server` and calls it; the direct-node path uses the `if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)` self-invocation guard at the bottom of `server.ts`. **The guard does NOT exist today** — the current `server.ts` ends with an unconditional `main().catch(...)` call (verified at the time this spec was locked). Part C §C.1 step 4 **adds** the guard as part of the refactor. The 2.5e parity test (`scripts/test-install-parity.mjs:115-119`) uses the direct-node path and must keep working — the guard MUST be present in the refactored `server.ts` for the parity test to pass post-refactor, AND must remain so the CLI's `await import("@kuzo-mcp/core/server")` does not trigger a side-effect `main()` execution. Verified in §F.1 acceptance: importing the module from a non-entry context does NOT invoke `runServer()`; the parity test still boots `runServer()` via direct-node invocation.
 
 ---
 
@@ -2292,7 +2927,9 @@ These should all return the same base64 string. If they don't, the user has a mu
 
 **Part C — Broker**
 
-- [ ] `runServer()` exported from `@kuzo-mcp/core/server`. Self-invocation guard at the bottom of `server.ts` still fires when invoked as `node packages/core/dist/server.js` (parity test continues to work).
+- [ ] `runServer()` exported from `@kuzo-mcp/core/server`. Self-invocation guard at the bottom of `server.ts` **added** (round-4 B2 — did not exist pre-2.6; current `server.ts` ends with unconditional `main().catch(...)`). Guard fires when invoked as `node packages/core/dist/server.js` (parity test continues to work). Importing the module from a non-entry context (e.g. CLI's `await import("@kuzo-mcp/core/server")`) does NOT invoke `runServer()` — verified by a synthetic test that imports and asserts no MCP transport was opened.
+- [ ] `new PluginRegistry()` example in §C.1 step 9 takes a `KuzoLogger` constructor arg (round-4 B3 — matches `registry.ts:30`).
+- [ ] All three first-party plugin `package.json` files carry `kuzoPlugin.capabilities` + `kuzoPlugin.optionalCapabilities` matching their runtime `KuzoPluginV2` exports (round-4 B1 + §A.0.1). The `scripts/check-plugin-manifest-parity.mjs` script runs as a `prebuild` step in each plugin package and fails the build on drift. Synthetic test: edit `packages/plugin-github/src/index.ts` to add a new capability without updating `package.json`; `pnpm --filter @kuzo-mcp/plugin-github build` exits non-zero.
 - [ ] Boot sequence smoke test (R32 rewrite): after `runServer()` completes startup, the parent process satisfies (a) `process.env.GITHUB_TOKEN === undefined` (or never-defined), (b) `process.env.KUZO_PASSPHRASE === undefined` (or never-defined), (c) `freezePrototypes()` ran after `loadAll`, (d) `credentialStore.close()` runs after `loader.shutdownAll()` on SIGTERM. When the first MCP tool call spawns a plugin child via `PluginProcess`, the child's `process.env.GITHUB_TOKEN` is ALSO `undefined` — credentials reach the child only via the IPC `env` payload from `extractForPlugin`.
 - [ ] ESLint synthetic-test acceptance (§C.9): planting `import { fork } from "node:child_process";` at the top of `packages/core/src/server.ts` fires the lint rule red; `pnpm run lint` exits non-zero.
 - [ ] `extractCredentialCapabilities()` retained at `loader.ts:199-203` AND `loader.ts:332` (R29); deleted only `extractV2Config()`.
@@ -2314,7 +2951,7 @@ These should all return the same base64 string. If they don't, the user has a mu
 - [ ] Audit-forgery smoke (§C.10): a malicious plugin emitting an audit event with `plugin: "kuzo"` is logged as `audit.forged_plugin_field` with the real child PID + the impersonated plugin name; the impersonated entry is NOT written.
 - [ ] Cross-version lock-path smoke (R27): a process holding `~/.kuzo/plugins/.lock` makes a new `kuzo credentials set` exit 30 with `E_LOCK_CROSS_VERSION`.
 - [ ] `homedir() + ".kuzo"` grep returns zero matches outside `packages/core/src/paths.ts` (R26).
-- [ ] `@kuzo-mcp/core` is pinned exact in `packages/cli/package.json` at publish time; `kuzo serve --version` prints matching cli + core versions (R30).
+- [ ] `@kuzo-mcp/core` is pinned exact in `packages/cli/package.json` at publish time (R30). Version pair visibility (round-4 A3 + user decision: Option C — both): (a) `kuzo serve` logs `[kuzo] cli=X.Y.Z core=A.B.C` to stderr exactly once at boot, before any other server output, and (b) `kuzo --version` (top-level program) prints `kuzo X.Y.Z (core A.B.C)` to stdout. Implementation: `serveCommand.action()` reads its own package.json + dynamically imports `@kuzo-mcp/core/package.json` via subpath export `./package.json`, formats the stderr line; the top-level `kuzo` Commander program uses `.version("0.0.0", "-V, --version", "...")` with a custom action that reads both packages. Subcommand version inheritance is NOT used — `kuzo serve --version` is documented as an alias for `kuzo --version` (Commander auto-handles via program-level `.version`). The two-package separation is documented in §F.4 known risks: `@kuzo-mcp/core` stays standalone for embedding scenarios (hosted deployment, library consumers); `@kuzo-mcp/cli` adds the user-facing surface; lockstep is enforced via changesets `linked` config + R30 exact-pin.
 - [ ] `.env`-loaded credential triggers the migrate-nudge stderr warning once per boot (R31). `KUZO_NO_MIGRATE_NUDGE=1` suppresses.
 
 **Part D — Server entry**
@@ -2398,8 +3035,13 @@ These should all return the same base64 string. If they don't, the user has a mu
      2. Re-provision via `kuzo credentials set <NAME>` for each credential OR `kuzo credentials migrate` if the source files (`~/.claude/settings.json`, `.env`) still have them.
 
    - **"CI / headless deployment"** subsection — link to §F.5 patterns.
-10. **PR strategy:** single PR against `main` OR five smaller per-part PRs. **Recommend** per-part PRs (mirrors 2.5e Parts A/B/C/D split — easier review). Part B (`migrate`) is the highest-risk PR; ship it alone with extra reviewer focus.
-11. **Release strategy:** changesets bump all 6 packages. `@kuzo-mcp/types` may stay at 0.0.1 if no type changes (note: `CredentialAccessMode` etc. are unchanged). `@kuzo-mcp/core` bumps minor (0.0.2 → 0.1.0 — new exports, new boot sequence). `@kuzo-mcp/cli` bumps minor (new subcommand tree). Three plugins bump patch (0.0.2 → 0.0.3 — no functional changes; bump only because consumer of core's minor bump). **Use a single coordinated release**, not per-package canaries, since the changes are interdependent.
+10. **PR strategy: per-Theme PRs (round-4 update — supersedes "per-Part PRs (mirrors 2.5e Parts A/B/C/D split)").** Themes 1–9 from the §0 cross-cutting build order each become their own PR. The Theme sequencing is correctness-driven (e.g., Theme 4 audit IPC lands before Theme 6 write-side audit events) and doesn't map cleanly onto Parts A/B/C/D anymore. Per-Theme keeps each PR reviewable in isolation, allows independent merge cadence, and lets the high-risk PRs (Theme 8 `migrate`, Theme 5 audit IPC) get focused review without blocking the cheap refactors (Theme 1 paths, Theme 2 storage primitives). The pre-Theme-0 manifest-bake commit (build-order step 0) ships as part of the Theme 1 PR or as its own micro-PR — implementer's call based on local diff size.
+11. **Release strategy:** changesets bump all 6 packages. **Contract changes (round-4 — explicit list for release notes):**
+    - `@kuzo-mcp/types` bumps to **0.1.0** (was: "may stay at 0.0.1"). New runtime exports: `isCredentialCapability` type guard. New optional manifest field: `KuzoPluginV2.testCredential` (round-3 §B.9). Pre-1.0 semver allows additive minor bump.
+    - `@kuzo-mcp/core` bumps **0.0.2 → 0.1.0**. New exports + new boot sequence. **Breaking export rename**: `AuditLogger` (concrete class) → `AuditLogger` (interface) + new `FileBackedAuditLogger` (concrete class). Any external consumer doing `new AuditLogger(...)` must switch to `new FileBackedAuditLogger(...)`. Pre-1.0 semver allows; document in release notes prominently (Architecture review round-4 advisory).
+    - `@kuzo-mcp/cli` bumps minor (new `credentials` + `serve` subcommand trees).
+    - Three plugins bump minor 0.0.2 → 0.1.0 (NOT patch — `kuzoPlugin.capabilities` field is a new contract surface; consumers reading plugin `package.json` static manifests for capabilities will break against old plugin versions). Bump alongside core/cli.
+    - **Use a single coordinated release**, not per-package canaries, since the changes are interdependent (especially the strict `@kuzo-mcp/cli` ↔ `@kuzo-mcp/core` exact-pin per R30).
 12. **Live e2e validation post-release:**
     a. Fresh user account on a Mac, `npm install -g @kuzo-mcp/cli@<new>`.
     b. Existing user, `npm update -g @kuzo-mcp/cli` → `kuzo credentials migrate` → settings.json now empty `env: {}` → kuzo serve works.
@@ -2511,4 +3153,4 @@ Not common for kuzo today (we're stdio-only), but documented for completeness. S
 
 ---
 
-**Spec locked 2026-05-10; round-3 + round-1/round-2 auto-review advisories absorbed 2026-05-12.** Implementation per the cutover plan in §F.3. Edits to the design land in PR diffs to this file, not in `docs/credentials-spec-brief.md` (which is the historical input). The round-3 remediation notes (`docs/credentials-spec-round3-notes.md`) are kept in-tree for implementation cross-reference; tracked for removal during the phase-close commit per issue #39.
+**Spec locked 2026-05-10; round-3 + round-1/round-2 auto-review advisories absorbed 2026-05-12; round-4 independent multi-reviewer revision absorbed 2026-05-13 (15 blocking + 13 advisory + ~25 nit findings across Security / Architecture / Correctness reviewers — see `docs/credentials-spec-round4-notes.md` for the synthesized triage list and disposition).** Implementation per the cutover plan in §F.3 (now per-Theme PRs, not per-Part — round-4 §F.3 step 10 update). Edits to the design land in PR diffs to this file, not in `docs/credentials-spec-brief.md` (which is the historical input). The round-3 + round-4 remediation notes (`docs/credentials-spec-round{3,4}-notes.md`) are kept in-tree for implementation cross-reference; tracked for removal during the phase-close commit per issue #39.
