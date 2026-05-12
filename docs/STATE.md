@@ -260,7 +260,7 @@ The first real release shipped after a 4-PR fixup saga uncovered three real bugs
 
 ### ⏭️ Fresh-session handoff — when user says "next"
 
-**Phase 2.6 credentials spec is implementation-ready as of 2026-05-12.** `docs/credentials-spec.md` (2428 lines) absorbed all 44 round-3 items + 2 round-1 Security advisories + 4 round-2 Security advisories via PR #38 (merged `47634f5`). The round-3 notes doc (`docs/credentials-spec-round3-notes.md`) is still in-tree for cross-reference during implementation; issue #39 tracks its removal during the Phase 2.6 phase-close commit per spec §F.3 step 9.
+**Phase 2.6 credentials spec is implementation-ready as of 2026-05-12.** `docs/credentials-spec.md` (2514 lines) absorbed all 44 round-3 items + 2 round-1 Security advisories + 4 round-2 Security advisories via PR #38 (merged `47634f5`), plus a post-merge implementer's read-through pass surfacing 7 internal-consistency fixes (PR follow-up). The round-3 notes doc (`docs/credentials-spec-round3-notes.md`) is still in-tree for cross-reference during implementation; issue #39 tracks its removal during the Phase 2.6 phase-close commit per spec §F.3 step 9.
 
 **Locked next-session plan (updated 2026-05-12):**
 

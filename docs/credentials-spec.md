@@ -58,7 +58,7 @@ Numbered against `docs/credentials-spec-brief.md` §5 open questions. Three subs
 | 12 | Rotation flow | `kuzo credentials rotate <name>` — audit-distinct alias for `set`; emits `credential.rotated` instead of `credential.set`. | No |
 | 13 | `KUZO_HOME` env override | Yes. Default `~/.kuzo/`. Precedence for plugins root: `KUZO_PLUGINS_DIR > KUZO_HOME/plugins > ~/.kuzo/plugins` (preserves 2.5e parity test). | No |
 | 14 | Audit on credential writes | Yes. New `AuditAction` variants: `credential.set`, `credential.deleted`, `credential.rotated`, `credential.migrated`, `credential.migration_partial`, `credential.store_unlocked`, `credential.store_locked`, `credential.passphrase_consumed`, `credential.scrub_disabled`, `credential.wiped`, `credential.tested`, `audit.forged_plugin_field`. None record the value. Plugin-host audit emissions flow through IPC to the parent so the parent owns the writer (R16). | No |
-| 15 | Shutdown scrub | Yes. `EncryptedCredentialStore.close()` zeroes the in-memory cleartext map. Each plugin's `DefaultCredentialBroker` shutdown call also zeroes its scoped Map. Wired in `server.ts` shutdown path before `registry.shutdownAll()`. | No |
+| 15 | Shutdown scrub | Yes. **Parent**: `EncryptedCredentialStore.close()` clears the cache + `KeyProvider.wipeKeyCache?.()` zeros the master-key Buffer; wired in `server.ts` shutdown path before `registry.shutdownAll()`. **Child**: each plugin's `DefaultCredentialBroker.shutdown()` clears its scoped Map; wired in `plugin-host.ts` after `plugin.shutdown()` per R25. Honest-zero-fill language per R13 — strings are dropped by reference; only Buffer overwrites are actual wipes. | No |
 | 16 | Cross-platform secret store names | macOS Keychain / Linux Secret Service / Windows Credential Manager: `service="kuzo-mcp"`, `account="master-key"`. Single entry — the value is a base64-encoded AES-256 key, not a plugin credential. The encrypted blob is what holds individual credentials. | Refined — single entry not per-credential |
 
 ### Non-goals (explicitly out of 2.6)
@@ -828,13 +828,11 @@ Implementation note: the Commander action handler does NOT accept a secret argum
 ```typescript
 interface CredentialsSetOptions {
   stdin: boolean;
-  type: "pat";
   yes: boolean;
 }
 new Command("set")
   .argument("<name>", "Credential name (env-var-style, e.g. GITHUB_TOKEN)")
   .option("--stdin", "Read value from stdin", false)
-  .option("--type <type>", "Credential type", "pat")
   .option("-y, --yes", "Skip confirmation", false)
   .action(async (name: string, options: CredentialsSetOptions) => { ... });
 ```
@@ -1358,8 +1356,12 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
   const credentialSource = new CredentialSource(credentialStore, envOverrides);
 
   // 9. plugin loader — note the registry argument is FIRST per loader.ts:38-44.
+  //    Hoist the registry instance so the shutdown hook (step 13) can reach it
+  //    without going through loader.registry (cleaner separation, matches the
+  //    pre-2.6 code's top-level handle).
+  const registry = new PluginRegistry();
   const loader = new PluginLoader(
-    new PluginRegistry(),
+    registry,
     configManager,
     new KuzoLogger("loader"),
     consentStore,
@@ -1383,7 +1385,7 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
   freezePrototypes();
 
   // 12. start MCP transport (existing)
-  const server = buildMcpServer(loader.registry);
+  const server = buildMcpServer(registry);
   await server.connect(new StdioServerTransport());
 
   // 13. shutdown hooks (existing + extended)
@@ -1652,7 +1654,7 @@ The dotenv load itself doesn't change behavior — `.env` is also where users ke
 - **Plugin manifest data for the pre-scrub boot step comes from `package.json#kuzoPlugin` only.** Plugin entry modules are never `import()`-ed before scrub. If a plugin's runtime manifest (the `KuzoPluginV2` object exported from its entry) declares a `CredentialCapability` not present in `package.json#kuzoPlugin.capabilities`, the loader skips the plugin with `plugin.failed: manifest_drift` rather than silently widening the scrub list. Plugin authors keep both in sync; the install CLI's verify command surfaces drift.
 - **`KUZO_PASSPHRASE` is unconditionally scrubbed**, separate from the declared-env-names list. `KUZO_NO_ENV_SCRUB=1` (kill-switch for dotenv-library debugging) does NOT exempt `KUZO_PASSPHRASE`. The kill-switch is also not a supported production knob — emit a loud `logger.warn` plus a `credential.scrub_disabled` audit event when set.
 - **`KUZO_NO_ENV_SCRUB=1` is for dotenv-collision debugging only**, not for production. Emit a loud warning at boot when set.
-- **Factory registration is a side-effect import.** Third-party plugins doing `registerClientFactory("foo", factoryFn)` at module top-level means import order matters — the factory is registered the first time the plugin module is loaded. Since loader dynamic-imports each plugin once, that's fine. Multiple registrations of the same service throw.
+- **Factory registration happens inside `initialize()`, NOT at module top-level (R24).** Pre-`initialize` registration via module side effects is forbidden — module-top-level code has no `PluginContext` reference and runs before broker construction. Plugins MUST call `context.credentials.registerClientFactory(...)` synchronously inside their `initialize(context)` body BEFORE the first `getClient` call. Cross-plugin registration is rejected (the broker pins each plugin to its own service at construction). Idempotent: same `(plugin, service)` pair registering twice is a no-op.
 - **The third-party factory has full access to the scoped config Map.** That's by design — the factory IS plugin-controlled code. The security boundary is "factory cannot escape the plugin's process" (already enforced by 2.5d isolation) + "factory only receives the scoped credentials the plugin declared." Not "factory cannot see raw tokens." The brief's vector 2 is mitigated by the broker shape on first-party services; for third-party, the user must trust the plugin code (via Sigstore + consent) — same as for any installed npm package.
 
 ### C.9 Lint rule — `child_process` ban in pre-scrub paths
@@ -1986,7 +1988,7 @@ export const serveCommand = new Command("serve")
       await runServer({ scrub: options.scrub });
     } catch (err) {
       process.stderr.write(`kuzo serve failed: ${(err as Error).message}\n`);
-      process.exit(70);
+      process.exit(80); // E_SERVER_BOOT_FAILED — see §B.10 (moved from 70 per R44)
     }
   });
 ```
@@ -2334,7 +2336,7 @@ These should all return the same base64 string. If they don't, the user has a mu
 
 - [ ] `docs/SECURITY.md` §6 updated — "Credential Storage (Phased)" table marks 2.5d+ as **shipped in 2.6** with the encrypted-blob design. Threat model gains vector 1/3/4/7 explicit mitigations + vector 2 (signed-but-evil plugin) called out as newly defended.
 - [ ] `docs/PLANNING.md` — Phase 2.6 added between 2.5 and 3, summary paragraph + decision pointers.
-- [ ] `docs/STATE.md` — Phase 2.6 entry with PR refs; "Fresh-session handoff" plan advances to step 3 (real-life QA via Claude Code).
+- [ ] `docs/STATE.md` — Phase 2.6 entry with PR refs; "Fresh-session handoff" plan advances past implementation to the next phase (real-life QA via Claude Code per the broader roadmap).
 - [ ] `README.md` — install instructions show the new `command: "kuzo", args: ["serve"]` block + a "Set credentials with `kuzo credentials migrate`" call-out.
 - [ ] Live e2e smoke: fresh `npm install -g @kuzo-mcp/cli@<new-release>` on a clean macOS user account → `kuzo plugins install github` → inline credential prompt → set GITHUB_TOKEN → `kuzo serve` → Claude Code calls a github tool successfully. **No env vars or .env file involved.**
 
@@ -2509,4 +2511,4 @@ Not common for kuzo today (we're stdio-only), but documented for completeness. S
 
 ---
 
-**Spec locked 2026-05-10.** Implementation per the cutover plan in §F.3. Edits to the design land in PR diffs to this file, not in `docs/credentials-spec-brief.md` (which is the historical input).
+**Spec locked 2026-05-10; round-3 + round-1/round-2 auto-review advisories absorbed 2026-05-12.** Implementation per the cutover plan in §F.3. Edits to the design land in PR diffs to this file, not in `docs/credentials-spec-brief.md` (which is the historical input). The round-3 remediation notes (`docs/credentials-spec-round3-notes.md`) are kept in-tree for implementation cross-reference; tracked for removal during the phase-close commit per issue #39.
