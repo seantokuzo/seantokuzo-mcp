@@ -937,9 +937,21 @@ On confirm:
    a. `store.set(name, value)` — encrypts + writes.
    b. **Read-back-verify**: `store.get(name) === value`. Byte compare. If mismatch, abort the entire migration (rollback any earlier `store.set` calls for this run by restoring the original encrypted file from a memory copy taken at the start), surface `E_READBACK_FAIL`, exit 60.
    c. Audit `credential.migrated` with key name only and `source: "claude-settings" | "env-file"`.
-3. After **all** read-backs pass, rewrite each source file:
-   - `settings.json`: parse the in-memory snapshot from step 1.e, delete each migrated key from the kuzo MCP entry's `env` block, write to `settings.json.tmp` (open with `O_NOFOLLOW | O_CREAT | O_WRONLY`, mode `0600`), `fs.fsync(fd)` on the data, `rename` over `settings.json`, `fs.fsync` the **containing directory's** fd so the rename hits disk. **No `.bak` file.**
-   - `.env` files: same dance — strip matching lines (preserving comments / non-cred lines), write tmp with same flags, rename, fsync.
+3. After **all** read-backs pass, rewrite each source file. **Both formats parse → drop → re-serialize; neither uses line-strip.** This matters: `.env` syntax supports quoted multi-line values, escape sequences, and `export` prefixes (the `dotenv` library handles them at boot via `loadDotenv`); a naive line-strip would leave orphaned cleartext on disk for any credential whose value spans multiple lines. The redaction parser MUST be the SAME one the loader uses at boot — `dotenv@latest`'s `parse()` for `.env` and `JSON.parse` for `settings.json` — so what we drop is exactly what would have been loaded.
+   - `settings.json`: `JSON.parse` the in-memory snapshot from step 1.e → delete each migrated key from the kuzo MCP entry's `env` block → `JSON.stringify(..., null, 2)` (preserve indentation per repo convention; falls back to original-source-detected indent if the file used 4-space or tabs) → write to `settings.json.tmp` (open with `O_NOFOLLOW | O_CREAT | O_WRONLY`, mode `0600`), `fs.fsync(fd)` on the data, `rename` over `settings.json`, `fs.fsync` the **containing directory's** fd so the rename hits disk. **No `.bak` file.**
+   - `.env` files: same atomic dance with the parser swap. `import { parse } from "dotenv"` (the actual loader dep already in our tree) → drop matching keys from the parsed Record → re-serialize. Re-serialization is the only step `dotenv` doesn't ship today; implement it as a small helper that emits one `KEY="value"` line per key with values escaped per dotenv's quoted-string rules (`\n` → literal `\n`, `"` → `\"`, etc.). Preserve comments AND blank lines from the source by walking the source lines and, for each non-`KEY=` line, copying it verbatim into the output between the dropped/kept key entries. Acceptance fixture (§F.1): a `.env` with:
+     ```
+     # leading comment, preserved
+     GITHUB_TOKEN="ghp_xxxxx
+     trailing-line-that-is-actually-part-of-the-value"
+     LOG_LEVEL=info
+     export OPENAI_API_KEY=sk-...
+
+     # trailing comment, preserved
+     ```
+     After migrate, the rewritten file MUST contain ONLY the comments, blank line, `LOG_LEVEL=info`, and `export OPENAI_API_KEY=sk-...` lines — no fragment of the `GITHUB_TOKEN` quoted-value second line. Round-trip via `dotenv.parse(read(.env))` after the rewrite to confirm the result is parseable (no orphan quote-state).
+
+   **Why parse-don't-line-strip matters here.** Brief's vector 3 (dotfiles/backup leaks) is exactly what migrate exists to prevent. A line-strip that leaves `trailing-line-that-is-actually-part-of-the-value"` on disk is the worst-of-both: the user thinks they're protected (`kuzo credentials list` shows the token stored), but the source file has half the secret in cleartext. Specifying the parser closes the gap before code lands.
 4. **Editor-collision check (R19) — just before each rename:** re-read the source file with the same flags, byte-compare against the snapshot Buffer from step 1.e. If different → abort with `E_SOURCE_MUTATED` (exit 76) and instruct: "the source file `<path>` was modified during migration; close your editor and retry. Already-imported credentials remain in the store; re-running `kuzo credentials migrate` is safe (already-stored matching values are skipped per R20)."
 5. If any source rewrite fails:
    - The credential is already in the store (succeeded at step 2).
@@ -1133,7 +1145,10 @@ Extend the `AuditAction` union (`packages/core/src/audit.ts`) with:
 | "credential.tested"               // kuzo credentials test <name> (R33)
 | "credential.refreshed_in_flight"  // file-watch IPC refresh propagated to running plugins (R34)
 | "audit.forged_plugin_field"       // parent caught a child impersonating another plugin (R16)
+| "audit.forged_action"             // parent caught a child emitting a non-allowlisted action (round-1 advisory)
 ```
+
+`AuditEvent` shape additionally gains a `source: "parent" | "child"` field, stamped at write time by the parent (see §C.10 action-class allowlist). Existing entries (pre-2.6) have no `source` field — consumers MUST treat missing as `"parent"` because pre-2.6 only the parent wrote to `audit.log`.
 
 Event payloads (the `details` field) never include the value. They include:
 - `credentialKey` — the env-var-style name.
@@ -1696,20 +1711,36 @@ The 2.5d isolation split moved the `DefaultCredentialBroker` into the plugin chi
 ```typescript
 // packages/core/src/plugin-process.ts — new IPC handler
 // Each PluginProcess knows its declared plugin name (set at construction).
+
+// Allowlist of audit actions a plugin child is allowed to emit. These are the
+// read-side events that the in-child DefaultCredentialBroker legitimately
+// produces. Every other AuditAction variant (the write-side events from §B.7
+// — credential.set/.rotated/.migrated/.wiped/.tested/.scrub_disabled/etc.)
+// is parent-only and must NOT appear in child IPC traffic.
+const CHILD_PERMITTED_AUDIT_ACTIONS = new Set<AuditAction>([
+  "credential.client_created",
+  "credential.raw_access",
+  "credential.raw_denied",
+  "credential.fetch_created",
+]);
+
 private handleAuditEvent(event: AuditEvent): void {
   // 1. Always stamp PID from child — overwrites any caller-supplied value.
+  //    Also stamp source: "child" so audit consumers can reason about the
+  //    write boundary even on legitimate emissions.
   const stampedEvent: AuditEvent = {
     ...event,
     pid: this.childPid,
+    source: "child",
   };
 
-  // 2. Validate plugin field matches the child's declared identity.
+  // 2. Validate plugin field matches the child's declared identity (R16).
   if (stampedEvent.plugin !== this.declaredPluginName) {
-    // Forged plugin field — log the forgery with both values and continue.
     this.auditLogger.log({
       plugin: "kuzo",
       action: "audit.forged_plugin_field",
       outcome: "denied",
+      source: "parent",
       details: {
         claimed_plugin: stampedEvent.plugin,
         actual_plugin: this.declaredPluginName,
@@ -1717,14 +1748,66 @@ private handleAuditEvent(event: AuditEvent): void {
         attempted_action: stampedEvent.action,
       },
     });
-    // Do NOT write the impersonated entry. The forgery audit IS the record.
     return;
   }
 
-  // 3. Trusted: write through the parent's AuditLogger.
+  // 3. Validate action is in the child-permitted allowlist (R16 advisory).
+  //    Closes the action-class impersonation vector: a compromised child
+  //    correctly claiming its own plugin identity can still try to emit
+  //    write-side events (credential.set / .rotated / .migrated / .wiped /
+  //    .tested / .scrub_disabled) and have them pollute the audit trail
+  //    indistinguishably from parent-CLI emissions. The allowlist refuses
+  //    those at the trust boundary.
+  if (!CHILD_PERMITTED_AUDIT_ACTIONS.has(stampedEvent.action)) {
+    this.auditLogger.log({
+      plugin: "kuzo",
+      action: "audit.forged_action",
+      outcome: "denied",
+      source: "parent",
+      details: {
+        plugin: this.declaredPluginName,
+        child_pid: this.childPid,
+        attempted_action: stampedEvent.action,
+        permitted: Array.from(CHILD_PERMITTED_AUDIT_ACTIONS),
+      },
+    });
+    return;
+  }
+
+  // 4. Trusted: write through the parent's AuditLogger with source="child".
   this.auditLogger.log(stampedEvent);
 }
 ```
+
+**Action-class allowlist rationale.** Without step 3, R16's `plugin` validation closes cross-plugin impersonation (github plugin can't claim to be jira) but leaves action-class impersonation open: the github plugin, legitimately stamped as `plugin: "github"`, could emit `action: "credential.rotated"` and pollute the audit trail with a fake "user rotated github creds at 14:32" entry. Audit reviewers reasoning about "who initiated this write" can't distinguish parent-CLI emissions from child IPC emissions because the action set is supposed to be partitioned by trust boundary. The allowlist makes the partition explicit and machine-enforced at the IPC boundary.
+
+**Permitted child actions are exactly the read-side broker events** that the in-child `DefaultCredentialBroker` legitimately produces during plugin tool execution:
+
+- `credential.client_created` — `broker.getClient<T>()` returned a constructed client.
+- `credential.raw_access` — `broker.getRawCredential()` returned a value.
+- `credential.raw_denied` — `broker.getRawCredential()` denied (no capability declared).
+- `credential.fetch_created` — `broker.createAuthenticatedFetch()` was called.
+
+Every other audit action is parent-only:
+
+| Action | Producer | Permitted from child? |
+|---|---|---|
+| `credential.client_created` / `.raw_access` / `.raw_denied` / `.fetch_created` | child broker | ✓ |
+| `credential.store_unlocked` / `.store_locked` | parent store | ✗ |
+| `credential.set` / `.deleted` / `.rotated` / `.migrated` / `.migration_partial` / `.wiped` / `.tested` | parent CLI | ✗ |
+| `credential.passphrase_consumed` | parent `PassphraseKeyProvider` | ✗ |
+| `credential.scrub_disabled` | parent `runServer()` boot | ✗ |
+| `credential.refreshed_in_flight` | parent file-watch handler | ✗ |
+| `audit.forged_plugin_field` / `audit.forged_action` | parent IPC validator | ✗ |
+| `consent.*` / `plugin.*` (existing 2.5c/2.5e) | parent CLI / loader | ✗ |
+
+**`source: "parent" | "child"` field** is also stamped on every entry at write time. Audit consumers reading `audit.log` can filter by source to reason about trust without needing to know the allowlist. Add `source` to the `AuditEvent` shape in `packages/core/src/audit.ts`. Existing entries (pre-2.6) get `source` omitted; consumers treat missing as `"parent"` (the only writer pre-2.6 was the parent).
+
+**Acceptance criterion update (§F.1).** Extend the audit-forgery synthetic test:
+
+1. Existing: plant a child emitting `plugin: "kuzo"` → assert `audit.forged_plugin_field` lands; the impersonated entry is NOT written.
+2. NEW: plant a child correctly claiming `plugin: "github"` but emitting `action: "credential.rotated"` → assert `audit.forged_action` lands with `details.attempted_action === "credential.rotated"` and `details.permitted` listing exactly the four read-side events; the impersonated entry is NOT written.
+3. NEW: plant a child legitimately emitting `action: "credential.client_created"` → assert it lands with `source: "child"` and the child's PID.
 
 **Child-side IPC sender protocol:**
 
@@ -2152,6 +2235,7 @@ These should all return the same base64 string. If they don't, the user has a mu
 - [ ] `migrate` performs read-back-verify before redacting source; on failure does not touch source files.
 - [ ] `migrate` never writes a `.bak` file.
 - [ ] `migrate --dry-run` shows the plan without mutating anything.
+- [ ] **`.env` redaction uses dotenv parse → drop → re-serialize, NOT line-strip (round-1 advisory).** Fixture test: a `.env` containing a multi-line quoted credential value (e.g. `GITHUB_TOKEN="ghp_xxx\ntrailing-line"`), an `export`-prefixed entry, leading/trailing comments, and a blank line round-trips through migrate. After redaction: comments + blank lines + non-credential entries preserved verbatim; no fragment of the multi-line value's continuation line remains anywhere in the rewritten file; `dotenv.parse(rewritten)` succeeds with no orphan quote state.
 - [ ] `kuzo plugins install` runs the inline-credential prompt for missing required credentials when interactive; respects `-y`.
 - [ ] Audit log shows `credential.set` / `.deleted` / `.rotated` / `.migrated` / `.store_unlocked` / `.store_locked` events; no event includes the credential value.
 - [ ] Shared lock at `~/.kuzo/.lock` prevents concurrent `kuzo plugins install` + `kuzo credentials set`.
