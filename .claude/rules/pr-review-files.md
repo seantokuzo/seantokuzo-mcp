@@ -15,7 +15,7 @@ When you're touching review workflows or instructions, remember the surface.
 |------|----------|---------|-------|--------|
 | 1 | `claude.yml` | `@claude` mentions, `workflow_dispatch` | Opus 4.6 | `max` |
 | 2 | `claude-code-review.yml` | PR open/sync/ready, `workflow_dispatch` | Opus 4.7 | `xhigh` |
-| 3 | `claude-deep-review.yml` | label `claude-deep-review`, `workflow_dispatch` | Opus 4.7 | `max`, 30 turns |
+| 3 | `claude-deep-review.yml` | label `claude-deep-review`, `workflow_dispatch` | Opus 4.7 | `max`, 150 turns |
 
 ## Sentinels (HTML-commented JSON in specialist comments)
 
