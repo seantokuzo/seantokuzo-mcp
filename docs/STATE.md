@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-05-13 (Phase 2.6 credentials spec round-4 revision drafted on `phase-2.6/credentials-spec-round4` — 15 BLOCKING + 13 ADVISORY findings from a fresh independent multi-reviewer pass absorbed. Round-4 notes companion at `docs/credentials-spec-round4-notes.md`. PR pending. Headline: 5 spec-contradicts-code findings spot-verified real before fixing; new §A.0.1 (kuzoPlugin.capabilities contract) + §A.12 (strict per-plugin env reservation) + §C.10.1 (audit rate-limit + log rotation) added; many internal contradictions corrected; build-order shifts to per-Theme PRs. After round-4 merges, spec is genuinely implementation-ready.)
+**Last Updated:** 2026-05-14 (Phase 2.6 credentials spec round-4 merged via PR #41 — 15 BLOCKING + 13 ADVISORY findings from independent multi-reviewer pass absorbed. Round-4 notes companion at `docs/credentials-spec-round4-notes.md` (deleted at phase-close per #39). Spec is implementation-ready. **Outstanding:** PR #42 bumps review workflow max-turns (Tier 2 18→80, Tier 3 30→150, synthesizers 8→30) — landed because round-4 PR ran specialists into the 18-turn cap. **Next:** Phase 2.6 implementation. Start at build-order step 0 — bake `kuzoPlugin.capabilities` into the three first-party plugin `package.json` files + add `scripts/check-plugin-manifest-parity.mjs` prebuild script. Per-Theme PRs from there.)
 
 ---
 
@@ -260,31 +260,51 @@ The first real release shipped after a 4-PR fixup saga uncovered three real bugs
 
 ### ⏭️ Fresh-session handoff — when user says "next"
 
-**Phase 2.6 credentials spec is implementation-ready pending round-4 merge.** `docs/credentials-spec.md` absorbed all 44 round-3 items + round-1/round-2 Security advisories via PR #38 (merged `47634f5`), then a post-merge read-through pass. **Round-4 (2026-05-13)** ran 3 independent reviewer subagents (Security / Architecture / Correctness) blind to each other and surfaced 15 BLOCKING + 13 ADVISORY findings the prior rounds missed — most prominent: (a) the load-bearing `kuzoPlugin.capabilities` static-manifest contract did not actually exist in any plugin's `package.json` (vector-2 defense silently broken); (b) `server.ts` self-invocation guard claimed "kept" did not exist (would double-boot CLI imports); (c) `CredentialCapability` had no env-naming policy (malicious plugin could break boot, alias first-party credentials, or capture `KUZO_PASSPHRASE`); (d) `fs.watch` on `credentials.enc` was detached by the spec's own atomic-rename — rotation #2+ silently failed; (e) child→parent audit IPC had no rate limit (plugin-driven disk-fill DoS). Round-4 disposition + section-by-section edits documented in `docs/credentials-spec-round4-notes.md`. The round-3 + round-4 notes are both in-tree for cross-reference during implementation; issue #39 tracks their removal during phase-close.
+**Phase 2.6 credentials spec is implementation-ready as of 2026-05-12 (PR #41 merged).** `docs/credentials-spec.md` (~3220 lines) absorbed all round-1/round-2/round-3 advisories plus round-4's 15 BLOCKING + 13 ADVISORY findings from an independent multi-reviewer pass (Security / Architecture / Correctness specialists, blind to each other). Round-4 caught 5 spec-contradicts-code claims that prior rounds missed (`kuzoPlugin.capabilities` not in plugin `package.json` files; `server.ts` self-invocation guard absent; `PluginRegistry` constructor missing arg; `clientFactories` module-level singleton; `AuditLogger` concrete class vs interface) plus 3 novel security gaps (no capability env-naming policy; `fs.watch` detached by atomic-rename; child→parent audit IPC unbounded). Spec sections added: §A.0.1 (manifest contract), §A.12 (strict per-plugin env reservation), §C.10.1 (audit rate-limit + rotation). Disposition documented section-by-section in `docs/credentials-spec-round4-notes.md`. Round-3 + round-4 notes both in-tree for cross-reference during implementation; deleted at phase-close per issue #39.
 
-**Locked next-session plan (updated 2026-05-12):**
+**Outstanding bookkeeping PR:** PR #42 (`ci/bump-review-max-turns`) bumps auto-review workflow max-turns so specialists don't hit budget caps on large spec/refactor PRs (round-4 PR ran 3/4 specialists into the 18-turn cap). Tier 1 10→40, Tier 2 specialists 18→80, Tier 2 synth 8→30, Tier 3 specialists 30→150, Tier 3 synth 8→30. Trivial workflow tweak; fresh session can poll/merge if still open.
 
-0. **IMMEDIATE NEXT — open round-4 spec PR.** Branch `phase-2.6/credentials-spec-round4` has the round-4 revision. Open the PR (single PR, mirrors PR #38 shape), get reviewer pass, merge. Companion doc `docs/credentials-spec-round4-notes.md` lives alongside spec until phase-close (deleted with round-3 notes per issue #39).
-1. **NEXT SESSION (after round-4 merge) — Phase 2.6 implementation: Credential Storage & Provisioning.** Build per the spec's §0 Cross-cutting build order. **Per-Theme PRs** (one PR per Theme 1-9, not per-Part — round-4 §F.3 step 10 update). Step 0 (manifest bake) ships first:
-   1. E.1–E.2: `KUZO_HOME` + shared `packages/core/src/paths.ts`
-   2. A.1–A.4: Storage primitives (cipher, key providers, store interface + impl)
-   3. A.5–A.6: CredentialSource + env-override collection
-   4. C.1–C.3 + C.9: Boot sequence rewrite + child_process ESLint rule
-   5. C.10: Plugin-host audit emissions over IPC (must land before write-side events per round-1 advisory R16)
-   6. C.4–C.6: Broker write-side audit events + shutdown hooks
-   7. B.1–B.3 + A.11: credentials set/list/delete/rotate/status/test/wipe + state machine
-   8. B.4: credentials migrate (highest-risk — symlink-safe + dotenv parser + post-rewrite verify per round-1 + round-2 advisories)
-   9. D.1–D.3 + C.11: `kuzo serve` bin + rotation cache invalidation (fs.watch + IPC refresh)
-   10. F: Docs + canary release (all 6 packages — core/cli/plugins to 0.1.0, types stays 0.0.1 if no contract changes)
+**Locked next-session plan (updated 2026-05-14):**
 
-   Acceptance criteria in §F.1 are extensive — ~90 checkbox items covering all parts. Per-step build-greenness: `pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm test:parity` must remain clean.
+0. **IMMEDIATE NEXT — Phase 2.6 implementation: Credential Storage & Provisioning.** Build per the spec's §0 Cross-cutting build order. **Per-Theme PRs** (one PR per Theme 1-9, not per-Part — round-4 §F.3 step 10 update). **Start at build-order step 0 (manifest bake):**
+
+   - Add `kuzoPlugin.capabilities` + (where applicable) `kuzoPlugin.optionalCapabilities` arrays to each of `packages/plugin-github/package.json`, `packages/plugin-jira/package.json`, `packages/plugin-git-context/package.json` — mirroring the runtime `KuzoPluginV2.capabilities` exported from each plugin's `src/index.ts`. See `docs/credentials-spec.md` §A.0.1 for the contract + an example shape.
+   - Add a new `scripts/check-plugin-manifest-parity.mjs` that imports the built `dist/index.js`'s default export, deep-equals its `capabilities` + `optionalCapabilities` against the plugin's `package.json#kuzoPlugin.*` fields, and exits non-zero on drift.
+   - Wire the script as a `prebuild` script in each `packages/plugin-*/package.json` so `pnpm --filter ... build` fails on drift.
+   - Also add the static `FIRST_PARTY_ENV_RESERVATIONS` map to `packages/core/src/credentials/env-namespace.ts` (the file is new in this commit — used by §A.12 later, but the map is needed at build-time check via a separate verification that first-party plugin manifests match their reservation row). For simplicity, can defer the namespace.ts file to Theme 7 (credentials CLI) and ship only the manifest fields + parity script in this step.
+   - Quality gate: `pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm test:parity` clean.
+   - Single PR titled e.g. `feat(plugins): bake kuzoPlugin.capabilities into package.json (round-4 B1 / build-order step 0)`. Small diff (~3 plugin package.jsons + 1 script + 3 prebuild script entries).
+
+1. **Then Theme 1 — `KUZO_HOME` + shared `packages/core/src/paths.ts`** (§E.1–E.2). Refactor existing scattered `~/.kuzo` references to a shared path helper; consent.ts + audit.ts pick up new helpers. Zero behavior change. Includes the lint rule from §E.2 acceptance that bans inline `homedir() + ".kuzo"` outside `paths.ts`.
+
+2. **Then Theme 2 onwards** per the spec's §0 build order:
+   - Theme 2: A.1–A.4 — Storage primitives (cipher, key providers, store interface + impl) — uses unit tests against tmpdir + `InMemoryKeyProvider` test double
+   - Theme 3: A.5–A.6 — CredentialSource + env-override collection (bridges store + env)
+   - Theme 4: C.1–C.3 + C.9 — Boot sequence rewrite + `child_process` ESLint rule. **Adds the self-invocation guard at server.ts bottom** (round-4 B2 — does not exist today). Parity test must stay green.
+   - Theme 5: C.10 + C.10.1 — Plugin-host audit emissions over IPC + rate-limit + log rotation. Must land BEFORE write-side audit events.
+   - Theme 6: C.4–C.6 — Broker write-side audit events + shutdown hooks; retire module-level `clientFactories` singleton (round-4 advisory A1).
+   - Theme 7: B.1–B.3 + A.11 + A.12 — `kuzo credentials set/list/delete/rotate/status/test/wipe` + state machine + strict env-name reservation install-time validation.
+   - Theme 8: B.4 — `kuzo credentials migrate` (HIGHEST-RISK PR — symlink-safe + dotenv parser + step-3-substep ordering + read-back-verify + post-rewrite redaction-verify + storeSnapshot rollback per round-1/2/4 advisories).
+   - Theme 9: D.1–D.3 + C.11 — `kuzo serve` bin + **directory-watch** rotation cache invalidation (round-4 B14 — watch dirname not file).
+   - Phase close: docs + canary release (core/cli/plugins to 0.1.0; types to 0.1.0 — gained `isCredentialCapability` + `testCredential` per round-4 §F.3 step 11). `AuditLogger` rename breaking-export call-out in release notes.
+
+   Acceptance criteria in §F.1 are extensive — ~100 checkbox items covering all parts. Per-step build-greenness: `pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm test:parity` must remain clean.
 2. **AFTER IMPLEMENTATION LANDS — Phase 2.6 phase-close.** Update `SECURITY.md` §6, `PLANNING.md`, this file, `README.md` per §F.3 step 9. Delete `docs/credentials-spec-round{3,4}-notes.md` (closes issue #39). Cut coordinated release for all 6 packages.
 3. **AFTER CREDENTIALS SHIP — Real-life QA via Claude Code.** Hook up the published `@kuzo-mcp/cli` as an MCP server in `~/.claude/settings.json`. Use across normal daily work for a stretch — natural QA. File issues for whatever surfaces. NO new feature work; just bake-time on the published artifacts. Now actually viable because the user can provision credentials via the documented `kuzo credentials set` flow instead of hand-editing settings.json env blocks.
 4. **AFTER QA SETTLES — AppleTV plugin.** See memory `project_appletv_plugin.md`. First session is research-heavy: Node.js library landscape (pyatv-equivalent? native MediaRemote/MRP?), MCP tool surface (remote, now-playing, search, app launch, screenshot), capability profile (network: LAN; credentials: pairing token), plugin spec mirroring the github/jira decompositions. Build it as `@kuzo-mcp/plugin-appletv` following the locked decisions (pnpm workspaces, scoped name, KuzoPluginV2 manifest, version derived from package.json via createRequire).
 5. **AFTER APPLETV SHIPS — Hosted deployment + Claude.ai custom connector.** AppleTV is the forcing function: Sean wants AppleTV control from Claude.ai mobile, which only works if the MCP server is reachable remotely. Get the server running cheaply somewhere (Fly.io / Railway / Cloudflare). Add a thin SSE/HTTP transport adapter on top of `@kuzo-mcp/core` (current stdio transport is local-only).
 6. **AFTER HOSTING — Plugin expansion wave.** Build out more integrations and fill gaps in existing plugins. Driven by what Sean actually uses day-to-day rather than a pre-planned "Phase 3" scope. This is the long-tail expansion work — no defined scope yet.
 
-**On a fresh session, when user says "next":** if the round-4 spec PR (branch `phase-2.6/credentials-spec-round4`) is still open, start at step 0 (poll the PR, address review). Once it merges, the spec is locked; start at step 1 — Phase 2.6 implementation. Read `docs/credentials-spec.md` §0 + the section relevant to the current Theme (e.g., §A.0.1 + §0 step 0 if starting fresh — the manifest bake commit is the foundation everything else relies on). Each Theme is one PR.
+**On a fresh session, when user says "next":**
+
+1. **Check PR #42 (max-turns bump).** If still open, poll/judge/merge it first — it's a trivial workflow tweak (4 files, ~12 line changes). The Architecture specialist should pass cleanly; Security + Correctness specialists are largely N/A for a workflow YAML change. Once merged, all future review PRs benefit from the higher turn budget.
+2. **Start at Theme 0 / build-order step 0 — manifest bake.** Read `docs/credentials-spec.md` §A.0.1 (the contract — ~50 lines) + §0 build order step 0 (the commit list). Open a new branch `phase-2.6/manifest-bake` (or whatever convention you prefer for per-Theme PRs). Apply the changes:
+   - Add `kuzoPlugin.capabilities` + `kuzoPlugin.optionalCapabilities` to each plugin's `package.json` mirroring `KuzoPluginV2.capabilities` from `src/index.ts`. The actual capability values are already in the runtime manifests — copy them.
+   - Add `scripts/check-plugin-manifest-parity.mjs` (deep-equal runtime vs static, exit non-zero on drift). Wire as `prebuild` in each plugin's `package.json`.
+   - Quality gate clean. Single PR.
+3. **Continue Theme 1 onwards** per the build order above. Each Theme is its own PR; the Theme 8 migrate PR ships alone with extra reviewer focus per round-4 advisory.
+
+Spec is locked; no more spec revision. The implementation just executes the spec section-by-section.
 
 **Round-3 takeaway** (load-bearing context for any implementation work): the broker lives in the CHILD process per 2.5d isolation (`plugin-host.ts:114`). Parent-eager decrypt is the locked model — parent decrypts at boot when any plugin needs the store (during `loader.loadAll()`, not on first tool call); zero prompts if env overrides satisfy everything. Per-plugin Map ships to children via IPC. Child has no `KeyProvider`. Every credential-adjacent design choice flows from this.
 
