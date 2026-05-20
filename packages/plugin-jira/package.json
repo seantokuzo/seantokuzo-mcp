@@ -36,6 +36,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "postbuild": "node ../../scripts/check-plugin-manifest-parity.mjs",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -51,7 +52,32 @@
     "name": "jira",
     "permissionModel": 1,
     "entry": "./dist/index.js",
-    "minCoreVersion": "^0.0.1"
+    "minCoreVersion": "^0.0.1",
+    "capabilities": [
+      {
+        "kind": "credentials",
+        "env": "JIRA_HOST",
+        "access": "client",
+        "reason": "Jira Cloud instance hostname for API base URL"
+      },
+      {
+        "kind": "credentials",
+        "env": "JIRA_EMAIL",
+        "access": "client",
+        "reason": "Email address for Basic auth with the Jira API"
+      },
+      {
+        "kind": "credentials",
+        "env": "JIRA_API_TOKEN",
+        "access": "client",
+        "reason": "API token for Basic auth with the Jira API"
+      },
+      {
+        "kind": "network",
+        "domain": "*.atlassian.net",
+        "reason": "All Jira Cloud API calls"
+      }
+    ]
   },
   "sideEffects": false,
   "publishConfig": {
