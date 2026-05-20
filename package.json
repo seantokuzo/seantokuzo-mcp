@@ -5,9 +5,10 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && pnpm run check:manifest",
     "typecheck": "tsc -b",
     "lint": "eslint .",
+    "check:manifest": "pnpm -r --filter \"./packages/plugin-*\" exec node ../../scripts/check-plugin-manifest-parity.mjs",
     "clean": "pnpm -r run clean && rm -f tsconfig.tsbuildinfo",
     "start:mcp": "node packages/core/dist/server.js",
     "dev:cli": "pnpm --filter @kuzo-mcp/cli run dev",
