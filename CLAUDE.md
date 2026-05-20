@@ -105,6 +105,26 @@ type(scope): description
 **Types:** `feat`, `fix`, `refactor`, `docs`, `test`, `chore`
 **Scopes:** `core`, `plugins`, `github`, `jira`, `git`, `cli`, `config`
 
+### Versioning cadence (pre-1.0)
+
+Pre-QA we stay on **patch** bumps (0.0.x → 0.0.x+1) for everything. Version inflation is meaningless when there are zero external consumers. Conserve the version-number signal for moments that actually matter.
+
+Cadence:
+
+| Version | Earned by |
+|---|---|
+| `0.0.x` | Active development, expect breakage. **We are here.** |
+| `0.1.0` | First version we trust enough for our own daily use — claimed after `kuzo serve` lands AND we've personally used it for a stretch (the "real-life QA" milestone) |
+| `0.x.y` | Subsequent feature waves (AppleTV, hosted, etc.) |
+| `1.0.0` | Stable, semver guarantees apply, real audience exists |
+
+**Implications:**
+- Breaking changes during 0.0.x are fine — patch bump them, note in changelog. No minor bump just to flag "this kinda breaks" when no one consumes us.
+- Changesets `updateInternalDependencies: "patch"` cascades correctly; don't fight it.
+- When external interest appears (hosted deployment, marketplace, etc.), each version number above will have actual semantic content instead of "another arbitrary bump."
+
+Don't pretend to be more stable than we are.
+
 ---
 
 ## Quality Gates

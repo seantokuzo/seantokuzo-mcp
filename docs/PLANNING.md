@@ -32,6 +32,26 @@
 
 ---
 
+## Versioning Cadence (pre-1.0)
+
+Codified as a project convention so it doesn't drift per-phase. The same rules are mirrored in `CLAUDE.md` for review-time enforcement.
+
+| Version | Meaning | Earned by |
+|---|---|---|
+| **`0.0.x`** | Active development, expect breakage. No external consumers. | Patch bump anything — features, breaking renames, refactors. The "loose, no promises" zone. |
+| **`0.1.0`** | First version we trust enough for our own daily use. | `kuzo serve` lands + we've personally run it for a stretch (the "real-life QA" milestone). One-time, claimed-not-given. |
+| **`0.x.y`** | Subsequent feature waves. | AppleTV plugin, hosted deployment, plugin expansion wave, etc. Each minor marks a feature milestone we actually trust. |
+| **`1.0.0`** | Stable; semver guarantees apply. | Real audience exists. We're committing to backward compatibility. |
+
+**Why patch bumps during 0.0.x even for breaking changes:** with zero external consumers, the "minor for breaking changes" rule is ceremony. Bumping minor on every breaking refactor inflates the version number and erodes signal. We'd rather have `0.1.0` mean "trusted for daily use" than "we shipped a thing."
+
+**Implications:**
+- Changesets `updateInternalDependencies: "patch"` cascades correctly through workspace dependencies; don't fight it.
+- Changesets `linked` rules apply at the bump-event level — when one linked package gets an explicit changeset, its sibling gets the same bump.
+- Breaking renames during 0.0.x: just rename, note in CHANGELOG. No need to call out "this is a breaking change" — every 0.0.x bump is potentially breaking by default.
+
+---
+
 ## Vision
 
 Kuzo MCP is being rebuilt as a **plugin-based "everything MCP"** — a single personal MCP server where each integration (GitHub, Jira, Calendar, SMS, Browser, etc.) is a self-contained plugin.
