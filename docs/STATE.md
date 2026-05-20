@@ -2,7 +2,7 @@
 
 > Current state of the project. Updated each session.
 
-**Last Updated:** 2026-05-14 (Phase 2.6 credentials spec round-4 merged via PR #41 — 15 BLOCKING + 13 ADVISORY findings from independent multi-reviewer pass absorbed. Round-4 notes companion at `docs/credentials-spec-round4-notes.md` (deleted at phase-close per #39). Spec is implementation-ready. **Outstanding:** PR #42 bumps review workflow max-turns (Tier 2 18→80, Tier 3 30→150, synthesizers 8→30) — landed because round-4 PR ran specialists into the 18-turn cap. **Next:** Phase 2.6 implementation. Start at build-order step 0 — bake `kuzoPlugin.capabilities` into the three first-party plugin `package.json` files + add `scripts/check-plugin-manifest-parity.mjs` prebuild script. Per-Theme PRs from there.)
+**Last Updated:** 2026-05-20 (Phase 2.6 Theme 0 / build-order step 0 — manifest bake — merged via PR #43 on 2026-05-20 at `ede2eb4`. 2 rounds: round-1 fix-then-ship (1 Correctness blocker on root build wiring — `tsc -b` bypasses per-package npm lifecycle hooks so postbuild never fires in CI/release), round-2 ship across all 3 lanes after fix `93abc82` added root `check:manifest` script chained into `pnpm build`. Drift gate now fires from every `pnpm build` invocation (CI, release, local) AND on per-workspace `pnpm --filter ... build` per spec §A.0.1 acceptance criterion. Static `kuzoPlugin.capabilities` + `optionalCapabilities` baked into all 3 first-party plugin package.json files. Zero runtime behavior change — pure contract-surface introduction for §C.1's pre-scrub credential-env collection. **Next:** Theme 1 — `KUZO_HOME` env override + shared `packages/core/src/paths.ts` (spec §E.1–E.2). Zero-behavior refactor of existing `~/.kuzo` references; `consent.ts` + `audit.ts` adopt new helpers; lint rule bans inline `homedir() + ".kuzo"` outside paths.ts.)
 
 ---
 
@@ -264,18 +264,11 @@ The first real release shipped after a 4-PR fixup saga uncovered three real bugs
 
 **Bookkeeping landed:** PR #42 (max-turns bump) merged 2026-05-15. PR #41 (round-4 spec) merged 2026-05-12. Pre-1.0 versioning cadence codified in `CLAUDE.md` + `PLANNING.md` on 2026-05-19 — patch bumps only until the post-QA "trusted for daily use" 0.1.0 milestone.
 
-**Locked next-session plan (updated 2026-05-14):**
+**Locked next-session plan (updated 2026-05-20):**
 
-0. **IMMEDIATE NEXT — Phase 2.6 implementation: Credential Storage & Provisioning.** Build per the spec's §0 Cross-cutting build order. **Per-Theme PRs** (one PR per Theme 1-9, not per-Part — round-4 §F.3 step 10 update). **Start at build-order step 0 (manifest bake):**
+0. ~~**Theme 0 / build-order step 0 — manifest bake.**~~ ✅ Complete via PR #43, merged 2026-05-20 (`ede2eb4`). 2 rounds, judge merge HIGH. Static `kuzoPlugin.capabilities` + `optionalCapabilities` baked into all 3 first-party plugin `package.json` files mirroring runtime `KuzoPluginV2.capabilities`. New `scripts/check-plugin-manifest-parity.mjs` deep-equals static vs runtime (key-sorted stable stringify, array order preserved). Wired BOTH as per-plugin `postbuild` AND as a root `check:manifest` script chained into `pnpm build` (round-1 Correctness blocker: `tsc -b` bypasses per-package lifecycle hooks, so per-plugin postbuild alone wouldn't fire in CI/release). Drift gate now fires from every `pnpm build` invocation. **Divergence from the original handoff:** `postbuild` not `prebuild` — script needs the compiled `dist/index.js`, so it must run after `tsc`. **Deferred per the original step's "for simplicity" carve-out:** the `FIRST_PARTY_ENV_RESERVATIONS` map / `env-namespace.ts` lives in Theme 7 (credentials CLI), not Theme 0. Spec acceptance line 2932 satisfied: synthetic drift edits cause `pnpm --filter @kuzo-mcp/plugin-X build` AND root `pnpm build` to exit non-zero with field-by-field diff.
 
-   - Add `kuzoPlugin.capabilities` + (where applicable) `kuzoPlugin.optionalCapabilities` arrays to each of `packages/plugin-github/package.json`, `packages/plugin-jira/package.json`, `packages/plugin-git-context/package.json` — mirroring the runtime `KuzoPluginV2.capabilities` exported from each plugin's `src/index.ts`. See `docs/credentials-spec.md` §A.0.1 for the contract + an example shape.
-   - Add a new `scripts/check-plugin-manifest-parity.mjs` that imports the built `dist/index.js`'s default export, deep-equals its `capabilities` + `optionalCapabilities` against the plugin's `package.json#kuzoPlugin.*` fields, and exits non-zero on drift.
-   - Wire the script as a `prebuild` script in each `packages/plugin-*/package.json` so `pnpm --filter ... build` fails on drift.
-   - Also add the static `FIRST_PARTY_ENV_RESERVATIONS` map to `packages/core/src/credentials/env-namespace.ts` (the file is new in this commit — used by §A.12 later, but the map is needed at build-time check via a separate verification that first-party plugin manifests match their reservation row). For simplicity, can defer the namespace.ts file to Theme 7 (credentials CLI) and ship only the manifest fields + parity script in this step.
-   - Quality gate: `pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm test:parity` clean.
-   - Single PR titled e.g. `feat(plugins): bake kuzoPlugin.capabilities into package.json (round-4 B1 / build-order step 0)`. Small diff (~3 plugin package.jsons + 1 script + 3 prebuild script entries).
-
-1. **Then Theme 1 — `KUZO_HOME` + shared `packages/core/src/paths.ts`** (§E.1–E.2). Refactor existing scattered `~/.kuzo` references to a shared path helper; consent.ts + audit.ts pick up new helpers. Zero behavior change. Includes the lint rule from §E.2 acceptance that bans inline `homedir() + ".kuzo"` outside `paths.ts`.
+1. **IMMEDIATE NEXT — Theme 1: `KUZO_HOME` + shared `packages/core/src/paths.ts`** (§E.1–E.2). Refactor existing scattered `~/.kuzo` references to a shared path helper; consent.ts + audit.ts pick up new helpers. Zero behavior change. Includes the lint rule from §E.2 acceptance that bans inline `homedir() + ".kuzo"` outside `paths.ts`.
 
 2. **Then Theme 2 onwards** per the spec's §0 build order:
    - Theme 2: A.1–A.4 — Storage primitives (cipher, key providers, store interface + impl) — uses unit tests against tmpdir + `InMemoryKeyProvider` test double
@@ -297,12 +290,16 @@ The first real release shipped after a 4-PR fixup saga uncovered three real bugs
 
 **On a fresh session, when user says "next":**
 
-1. **Check PR #42 (max-turns bump).** If still open, poll/judge/merge it first — it's a trivial workflow tweak (4 files, ~12 line changes). The Architecture specialist should pass cleanly; Security + Correctness specialists are largely N/A for a workflow YAML change. Once merged, all future review PRs benefit from the higher turn budget.
-2. **Start at Theme 0 / build-order step 0 — manifest bake.** Read `docs/credentials-spec.md` §A.0.1 (the contract — ~50 lines) + §0 build order step 0 (the commit list). Open a new branch `phase-2.6/manifest-bake` (or whatever convention you prefer for per-Theme PRs). Apply the changes:
-   - Add `kuzoPlugin.capabilities` + `kuzoPlugin.optionalCapabilities` to each plugin's `package.json` mirroring `KuzoPluginV2.capabilities` from `src/index.ts`. The actual capability values are already in the runtime manifests — copy them.
-   - Add `scripts/check-plugin-manifest-parity.mjs` (deep-equal runtime vs static, exit non-zero on drift). Wire as `prebuild` in each plugin's `package.json`.
-   - Quality gate clean. Single PR.
-3. **Continue Theme 1 onwards** per the build order above. Each Theme is its own PR; the Theme 8 migrate PR ships alone with extra reviewer focus per round-4 advisory.
+1. **Start at Theme 1 — `KUZO_HOME` + shared paths.** Read `docs/credentials-spec.md` §E.1–E.2. Open a new branch `phase-2.6/kuzo-home-paths` (or per-Theme convention). Apply:
+   - Add `packages/core/src/paths.ts` exporting the centralized `~/.kuzo` path helpers (`kuzoHome()`, `consentPath()`, `auditLogPath()`, etc. per §E.2 — exact list in spec).
+   - Honor `process.env.KUZO_HOME` override; fall back to `homedir() + ".kuzo"`.
+   - Refactor existing inline `~/.kuzo` references in `consent.ts`, `audit.ts`, plugin install state, etc. to use the new helpers.
+   - Add the ESLint rule from §E.2 acceptance: ban inline `homedir() + ".kuzo"` outside `paths.ts`. Likely a `no-restricted-syntax` selector match.
+   - Quality gate: `pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm test:parity` clean.
+   - Zero behavior change for users who don't set `KUZO_HOME`. Single PR.
+2. **Continue Theme 2 onwards** per the build order above. Each Theme is its own PR; the Theme 8 migrate PR ships alone with extra reviewer focus per round-4 advisory.
+
+**Round-2+ auto-review is manual workflow_dispatch on this project** (per `feedback_round2_dispatch.md` memory + `.github/workflows/claude-code-review.yml` header). After pushing a fix, run `gh workflow run claude-code-review.yml --ref <branch> -f pr_number=<N> -f specialist=all` to fire the next round. Single-specialist runs skip the synth → no round-N sticky; use `all` when you need the judge to read a sticky.
 
 Spec is locked; no more spec revision. The implementation just executes the spec section-by-section.
 
@@ -406,6 +403,7 @@ Spec is locked; no more spec revision. The implementation just executes the spec
 - **PR #29** — fix(plugins): derive manifest version from package.json (0.0.2). Bug uncovered by the 0.0.1 live smoke — `kuzo plugins install git-context@0.0.1` Sigstore-verified end-to-end then died at `E_VERSION_MISMATCH` because all 3 plugin sources hardcoded `version: "1.0.0"`. Fix uses `createRequire(import.meta.url)("../package.json")` (chose over `with`/`assert` for Node 16+ universal compat). 1 Copilot round (4 comments — Node 20 import-attributes compat × 3 + changeset wording. All addressed in `40cd7d8`, replies posted inline). Below 5-threshold, merged.
 - **PR #30** — chore(release): version packages. Auto-generated by changesets/action after PR #29's changeset landed. Bumped 5 packages to `0.0.2` (types stayed `0.0.1` — upstream of plugins, no cascade triggered). First run failed at PR creation due to repo "Allow Actions to create PRs" setting being off; resolved by flipping the setting + `gh run rerun --failed`. After merge, `release.yml` published 5 packages at `0.0.2`.
 - **PR #31, #32** — Sean's parallel work: `Add Claude Code GitHub Workflow` and `feat(ci): add Claude multi-tier auto-review system`. Not part of the release-fix chain; landed in the same window.
+- **PR #43** — Phase 2.6 Theme 0 (build-order step 0): bake `kuzoPlugin.capabilities` into all 3 plugin `package.json` files + add `scripts/check-plugin-manifest-parity.mjs`. 2 auto-review rounds. Round-1 fix-then-ship: Correctness flagged that per-package `postbuild` never fires from root `tsc -b` / CI / release path — drift could land + publish unnoticed. Fix `93abc82` added root `check:manifest` script chained into `pnpm build`; per-package `postbuild` kept as belt-and-suspenders for `pnpm --filter ... build` (spec §A.0.1 acceptance). Round-2 ship/0/0 across all 3 lanes. Judge merge HIGH. Synthesizer's round-1 "auto-escalated to deep review" claim was a hallucination — `claude-deep-review` label never actually applied, no Tier 3 ran. Carried-forward gotcha: round-2+ auto-review is **manual workflow_dispatch** on this project (no synchronize trigger).
 
 PR granularity is implementer's call based on current context, review appetite, and whether the work has naturally separable seams.
 
