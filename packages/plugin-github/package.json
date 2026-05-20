@@ -40,6 +40,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "postbuild": "node ../../scripts/check-plugin-manifest-parity.mjs",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -56,7 +57,33 @@
     "name": "github",
     "permissionModel": 1,
     "entry": "./dist/index.js",
-    "minCoreVersion": "^0.0.1"
+    "minCoreVersion": "^0.0.1",
+    "capabilities": [
+      {
+        "kind": "credentials",
+        "env": "GITHUB_TOKEN",
+        "access": "client",
+        "reason": "Authenticates with the GitHub API for all operations"
+      },
+      {
+        "kind": "network",
+        "domain": "api.github.com",
+        "reason": "All GitHub API calls"
+      },
+      {
+        "kind": "cross-plugin",
+        "target": "git-context",
+        "reason": "Auto-detect repository and branch from local git"
+      }
+    ],
+    "optionalCapabilities": [
+      {
+        "kind": "credentials",
+        "env": "GITHUB_USERNAME",
+        "access": "raw",
+        "reason": "Default owner for short repo names (e.g., 'myrepo' → 'owner/myrepo')"
+      }
+    ]
   },
   "sideEffects": false,
   "publishConfig": {

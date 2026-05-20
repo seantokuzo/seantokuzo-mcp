@@ -28,6 +28,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "postbuild": "node ../../scripts/check-plugin-manifest-parity.mjs",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -43,7 +44,21 @@
     "name": "git-context",
     "permissionModel": 1,
     "entry": "./dist/index.js",
-    "minCoreVersion": "^0.0.1"
+    "minCoreVersion": "^0.0.1",
+    "capabilities": [
+      {
+        "kind": "filesystem",
+        "access": "read",
+        "path": "$CWD/.git/**",
+        "reason": "Read git metadata to detect repo, branch, and working tree state"
+      },
+      {
+        "kind": "system",
+        "operation": "exec",
+        "command": "git",
+        "reason": "Run git commands for branch, status, and remote detection"
+      }
+    ]
   },
   "sideEffects": false,
   "publishConfig": {
