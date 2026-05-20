@@ -513,4 +513,4 @@ jobs:
             --effort high
             --max-turns 30
             --disallowedTools "Edit,Write,NotebookEdit"
-            --allowedTools "Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/issues/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api -X PATCH repos/seantokuzo/seantokuzo-mcp/issues/comments/*),Bash(jq:*)"
+            --allowedTools "Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/issues/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api -X PATCH:*),Bash(jq:*)"
