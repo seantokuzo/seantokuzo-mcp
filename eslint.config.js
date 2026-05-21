@@ -50,8 +50,9 @@ export default tseslint.config(
   //   1. `join(homedir(), ".kuzo", …)`                — CallExpression + Literal
   //   2. `homedir() + ".kuzo"` / `homedir() + "/.kuzo"` — BinaryExpression
   //   3. `` `${homedir()}/.kuzo` ``                    — TemplateLiteral
-  // (Round-1 Architecture advisory: keep selector coverage and the docstring
-  // in lockstep so future readers don't assume broader coverage than exists.)
+  // Each selector uses `:matches()` to accept either the named-import call
+  // shape `homedir()` or the namespace-import shape `os.homedir()` (round-2
+  // Correctness advisory).
   {
     files: ["packages/**/*.ts", "scripts/**/*.mjs"],
     ignores: ["packages/core/src/paths.ts"],
@@ -60,19 +61,19 @@ export default tseslint.config(
         "error",
         {
           selector:
-            "CallExpression:has(CallExpression[callee.name='homedir']):has(Literal[value='.kuzo'])",
+            "CallExpression:has(CallExpression:matches([callee.name='homedir'], [callee.object.name='os'][callee.property.name='homedir'])):has(Literal[value='.kuzo'])",
           message:
             "Don't inline `join(homedir(), '.kuzo', …)`. Import the appropriate helper (kuzoHome, pluginsRoot, consentFilePath, auditFilePath, tufCacheDir, …) from `@kuzo-mcp/core/paths` so KUZO_HOME overrides apply uniformly.",
         },
         {
           selector:
-            "BinaryExpression[operator='+']:has(CallExpression[callee.name='homedir']):has(Literal[value=/\\.kuzo/])",
+            "BinaryExpression[operator='+']:has(CallExpression:matches([callee.name='homedir'], [callee.object.name='os'][callee.property.name='homedir'])):has(Literal[value=/\\.kuzo/])",
           message:
             "Don't inline `homedir() + '.kuzo'` (or `homedir() + '/.kuzo'`). Import the appropriate helper from `@kuzo-mcp/core/paths` so KUZO_HOME overrides apply uniformly.",
         },
         {
           selector:
-            "TemplateLiteral:has(CallExpression[callee.name='homedir']):has(TemplateElement[value.cooked=/\\.kuzo/])",
+            "TemplateLiteral:has(CallExpression:matches([callee.name='homedir'], [callee.object.name='os'][callee.property.name='homedir'])):has(TemplateElement[value.cooked=/\\.kuzo/])",
           message:
             "Don't inline `` `${homedir()}/.kuzo` `` in a template literal. Import the appropriate helper from `@kuzo-mcp/core/paths` so KUZO_HOME overrides apply uniformly.",
         },

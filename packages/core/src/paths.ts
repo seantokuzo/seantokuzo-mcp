@@ -21,32 +21,42 @@ import { join } from "node:path";
 
 /** Characters that would inject extra paths into the comma-delimited
  *  `--allow-fs-read=` Node Permission Model arg (round-1 Security advisory).
- *  Refuse to resolve any kuzo path whose env override contains them. */
-const FORBIDDEN_ENV_CHARS = [",", "\n"];
+ *  Comma is the path separator; newline likewise breaks any single-arg parser. */
+const FORBIDDEN_FS_ARG_CHARS = [",", "\n"];
+
+/**
+ * Refuse to use `path` as an `--allow-fs-read=` argument if it contains a
+ * character that would inject extra paths into the comma-delimited list.
+ *
+ * Applied both to env-supplied kuzo paths (`KUZO_HOME` / `KUZO_PLUGINS_DIR`)
+ * and to any other path that gets interpolated into the sandbox arg (see
+ * `plugin-process.ts` for the call site).
+ */
+export function assertNoFsArgInjection(path: string, label: string): void {
+  for (const ch of FORBIDDEN_FS_ARG_CHARS) {
+    if (path.includes(ch)) {
+      const display = ch === "\n" ? "\\n" : ch;
+      throw new Error(
+        `${label}=${JSON.stringify(path)} contains a forbidden character ("${display}"). ` +
+          `Comma and newline cannot appear in a path used as a --allow-fs-read=… argument — ` +
+          `they would inject extra entries into the plugin sandbox.`,
+      );
+    }
+  }
+}
 
 /**
  * Read a kuzo-state env override, treating empty-string as unset and
  * rejecting characters that would break the sandbox arg in plugin-process.
  *
- * - `??` semantics would let `KUZO_HOME=""` (easy to leave in a .env or CI
- *   matrix) fall through to `join("", "credentials.enc") === "credentials.enc"`,
- *   landing kuzo state in the user's CWD (often a git repo).
- * - A comma in the value silently widens `--allow-fs-read=` because Node
- *   parses it as a path separator. Newline is in the same category.
+ * `??` semantics would let `KUZO_HOME=""` (easy to leave in a .env or CI
+ * matrix) fall through to `join("", "credentials.enc") === "credentials.enc"`,
+ * landing kuzo state in the user's CWD (often a git repo).
  */
 function readEnvOverride(name: "KUZO_HOME" | "KUZO_PLUGINS_DIR"): string | undefined {
   const raw = process.env[name];
   if (raw == null || raw.length === 0) return undefined;
-  for (const ch of FORBIDDEN_ENV_CHARS) {
-    if (raw.includes(ch)) {
-      const display = ch === "\n" ? "\\n" : ch;
-      throw new Error(
-        `${name}=${JSON.stringify(raw)} contains a forbidden character ("${display}"). ` +
-          `Comma and newline cannot appear in a kuzo path override — they would ` +
-          `inject extra entries into the plugin sandbox's --allow-fs-read=… flag.`,
-      );
-    }
-  }
+  assertNoFsArgInjection(raw, name);
   return raw;
 }
 
