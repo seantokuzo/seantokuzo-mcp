@@ -159,7 +159,13 @@ export class PluginProcess {
       const pluginFsPath = fileURLToPath(this.pluginEntryUrl);
       execArgv.push(
         "--experimental-permission",
-        `--allow-fs-read=${pluginFsPath},${kuzoHome()}`,
+        // Trailing slash is intentional: Node's --allow-fs-read distinguishes
+        // recursive folder access (`/dir/`) from single-inode access (`/dir`).
+        // Plugins read audit.log / consent.json / etc. under kuzoHome — need
+        // recursive. `kuzoHome()` has already validated no `,` or `\n` in the
+        // resolved path, so the comma-delimited arg can't be widened by a
+        // hostile env override.
+        `--allow-fs-read=${pluginFsPath},${kuzoHome()}/`,
       );
       this.logger.info(`Node Permission Model enabled for "${this.pluginName}"`);
     }
