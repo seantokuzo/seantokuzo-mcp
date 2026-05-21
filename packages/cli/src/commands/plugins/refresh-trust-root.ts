@@ -11,18 +11,14 @@
  */
 
 import { existsSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 
 import boxen from "boxen";
 import chalk from "chalk";
 
 import { AuditLogger } from "@kuzo-mcp/core/audit";
+import { attestationsCacheDir, tufCacheDir } from "@kuzo-mcp/core/paths";
 
 import { acquireLock, PluginsLockedError } from "./lock.js";
-
-const TUF_CACHE_DIRNAME = "tuf-cache";
-const ATTESTATIONS_CACHE_DIRNAME = "attestations-cache";
 
 export function runRefreshTrustRoot(): void {
   const audit = new AuditLogger();
@@ -31,12 +27,8 @@ export function runRefreshTrustRoot(): void {
   // here — keep the function synchronous to surface errors directly.
   const release = acquireLock("refresh-trust-root");
   try {
-    const kuzoHome = join(homedir(), ".kuzo");
-    const tufCache = join(kuzoHome, TUF_CACHE_DIRNAME);
-    const attestationsCache = join(kuzoHome, ATTESTATIONS_CACHE_DIRNAME);
-
-    const wipedTuf = wipeIfExists(tufCache);
-    const wipedAttestations = wipeIfExists(attestationsCache);
+    const wipedTuf = wipeIfExists(tufCacheDir());
+    const wipedAttestations = wipeIfExists(attestationsCacheDir());
 
     audit.log({
       plugin: "system",

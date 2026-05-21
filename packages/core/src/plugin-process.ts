@@ -7,12 +7,13 @@
 
 import { fork, type ChildProcess } from "child_process";
 import { fileURLToPath } from "url";
-import { homedir } from "os";
 import { IpcChannel } from "./ipc.js";
 import type { CredentialCapability } from "@kuzo-mcp/types";
 import type { KuzoLogger } from "./logger.js";
 import type { PluginRegistry } from "./registry.js";
 import type { AuditLogger } from "./audit.js";
+
+import { kuzoHome } from "./paths.js";
 
 /**
  * Child-process entry. Resolved through the core package's exports map so the
@@ -158,7 +159,7 @@ export class PluginProcess {
       const pluginFsPath = fileURLToPath(this.pluginEntryUrl);
       execArgv.push(
         "--experimental-permission",
-        `--allow-fs-read=${pluginFsPath},${homedir()}/.kuzo/`,
+        `--allow-fs-read=${pluginFsPath},${kuzoHome()}`,
       );
       this.logger.info(`Node Permission Model enabled for "${this.pluginName}"`);
     }

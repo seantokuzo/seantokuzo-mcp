@@ -10,8 +10,9 @@
 
 import { existsSync, mkdirSync, appendFileSync, readFileSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
 import type { KuzoLogger } from "./logger.js";
+
+import { kuzoHome } from "./paths.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -60,7 +61,7 @@ export class AuditLogger {
   private readonly logger: KuzoLogger | undefined;
 
   constructor(options: AuditLoggerOptions = {}) {
-    const dir = options.logDir ?? join(homedir(), ".kuzo");
+    const dir = options.logDir ?? kuzoHome();
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }

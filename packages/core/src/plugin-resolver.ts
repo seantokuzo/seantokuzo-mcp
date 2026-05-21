@@ -21,9 +21,10 @@
 
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
 import { pathToFileURL } from "url";
 import type { KuzoConfig } from "@kuzo-mcp/types";
+
+import { pluginsRoot } from "./paths.js";
 
 /** Hardcoded friendly-name → package-name map for built-in plugins */
 export const BUILTIN_PLUGINS: Readonly<Record<string, string>> = Object.freeze({
@@ -67,8 +68,7 @@ export function resolvePluginEntry(
     );
   }
 
-  const installedRoot =
-    process.env["KUZO_PLUGINS_DIR"] ?? join(homedir(), ".kuzo", "plugins");
+  const installedRoot = pluginsRoot();
 
   // 1. Versioned install (Part D): <root>/<name>/current/pkg/
   const versionedPath = join(installedRoot, name, "current", "pkg");

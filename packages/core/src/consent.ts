@@ -9,8 +9,9 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
 import type { Capability, KuzoPluginV2 } from "@kuzo-mcp/types";
+
+import { kuzoHome } from "./paths.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,7 +44,7 @@ export class ConsentStore {
   private data: ConsentData;
 
   constructor(options: ConsentStoreOptions = {}) {
-    const dir = options.consentDir ?? join(homedir(), ".kuzo");
+    const dir = options.consentDir ?? kuzoHome();
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }

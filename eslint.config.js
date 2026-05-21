@@ -42,6 +42,24 @@ export default tseslint.config(
       ],
     },
   },
+  // Phase 2.6 §E.2: only `packages/core/src/paths.ts` is allowed to compose
+  // the default `~/.kuzo` path. Every other site must import the helpers from
+  // `@kuzo-mcp/core/paths` so `KUZO_HOME` overrides flow through uniformly.
+  {
+    files: ["packages/**/*.ts", "scripts/**/*.mjs"],
+    ignores: ["packages/core/src/paths.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "CallExpression:has(CallExpression[callee.name='homedir']):has(Literal[value='.kuzo'])",
+          message:
+            "Don't inline `homedir() + '.kuzo'`. Import the appropriate helper (kuzoHome, pluginsRoot, consentFilePath, auditFilePath, tufCacheDir, …) from `@kuzo-mcp/core/paths` so KUZO_HOME overrides apply uniformly.",
+        },
+      ],
+    },
+  },
   {
     ignores: ["**/dist/", "**/node_modules/"],
   },
