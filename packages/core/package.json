@@ -37,6 +37,10 @@
     "./provenance": {
       "types": "./dist/provenance/index.d.ts",
       "import": "./dist/provenance/index.js"
+    },
+    "./paths": {
+      "types": "./dist/paths.d.ts",
+      "import": "./dist/paths.js"
     }
   },
   "files": [

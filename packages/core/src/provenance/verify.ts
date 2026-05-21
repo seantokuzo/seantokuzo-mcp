@@ -23,8 +23,6 @@
  */
 
 import { Buffer } from "node:buffer";
-import { homedir } from "node:os";
-import { join } from "node:path";
 
 // pacote is CJS; Node ESM only exposes its `module.exports` via the default
 // import. `import * as pacote` would put it under `pacote.default` only.
@@ -36,6 +34,7 @@ import { type Bundle, verify as sigstoreVerify } from "sigstore";
 
 import type { PluginLogger } from "@kuzo-mcp/types";
 
+import { tufCacheDir } from "../paths.js";
 import { type ProvenanceErrorCode } from "./errors.js";
 import {
   evaluate as evaluatePolicy,
@@ -95,10 +94,6 @@ function fail(
   message: string,
 ): { ok: false; code: ProvenanceErrorCode; message: string } {
   return { ok: false, code, message };
-}
-
-function defaultTufCachePath(): string {
-  return join(homedir(), ".kuzo", "tuf-cache");
 }
 
 /** Build a Package URL per package-url spec; matches `npm-package-arg` toPurl. */
@@ -228,7 +223,7 @@ export async function verifyPackageProvenance(
 ): Promise<Result<VerifiedAttestation>> {
   const fetcher = opts.fetch ?? globalThis.fetch;
   const registry = opts.registry ?? DEFAULT_REGISTRY;
-  const tufCachePath = opts.tufCachePath ?? defaultTufCachePath();
+  const tufCachePath = opts.tufCachePath ?? tufCacheDir();
   const logger = opts.logger;
   const purl = constructPurl(name, version);
 

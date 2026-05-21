@@ -7,12 +7,13 @@
 
 import { fork, type ChildProcess } from "child_process";
 import { fileURLToPath } from "url";
-import { homedir } from "os";
 import { IpcChannel } from "./ipc.js";
 import type { CredentialCapability } from "@kuzo-mcp/types";
 import type { KuzoLogger } from "./logger.js";
 import type { PluginRegistry } from "./registry.js";
 import type { AuditLogger } from "./audit.js";
+
+import { assertNoFsArgInjection, kuzoHome } from "./paths.js";
 
 /**
  * Child-process entry. Resolved through the core package's exports map so the
@@ -156,9 +157,20 @@ export class PluginProcess {
     // Optional Node Permission Model flags
     if (process.env["KUZO_NODE_PERMISSIONS"] === "true") {
       const pluginFsPath = fileURLToPath(this.pluginEntryUrl);
+      // Both arms of the comma-delimited --allow-fs-read= arg must be free of
+      // characters that would inject extra paths. `kuzoHome()` self-validates,
+      // but `pluginFsPath` ultimately comes from a plugin's package name via
+      // import.meta.resolve and could in principle contain a comma on a
+      // filesystem that allows them — assert here so the sandbox boundary is
+      // never widened by a hostile path. (Round-2 Security advisory.)
+      assertNoFsArgInjection(pluginFsPath, "pluginFsPath");
       execArgv.push(
         "--experimental-permission",
-        `--allow-fs-read=${pluginFsPath},${homedir()}/.kuzo/`,
+        // Trailing slash is intentional: Node's --allow-fs-read distinguishes
+        // recursive folder access (`/dir/`) from single-inode access (`/dir`).
+        // Plugins read audit.log / consent.json / etc. under kuzoHome — need
+        // recursive.
+        `--allow-fs-read=${pluginFsPath},${kuzoHome()}/`,
       );
       this.logger.info(`Node Permission Model enabled for "${this.pluginName}"`);
     }

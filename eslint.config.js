@@ -42,6 +42,44 @@ export default tseslint.config(
       ],
     },
   },
+  // Phase 2.6 §E.2: only `packages/core/src/paths.ts` is allowed to compose
+  // the default `~/.kuzo` path. Every other site must import the helpers from
+  // `@kuzo-mcp/core/paths` so `KUZO_HOME` overrides flow through uniformly.
+  //
+  // Three selectors cover the realistic drift shapes:
+  //   1. `join(homedir(), ".kuzo", …)`                — CallExpression + Literal
+  //   2. `homedir() + ".kuzo"` / `homedir() + "/.kuzo"` — BinaryExpression
+  //   3. `` `${homedir()}/.kuzo` ``                    — TemplateLiteral
+  // Each selector uses `:matches()` to accept either the named-import call
+  // shape `homedir()` or the namespace-import shape `os.homedir()` (round-2
+  // Correctness advisory).
+  {
+    files: ["packages/**/*.ts", "scripts/**/*.mjs"],
+    ignores: ["packages/core/src/paths.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "CallExpression:has(CallExpression:matches([callee.name='homedir'], [callee.object.name='os'][callee.property.name='homedir'])):has(Literal[value='.kuzo'])",
+          message:
+            "Don't inline `join(homedir(), '.kuzo', …)`. Import the appropriate helper (kuzoHome, pluginsRoot, consentFilePath, auditFilePath, tufCacheDir, …) from `@kuzo-mcp/core/paths` so KUZO_HOME overrides apply uniformly.",
+        },
+        {
+          selector:
+            "BinaryExpression[operator='+']:has(CallExpression:matches([callee.name='homedir'], [callee.object.name='os'][callee.property.name='homedir'])):has(Literal[value=/\\.kuzo/])",
+          message:
+            "Don't inline `homedir() + '.kuzo'` (or `homedir() + '/.kuzo'`). Import the appropriate helper from `@kuzo-mcp/core/paths` so KUZO_HOME overrides apply uniformly.",
+        },
+        {
+          selector:
+            "TemplateLiteral:has(CallExpression:matches([callee.name='homedir'], [callee.object.name='os'][callee.property.name='homedir'])):has(TemplateElement[value.cooked=/\\.kuzo/])",
+          message:
+            "Don't inline `` `${homedir()}/.kuzo` `` in a template literal. Import the appropriate helper from `@kuzo-mcp/core/paths` so KUZO_HOME overrides apply uniformly.",
+        },
+      ],
+    },
+  },
   {
     ignores: ["**/dist/", "**/node_modules/"],
   },

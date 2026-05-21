@@ -11,16 +11,16 @@
  *   ~/.kuzo/plugins/<name>/<version>/verification.json
  *   ~/.kuzo/plugins/<name>/.tmp/           ← staging dir (atomic install)
  *
- * Respects KUZO_PLUGINS_DIR env override (also honored by plugin-resolver
- * in @kuzo-mcp/core, used by the parity test).
+ * `pluginsRoot` (and the `KUZO_HOME` / `KUZO_PLUGINS_DIR` precedence behind it)
+ * is owned by `@kuzo-mcp/core/paths`. Re-exported here so callers under
+ * `packages/cli/src/commands/plugins/` can keep importing from one place.
  */
 
-import { homedir } from "node:os";
 import { join } from "node:path";
 
-export function pluginsRoot(): string {
-  return process.env["KUZO_PLUGINS_DIR"] ?? join(homedir(), ".kuzo", "plugins");
-}
+import { kuzoHome, pluginsRoot } from "@kuzo-mcp/core/paths";
+
+export { kuzoHome, pluginsRoot };
 
 export function indexJsonPath(): string {
   return join(pluginsRoot(), "index.json");
