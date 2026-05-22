@@ -35,7 +35,7 @@ export interface ConsentData {
 // ---------------------------------------------------------------------------
 
 export interface ConsentStoreOptions {
-  /** Directory for consent.json (default: ~/.kuzo) */
+  /** Directory for consent.json. Defaults to `kuzoHome()` (usually `~/.kuzo`). */
   consentDir?: string;
 }
 

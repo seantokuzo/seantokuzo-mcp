@@ -50,7 +50,7 @@ export interface AuditEvent {
 // ---------------------------------------------------------------------------
 
 export interface AuditLoggerOptions {
-  /** Directory for audit.log (default: ~/.kuzo) */
+  /** Directory for audit.log. Defaults to `kuzoHome()` (usually `~/.kuzo`). */
   logDir?: string;
   /** Stderr logger for real-time echo */
   logger?: KuzoLogger;

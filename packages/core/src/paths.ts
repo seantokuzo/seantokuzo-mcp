@@ -62,7 +62,13 @@ function readEnvOverride(name: "KUZO_HOME" | "KUZO_PLUGINS_DIR"): string | undef
 
 /** State root. `$KUZO_HOME` or `~/.kuzo`. */
 export function kuzoHome(): string {
-  return readEnvOverride("KUZO_HOME") ?? join(homedir(), ".kuzo");
+  const env = readEnvOverride("KUZO_HOME");
+  if (env !== undefined) return env;
+  // POSIX permits commas in usernames; defense-in-depth so every caller (not
+  // just the env-override branch) is safe to interpolate into `--allow-fs-read=`.
+  const fallback = join(homedir(), ".kuzo");
+  assertNoFsArgInjection(fallback, "homedir()");
+  return fallback;
 }
 
 /**
