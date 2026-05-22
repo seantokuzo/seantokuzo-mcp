@@ -148,7 +148,9 @@ export interface EncryptedCredentialStoreOptions {
   logger?: KuzoLogger;
   /**
    * Override path for the passphrase-mode generation counter. Defaults to
-   * `<filePath>.generation`. Test-only escape hatch.
+   * `<filePath>.generation`. Theme 4's `chooseKeyProvider()` wiring may also
+   * use this when pinning the counter to a specific `$KUZO_HOME` layout —
+   * not test-only.
    */
   generationFilePath?: string;
 }
