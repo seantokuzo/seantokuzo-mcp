@@ -6,7 +6,6 @@
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
   "include": ["src/**/*"],
-  "exclude": ["src/**/*.test.ts"],
   "references": [
     { "path": "../types" },
     { "path": "../plugin-github" },

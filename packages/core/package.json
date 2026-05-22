@@ -45,13 +45,21 @@
     "./credentials": {
       "types": "./dist/credentials/index.d.ts",
       "import": "./dist/credentials/index.js"
+    },
+    "./credentials/testing": {
+      "types": "./dist/credentials/testing.d.ts",
+      "import": "./dist/credentials/testing.js"
     }
   },
   "files": [
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "dist/**/*.js.map",
-    "dist/**/*.d.ts.map"
+    "dist/**/*.d.ts.map",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.d.ts",
+    "!dist/**/*.test.js.map",
+    "!dist/**/*.test.d.ts.map"
   ],
   "scripts": {
     "build": "tsc",

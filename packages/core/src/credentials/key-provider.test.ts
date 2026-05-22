@@ -13,10 +13,10 @@ import { test } from "node:test";
 
 import { KeyProviderError } from "./errors.js";
 import {
-  InMemoryKeyProvider,
   NullKeyProvider,
   PassphraseKeyProvider,
 } from "./key-provider.js";
+import { InMemoryKeyProvider } from "./testing.js";
 
 // ─── InMemoryKeyProvider ───────────────────────────────────────────────────
 

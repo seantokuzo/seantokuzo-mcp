@@ -21,12 +21,9 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 
 import { CredentialStoreError, KeyProviderError } from "./errors.js";
-import {
-  InMemoryKeyProvider,
-  NullKeyProvider,
-  PassphraseKeyProvider,
-} from "./key-provider.js";
+import { NullKeyProvider, PassphraseKeyProvider } from "./key-provider.js";
 import { EncryptedCredentialStore } from "./store.js";
+import { InMemoryKeyProvider } from "./testing.js";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 

@@ -26,8 +26,11 @@ export {
   type KeyProviderErrorCode,
 } from "./errors.js";
 
+// NOTE: `InMemoryKeyProvider` is intentionally NOT re-exported here. The test
+// double lives in `./testing.ts` and is published via the
+// `@kuzo-mcp/core/credentials/testing` subpath. Spec §A.5 enumerates exactly
+// three production providers; this barrel matches that exactly.
 export {
-  InMemoryKeyProvider,
   KeychainKeyProvider,
   NullKeyProvider,
   PassphraseKeyProvider,
