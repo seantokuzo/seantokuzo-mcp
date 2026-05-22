@@ -43,3 +43,12 @@ export {
   type CredentialStore,
   type EncryptedCredentialStoreOptions,
 } from "./store.js";
+
+// Phase 2.6 Theme 3 — env override + store merge, plus pure env-collection /
+// scrub helpers. Theme 4 wires both into the boot sequence.
+export { CredentialSource } from "./source.js";
+export {
+  collectEnvOverrides,
+  scrubProcessEnv,
+  type ScrubProcessEnvResult,
+} from "./env-overrides.js";
