@@ -2,14 +2,14 @@
  * Canonical paths for plugin install state.
  *
  * Mirrors spec §C.6 + §D.7:
- *   ~/.kuzo/plugins/                       ← plugins root
- *   ~/.kuzo/plugins/index.json             ← installed-plugins registry
- *   ~/.kuzo/plugins/.lock                  ← exclusive install/update lock
- *   ~/.kuzo/plugins/<name>/current         ← symlink to active version dir
- *   ~/.kuzo/plugins/<name>/<version>/pkg/  ← extracted tarball
- *   ~/.kuzo/plugins/<name>/<version>/node_modules/
- *   ~/.kuzo/plugins/<name>/<version>/verification.json
- *   ~/.kuzo/plugins/<name>/.tmp/           ← staging dir (atomic install)
+ *   <pluginsRoot>/                       ← plugins root
+ *   <pluginsRoot>/index.json             ← installed-plugins registry
+ *   <pluginsRoot>/.lock                  ← exclusive install/update lock
+ *   <pluginsRoot>/<name>/current         ← symlink to active version dir
+ *   <pluginsRoot>/<name>/<version>/pkg/  ← extracted tarball
+ *   <pluginsRoot>/<name>/<version>/node_modules/
+ *   <pluginsRoot>/<name>/<version>/verification.json
+ *   <pluginsRoot>/<name>/.tmp/           ← staging dir (atomic install)
  *
  * `pluginsRoot` (and the `KUZO_HOME` / `KUZO_PLUGINS_DIR` precedence behind it)
  * is owned by `@kuzo-mcp/core/paths`. Re-exported here so callers under
@@ -18,9 +18,9 @@
 
 import { join } from "node:path";
 
-import { kuzoHome, pluginsRoot } from "@kuzo-mcp/core/paths";
+import { pluginsRoot } from "@kuzo-mcp/core/paths";
 
-export { kuzoHome, pluginsRoot };
+export { pluginsRoot };
 
 export function indexJsonPath(): string {
   return join(pluginsRoot(), "index.json");

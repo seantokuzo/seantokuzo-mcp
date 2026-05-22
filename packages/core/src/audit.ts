@@ -23,6 +23,14 @@ export type AuditAction =
   | "credential.raw_access"
   | "credential.raw_denied"
   | "credential.fetch_created"
+  // Phase 2.6 Theme 2 — storage primitives. The variants below are introduced
+  // here so the new code in `packages/core/src/credentials/` typechecks against
+  // the closed union. Actual write-side wiring (set / deleted / rotated /
+  // migrated / wiped / tested / scrub_disabled) lands with Theme 6/7 (B.1–B.3
+  // commands + broker-side emissions). Spec §0 build order.
+  | "credential.passphrase_consumed"
+  | "credential.store_unlocked"
+  | "credential.store_locked"
   | "plugin.loaded"
   | "plugin.skipped"
   | "plugin.failed"
@@ -50,7 +58,7 @@ export interface AuditEvent {
 // ---------------------------------------------------------------------------
 
 export interface AuditLoggerOptions {
-  /** Directory for audit.log (default: ~/.kuzo) */
+  /** Directory for audit.log. Defaults to `kuzoHome()` (usually `~/.kuzo`). */
   logDir?: string;
   /** Stderr logger for real-time echo */
   logger?: KuzoLogger;

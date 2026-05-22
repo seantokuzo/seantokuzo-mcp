@@ -45,7 +45,7 @@ import {
 export type VerifyOptions = {
   /** npm registry URL. Defaults to https://registry.npmjs.org/. */
   registry?: string;
-  /** Sigstore TUF cache directory. Defaults to ~/.kuzo/tuf-cache. */
+  /** Sigstore TUF cache directory. Defaults to `tufCacheDir()` (usually `~/.kuzo/tuf-cache`). */
   tufCachePath?: string;
   /** Optional structured logger; debug-level event on successful verification. */
   logger?: PluginLogger;
