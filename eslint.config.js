@@ -85,7 +85,9 @@ export default tseslint.config(
   // (boot step 7). Plugin children are spawned only via
   // `packages/core/src/plugin-process.ts` after scrub completes; the pre-scrub
   // paths (`server.ts` + `loader.ts`) are not allowed to import the module
-  // at all.
+  // at all. Spec calls for a rule PAIR — `no-restricted-imports` catches the
+  // static-import surface, `no-restricted-syntax` is defense-in-depth against
+  // namespace-aliased calls (`childProcess.fork(...)`) or `require()` paths.
   {
     files: ["packages/core/src/server.ts", "packages/core/src/loader.ts"],
     rules: {
@@ -104,6 +106,37 @@ export default tseslint.config(
                 "Use 'node:child_process' for built-in modules. (And don't import it from server.ts or loader.ts — see docs/credentials-spec.md §C.9.)",
             },
           ],
+        },
+      ],
+      // Include the kuzoHome selectors from the §E.2 rule above — flat
+      // config merges by rule name (last-wins per file), so a bare
+      // child_process selector here would silently drop the kuzoHome
+      // checks for server.ts + loader.ts. The two selectors are unrelated
+      // (no overlap) and listing both keeps both checks active.
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "CallExpression[callee.object.name='childProcess']",
+          message:
+            "child_process methods are banned in pre-scrub paths (defense-in-depth vs. namespace-aliased imports / require). See docs/credentials-spec.md §C.9.",
+        },
+        {
+          selector:
+            "CallExpression:has(CallExpression:matches([callee.name='homedir'], [callee.object.name='os'][callee.property.name='homedir'])):has(Literal[value='.kuzo'])",
+          message:
+            "Don't inline `join(homedir(), '.kuzo', …)`. Import the appropriate helper (kuzoHome, pluginsRoot, consentFilePath, auditFilePath, tufCacheDir, …) from `@kuzo-mcp/core/paths` so KUZO_HOME overrides apply uniformly.",
+        },
+        {
+          selector:
+            "BinaryExpression[operator='+']:has(CallExpression:matches([callee.name='homedir'], [callee.object.name='os'][callee.property.name='homedir'])):has(Literal[value=/\\.kuzo/])",
+          message:
+            "Don't inline `homedir() + '.kuzo'` (or `homedir() + '/.kuzo'`). Import the appropriate helper from `@kuzo-mcp/core/paths` so KUZO_HOME overrides apply uniformly.",
+        },
+        {
+          selector:
+            "TemplateLiteral:has(CallExpression:matches([callee.name='homedir'], [callee.object.name='os'][callee.property.name='homedir'])):has(TemplateElement[value.cooked=/\\.kuzo/])",
+          message:
+            "Don't inline `` `${homedir()}/.kuzo` `` in a template literal. Import the appropriate helper from `@kuzo-mcp/core/paths` so KUZO_HOME overrides apply uniformly.",
         },
       ],
     },

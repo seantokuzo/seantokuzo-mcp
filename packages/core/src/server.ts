@@ -47,7 +47,7 @@ import { chooseKeyProvider } from "./key-provider-choice.js";
 import { PluginLoader } from "./loader.js";
 import { KuzoLogger } from "./logger.js";
 import { collectDeclaredCredentialEnvNames } from "./manifest-env-names.js";
-import { kuzoHome, credentialsFilePath } from "./paths.js";
+import { credentialsFilePath } from "./paths.js";
 import { PluginRegistry } from "./registry.js";
 
 /** Convert a Zod schema to MCP-compatible JSON Schema */
@@ -234,9 +234,12 @@ function attachShutdownHandlers(
 
 export interface RunServerOptions {
   /**
-   * Skip the declared-env-name scrub. `KUZO_PASSPHRASE` and
-   * `KUZO_NO_ENV_SCRUB` are still scrubbed unconditionally per spec §A.7
-   * `ALWAYS_SCRUB`. Debug only — emits a loud warning + audit event.
+   * Whether to scrub declared-env-name values from `process.env` after
+   * collecting env overrides at boot step 7. Defaults to `true`. Set to
+   * `false` to keep the declared values readable from `process.env`
+   * (debug only — emits a loud warning + audit event). `KUZO_PASSPHRASE`
+   * and `KUZO_NO_ENV_SCRUB` are scrubbed unconditionally regardless of
+   * this flag (spec §A.7 `ALWAYS_SCRUB`).
    */
   scrub?: boolean;
 }
@@ -265,12 +268,10 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
   // 2. Config + dotenv
   const configManager = new ConfigManager();
 
-  // 3. Consent + audit — paths via @kuzo-mcp/core/paths so KUZO_HOME applies
-  const consentStore = new ConsentStore({ consentDir: kuzoHome() });
-  const auditLogger = new AuditLogger({
-    logDir: kuzoHome(),
-    logger: new KuzoLogger("audit"),
-  });
+  // 3. Consent + audit. Both classes default their paths to `kuzoHome()`
+  //    internally, so `KUZO_HOME` flows through without an explicit pass.
+  const consentStore = new ConsentStore();
+  const auditLogger = new AuditLogger({ logger: new KuzoLogger("audit") });
 
   // 4. Credential store + key provider (INERT — no I/O, no decrypt)
   const keyProvider = chooseKeyProvider(auditLogger);
@@ -292,31 +293,42 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
   // 6. Collect env overrides matching declared names + KUZO_TOKEN_* pattern
   const envOverrides = collectEnvOverrides(declaredEnvNames);
 
-  // 7. Scrub matched names from process.env BEFORE any child can inherit.
-  //    KUZO_PASSPHRASE and KUZO_NO_ENV_SCRUB are scrubbed unconditionally by
-  //    scrubProcessEnv's ALWAYS_SCRUB list — neither --no-scrub nor the env
-  //    kill-switch exempts them. PassphraseKeyProvider captured the value
-  //    at construction in step 4; the cached field survives the scrub.
+  // 7. Scrub declared credential names from process.env BEFORE any child
+  //    can inherit. KUZO_PASSPHRASE and KUZO_NO_ENV_SCRUB are scrubbed
+  //    unconditionally by scrubProcessEnv's ALWAYS_SCRUB list — neither
+  //    options.scrub=false nor the env kill-switch exempts them.
+  //    PassphraseKeyProvider captured the value at construction in step 4;
+  //    the cached field survives the scrub.
+  //
+  //    Round-1 security advisory (PR #50): pass declaredEnvNames ONLY, not
+  //    `Object.keys(envOverrides)`. `collectEnvOverrides` accepts any
+  //    `KUZO_TOKEN_<target>` and lands `<target>` in envOverrides — an
+  //    attacker (or confused user) setting `KUZO_TOKEN_PATH=evil` would
+  //    otherwise cause `scrubProcessEnv` to delete `process.env.PATH`.
+  //    Narrowing to `declaredEnvNames` (with scrubProcessEnv's built-in
+  //    twin-deletion still covering `KUZO_TOKEN_<declared>`) keeps the
+  //    scrub surface bounded by the plugin manifest. The §A.12 reservation
+  //    gate in Theme 7 is the install-time defense for third-party plugins.
   if (doScrub) {
-    scrubProcessEnv(
-      [...declaredEnvNames, ...Object.keys(envOverrides)],
-      auditLogger,
-    );
+    scrubProcessEnv([...declaredEnvNames], auditLogger);
   } else {
-    // --no-scrub: declared-env-names stay in process.env, but ALWAYS_SCRUB
-    // entries are still removed (passphrase, kill-switch self). Audit-emit
-    // the CLI-flag reason explicitly; scrubProcessEnv handles the env-var
-    // kill-switch path internally.
-    scrubProcessEnv([], auditLogger);
+    // options.scrub=false: declared-env-names stay in process.env, but
+    // ALWAYS_SCRUB entries (passphrase, kill-switch self) are still removed.
+    // scrubProcessEnv emits credential.scrub_disabled itself when the env-var
+    // kill-switch is active — only emit our own audit event when it didn't,
+    // to avoid double-counting (round-1 Correctness advisory).
+    const result = scrubProcessEnv([], auditLogger);
     logger.warn(
-      "process.env scrubbing DISABLED (--no-scrub). Plugin children may inherit credential env vars. KUZO_PASSPHRASE is still scrubbed.",
+      "process.env scrubbing DISABLED (runServer options.scrub === false). Plugin children may inherit credential env vars. KUZO_PASSPHRASE is still scrubbed.",
     );
-    auditLogger.log({
-      plugin: "kuzo",
-      action: "credential.scrub_disabled",
-      outcome: "allowed",
-      details: { reason: "--no-scrub flag" },
-    });
+    if (!result.killSwitchActive) {
+      auditLogger.log({
+        plugin: "kuzo",
+        action: "credential.scrub_disabled",
+        outcome: "allowed",
+        details: { reason: "options.scrub === false" },
+      });
+    }
   }
 
   // 8. Credential source — env overrides win over store; store stays cold

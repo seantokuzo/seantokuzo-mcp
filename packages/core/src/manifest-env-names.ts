@@ -14,11 +14,16 @@
  * `package.json` only — third-party plugins ship arbitrary top-level code,
  * and `import()`-ing them pre-scrub voids the scrub guarantee.
  *
- * Manifest drift (static missing a cap that the runtime declares) is detected
- * by the loader's `plugin.failed: manifest_drift` path at step 10, not here.
- * The walker is intentionally permissive — missing/malformed `kuzoPlugin`
- * yields zero contributions for that plugin and the loader handles the
- * follow-on failure.
+ * Manifest drift (static `kuzoPlugin.capabilities` missing a credential
+ * cap that the runtime manifest declares) is not surfaced as a distinct
+ * audit code today. First-party plugins are kept in lockstep by Theme 0's
+ * `scripts/check-plugin-manifest-parity.mjs` (postbuild + root `pnpm build`
+ * chain). Third-party drift will be caught at install time by the §A.12
+ * reservation gate in Theme 7. If drift somehow lands at boot, the walker
+ * omits the env name, `collectEnvOverrides` misses the value, and the
+ * loader's `extractForPlugin` returns `missing: [<env>]` — the plugin is
+ * skipped with reason "missing required config" (not a distinct
+ * `manifest_drift` event).
  */
 
 import { readFileSync } from "node:fs";
