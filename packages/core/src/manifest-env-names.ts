@@ -54,6 +54,17 @@ const RESERVED_KUZO_ENV: ReadonlySet<string> = new Set([
   "KUZO_HOME",
   "KUZO_DISABLE_KEYCHAIN",
   "KUZO_PLUGINS_DIR",
+  // Trust-control envs the loader reads at construction time
+  // (`loader.ts:49-56`). A plugin declaring any of these as a credential
+  // capability would otherwise scrub the value before the loader can read
+  // it — self-defeating for an attacker (their own trust gate fails) but
+  // confusing UX for an admin who set the var intentionally.
+  "KUZO_TRUST_PLUGINS",
+  "KUZO_TRUST_ALL",
+  "KUZO_TRUST_LEGACY",
+  "KUZO_STRICT",
+  // Node Permission Model toggle read by plugin-process.ts
+  "KUZO_NODE_PERMISSIONS",
 ]);
 
 interface RawCapability {
