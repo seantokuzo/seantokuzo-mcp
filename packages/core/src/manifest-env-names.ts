@@ -34,6 +34,28 @@ import type { KuzoConfig } from "@kuzo-mcp/types";
 import type { KuzoLogger } from "./logger.js";
 import { resolvePluginPackageDir } from "./plugin-resolver.js";
 
+/**
+ * Kuzo-internal env names a plugin must NOT be allowed to declare as a
+ * credential capability. Defense-in-depth: Theme 7's §A.12 reservation
+ * gate is the canonical install-time defense; this set is the runtime
+ * safety net so a third-party plugin that slips through the install gate
+ * (or a first-party plugin that mistakes a kuzo env for a credential)
+ * cannot capture these values via `envOverrides` before scrub.
+ *
+ * Specifically, `KUZO_PASSPHRASE` is the master-key passphrase — a
+ * declaration of `{kind: "credentials", env: "KUZO_PASSPHRASE"}` would
+ * otherwise route the parent's passphrase straight into the plugin child's
+ * credential `Map`. The other entries are runtime knobs the parent reads
+ * directly (path overrides, key-provider selection, scrub kill-switch).
+ */
+const RESERVED_KUZO_ENV: ReadonlySet<string> = new Set([
+  "KUZO_PASSPHRASE",
+  "KUZO_NO_ENV_SCRUB",
+  "KUZO_HOME",
+  "KUZO_DISABLE_KEYCHAIN",
+  "KUZO_PLUGINS_DIR",
+]);
+
 interface RawCapability {
   kind?: unknown;
   env?: unknown;
@@ -125,11 +147,21 @@ export function collectDeclaredCredentialEnvNames(
     const section = pkg.kuzoPlugin;
     if (section == null || typeof section !== "object") continue;
 
-    for (const envName of extractCredentialEnvNames(section.capabilities)) {
+    const addDeclared = (envName: string): void => {
+      if (RESERVED_KUZO_ENV.has(envName)) {
+        logger?.warn(
+          `Plugin "${name}" declared reserved kuzo-internal env name "${envName}" as a credential — ignoring. Theme 7's §A.12 install-time gate is the canonical defense; runtime drop is defense-in-depth.`,
+        );
+        return;
+      }
       declared.add(envName);
+    };
+
+    for (const envName of extractCredentialEnvNames(section.capabilities)) {
+      addDeclared(envName);
     }
     for (const envName of extractCredentialEnvNames(section.optionalCapabilities)) {
-      declared.add(envName);
+      addDeclared(envName);
     }
   }
 

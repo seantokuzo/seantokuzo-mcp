@@ -81,15 +81,29 @@ export default tseslint.config(
     },
   },
   // Phase 2.6 §C.1 invariant 5 + §C.9: `child_process` MUST NOT be invoked
-  // between ConfigManager construction (boot step 2) and `scrubProcessEnv`
-  // (boot step 7). Plugin children are spawned only via
-  // `packages/core/src/plugin-process.ts` after scrub completes; the pre-scrub
-  // paths (`server.ts` + `loader.ts`) are not allowed to import the module
-  // at all. Spec calls for a rule PAIR — `no-restricted-imports` catches the
-  // static-import surface, `no-restricted-syntax` is defense-in-depth against
-  // namespace-aliased calls (`childProcess.fork(...)`) or `require()` paths.
+  // outside `packages/core/src/plugin-process.ts` — the ONLY file allowed
+  // to fork plugin children, and only after the boot-step-7 scrub has
+  // completed. The spec scoped this rule to `server.ts` + `loader.ts`;
+  // the round-3 Architecture advisory widened the `files:` glob to the
+  // whole `packages/core/src/**/*.ts` tree so future code added to any
+  // pre-scrub module (manifest-env-names, plugin-resolver, key-provider-
+  // choice, audit, consent, credentials/*) is automatically covered.
+  // `paths.ts` is also `ignores`-exempted here to preserve the §E.2
+  // kuzoHome carve-out — only `paths.ts` may compose `~/.kuzo` from
+  // `homedir()`, and the kuzoHome no-restricted-syntax selectors are
+  // re-listed below alongside the childProcess selector because flat-
+  // config rule merging is last-wins per file.
+  //
+  // Spec asks for a rule PAIR: `no-restricted-imports` catches the
+  // static-import surface, `no-restricted-syntax` is defense-in-depth
+  // against namespace-aliased calls (`childProcess.fork(...)`) or
+  // `require()` paths.
   {
-    files: ["packages/core/src/server.ts", "packages/core/src/loader.ts"],
+    files: ["packages/core/src/**/*.ts"],
+    ignores: [
+      "packages/core/src/plugin-process.ts",
+      "packages/core/src/paths.ts",
+    ],
     rules: {
       "no-restricted-imports": [
         "error",
@@ -98,12 +112,14 @@ export default tseslint.config(
             {
               name: "node:child_process",
               message:
-                "child_process.fork/spawn/exec/execFile/spawnSync/execSync/execFileSync MUST NOT be invoked in pre-scrub paths. Plugin children are spawned only via packages/core/src/plugin-process.ts after scrub completes. See docs/credentials-spec.md §C.1 invariant 5 + §C.9.",
+                "child_process.fork/spawn/exec/execFile/spawnSync/execSync/execFileSync MUST NOT be invoked outside of packages/core/src/plugin-process.ts (the only allowed spawn site, after the boot-step-7 scrub). Type-only imports (`import type { ChildProcess }`) are permitted. See docs/credentials-spec.md §C.1 invariant 5 + §C.9.",
+              allowTypeImports: true,
             },
             {
               name: "child_process",
               message:
-                "Use 'node:child_process' for built-in modules. (And don't import it from server.ts or loader.ts — see docs/credentials-spec.md §C.9.)",
+                "Use 'node:child_process' for built-in modules — and only inside packages/core/src/plugin-process.ts. Type-only imports are permitted. See docs/credentials-spec.md §C.9.",
+              allowTypeImports: true,
             },
           ],
         },
