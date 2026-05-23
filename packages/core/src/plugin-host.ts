@@ -9,8 +9,7 @@
 
 import { IpcChannel } from "./ipc.js";
 import { DefaultCredentialBroker } from "./credentials.js";
-import { AuditLogger } from "./audit.js";
-import { KuzoLogger } from "./logger.js";
+import type { AuditEvent, AuditLogger } from "./audit.js";
 import {
   isV2Plugin,
   type CredentialCapability,
@@ -19,6 +18,48 @@ import {
   type PluginLogger,
   type ToolDefinition,
 } from "@kuzo-mcp/types";
+
+// ---------------------------------------------------------------------------
+// IpcAuditLogger — child-side proxy that notifies the parent over IPC
+// ---------------------------------------------------------------------------
+//
+// Phase 2.6 Theme 5 (spec §C.10). The plugin-host MUST NOT touch
+// `audit.log` directly — the parent owns the file writer. Every audit
+// event the in-child `DefaultCredentialBroker` produces is forwarded via
+// `channel.notify("audit", { event })`; `plugin-process.handleAuditEvent`
+// in the parent validates + stamps + writes.
+//
+// Imports of `FileBackedAuditLogger` (and `appendFile*` from `node:fs`)
+// are ESLint-banned in this file — see `eslint.config.js`.
+
+class IpcAuditLogger implements AuditLogger {
+  constructor(private readonly channel: IpcChannel) {}
+
+  log(event: Omit<AuditEvent, "timestamp">): void {
+    // Match FileBackedAuditLogger's never-throw contract — audit emission
+    // must never break the operation that triggered it. `IpcChannel.notify`
+    // short-circuits on `closed` but `process.send` can still raise
+    // synchronously in a teardown race (channel disconnected before
+    // `closed` was set). Round-2 Correctness advisory.
+    try {
+      this.channel.notify("audit", { event });
+    } catch (err) {
+      process.stderr.write(
+        `IpcAuditLogger: notify failed — ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  /**
+   * Audit reads happen in the parent CLI only. Throw if a plugin tries to
+   * call this — defense-in-depth; the type system already shields the
+   * child from `FileBackedAuditLogger` via the file-writer-monopoly
+   * ESLint rule.
+   */
+  query(): AuditEvent[] {
+    throw new Error("audit.query() is parent-only; child plugins cannot read the audit log");
+  }
+}
 
 // ---------------------------------------------------------------------------
 // IPC-backed logger — relays log messages to parent process
@@ -109,8 +150,13 @@ async function main(): Promise<void> {
       config.set(key, value);
     }
 
-    // Build credential broker (reconstructed in child — same as parent would)
-    const auditLogger = new AuditLogger({ logger: new KuzoLogger(`audit:${pluginName}`) });
+    // Build credential broker (reconstructed in child — same as parent would).
+    // The audit logger is IPC-backed: every emission notifies the parent via
+    // `channel.notify("audit", { event })`. The parent's `handleAuditEvent`
+    // in `plugin-process.ts` rate-limits, validates plugin identity + action
+    // class, stamps `source: "child"` + child PID, and writes to `audit.log`.
+    // Per spec §C.10, the child MUST NOT write to `audit.log` directly.
+    const auditLogger = new IpcAuditLogger(ch);
     const credentials = new DefaultCredentialBroker({
       pluginName,
       config,

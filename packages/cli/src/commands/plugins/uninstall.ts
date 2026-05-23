@@ -19,7 +19,7 @@ import { existsSync, rmSync } from "node:fs";
 import boxen from "boxen";
 import chalk from "chalk";
 
-import { AuditLogger } from "@kuzo-mcp/core/audit";
+import { FileBackedAuditLogger } from "@kuzo-mcp/core/audit";
 import { ConsentStore } from "@kuzo-mcp/core/consent";
 
 import { acquireLock, PluginsLockedError } from "./lock.js";
@@ -35,7 +35,7 @@ export async function runUninstall(
   nameArg: string,
   options: UninstallOptions,
 ): Promise<void> {
-  const audit = new AuditLogger();
+  const audit = new FileBackedAuditLogger();
   const index = readIndex();
 
   const resolved = resolveInstalled(index.plugins, nameArg);

@@ -15,13 +15,13 @@ import { existsSync, rmSync } from "node:fs";
 import boxen from "boxen";
 import chalk from "chalk";
 
-import { AuditLogger } from "@kuzo-mcp/core/audit";
+import { FileBackedAuditLogger } from "@kuzo-mcp/core/audit";
 import { attestationsCacheDir, tufCacheDir } from "@kuzo-mcp/core/paths";
 
 import { acquireLock, PluginsLockedError } from "./lock.js";
 
 export function runRefreshTrustRoot(): void {
-  const audit = new AuditLogger();
+  const audit = new FileBackedAuditLogger();
   // Let PluginsLockedError bubble to the Commander action so
   // exitCodeForRefreshTrustRootError can map it. No async work happens in
   // here — keep the function synchronous to surface errors directly.

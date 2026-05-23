@@ -13,10 +13,11 @@
     "start:mcp": "node packages/core/dist/server.js",
     "dev:cli": "pnpm --filter @kuzo-mcp/cli run dev",
     "cli": "pnpm --filter @kuzo-mcp/cli run dev",
-    "test": "pnpm run test:parity && pnpm run test:provenance && pnpm run test:credentials",
+    "test": "pnpm run test:parity && pnpm run test:provenance && pnpm run test:credentials && pnpm run test:audit",
     "test:parity": "node scripts/test-install-parity.mjs",
     "test:provenance": "pnpm -s build && node scripts/smoke-provenance.mjs",
     "test:credentials": "KUZO_TEST=1 node --import tsx --test packages/core/src/credentials/cipher.test.ts packages/core/src/credentials/key-provider.test.ts packages/core/src/credentials/store.test.ts packages/core/src/credentials/source.test.ts packages/core/src/credentials/env-overrides.test.ts",
+    "test:audit": "KUZO_TEST=1 node --import tsx --test packages/core/src/audit-ipc.test.ts",
     "changeset": "changeset",
     "version": "changeset version && pnpm install --lockfile-only",
     "release": "pnpm build && changeset publish"
