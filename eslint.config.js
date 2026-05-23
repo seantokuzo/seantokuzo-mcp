@@ -80,6 +80,34 @@ export default tseslint.config(
       ],
     },
   },
+  // Phase 2.6 §C.1 invariant 5 + §C.9: `child_process` MUST NOT be invoked
+  // between ConfigManager construction (boot step 2) and `scrubProcessEnv`
+  // (boot step 7). Plugin children are spawned only via
+  // `packages/core/src/plugin-process.ts` after scrub completes; the pre-scrub
+  // paths (`server.ts` + `loader.ts`) are not allowed to import the module
+  // at all.
+  {
+    files: ["packages/core/src/server.ts", "packages/core/src/loader.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "node:child_process",
+              message:
+                "child_process.fork/spawn/exec/execFile/spawnSync/execSync/execFileSync MUST NOT be invoked in pre-scrub paths. Plugin children are spawned only via packages/core/src/plugin-process.ts after scrub completes. See docs/credentials-spec.md §C.1 invariant 5 + §C.9.",
+            },
+            {
+              name: "child_process",
+              message:
+                "Use 'node:child_process' for built-in modules. (And don't import it from server.ts or loader.ts — see docs/credentials-spec.md §C.9.)",
+            },
+          ],
+        },
+      ],
+    },
+  },
   {
     ignores: ["**/dist/", "**/node_modules/"],
   },

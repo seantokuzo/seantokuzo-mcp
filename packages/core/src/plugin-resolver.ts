@@ -20,8 +20,8 @@
  */
 
 import { existsSync, readFileSync } from "fs";
-import { join } from "path";
-import { pathToFileURL } from "url";
+import { dirname, join } from "path";
+import { fileURLToPath, pathToFileURL } from "url";
 import type { KuzoConfig } from "@kuzo-mcp/types";
 
 import { pluginsRoot } from "./paths.js";
@@ -50,6 +50,50 @@ function readMainEntry(packageRoot: string): string {
     );
   }
   return entry;
+}
+
+/**
+ * Resolve a plugin's friendly name to the absolute directory that contains
+ * its `package.json`. Phase 2.6 Theme 4 uses this to read static
+ * `kuzoPlugin.capabilities` BEFORE any plugin entry module is dynamically
+ * imported (spec §C.1 invariant 6 — manifest-import-before-scrub is forbidden).
+ *
+ * Same three-tier resolution as `resolvePluginEntry`:
+ *   1. Versioned install — `<root>/<name>/current/pkg/`
+ *   2. Flat install      — `<root>/<name>/node_modules/<pkg>/`
+ *   3. Dev mode          — walk up from `import.meta.resolve(pkg)` until a
+ *                          `package.json` is found (handles arbitrary plugin
+ *                          layouts without assuming `dist/index.js`).
+ */
+export function resolvePluginPackageDir(
+  name: string,
+  kuzoConfig: KuzoConfig,
+): string {
+  const pkg = BUILTIN_PLUGINS[name] ?? kuzoConfig.plugins[name]?.packageName;
+  if (!pkg) {
+    throw new Error(
+      `Unknown plugin "${name}" — not a built-in and no packageName in config.`,
+    );
+  }
+
+  const installedRoot = pluginsRoot();
+
+  const versionedPath = join(installedRoot, name, "current", "pkg");
+  if (existsSync(join(versionedPath, "package.json"))) return versionedPath;
+
+  const flatPath = join(installedRoot, name, "node_modules", pkg);
+  if (existsSync(join(flatPath, "package.json"))) return flatPath;
+
+  const entryUrl = import.meta.resolve(pkg);
+  const entryPath = fileURLToPath(entryUrl);
+  let dir = dirname(entryPath);
+  while (dir !== dirname(dir)) {
+    if (existsSync(join(dir, "package.json"))) return dir;
+    dir = dirname(dir);
+  }
+  throw new Error(
+    `Could not resolve package directory for plugin "${name}" (package "${pkg}"): no package.json found above ${entryPath}.`,
+  );
 }
 
 /**

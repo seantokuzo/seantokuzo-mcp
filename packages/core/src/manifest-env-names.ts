@@ -1,0 +1,122 @@
+/**
+ * manifest-env-names.ts — Phase 2.6 §C.1 step 5.
+ *
+ * Synchronously walks all enabled plugins' STATIC manifests
+ * (`package.json#kuzoPlugin.capabilities` + `optionalCapabilities`, baked in
+ * Theme 0) to collect the union of declared credential env-var names.
+ *
+ * The result feeds `collectEnvOverrides()` (which reads `process.env` values
+ * by name) and `scrubProcessEnv()` (which deletes the matched keys before any
+ * plugin entry module is dynamically `import()`-ed).
+ *
+ * Invariant 6 (§C.1): **no dynamic `import()` of plugin entry modules** before
+ * the scrub completes. This walker uses `fs.readFileSync` against
+ * `package.json` only — third-party plugins ship arbitrary top-level code,
+ * and `import()`-ing them pre-scrub voids the scrub guarantee.
+ *
+ * Manifest drift (static missing a cap that the runtime declares) is detected
+ * by the loader's `plugin.failed: manifest_drift` path at step 10, not here.
+ * The walker is intentionally permissive — missing/malformed `kuzoPlugin`
+ * yields zero contributions for that plugin and the loader handles the
+ * follow-on failure.
+ */
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import type { KuzoConfig } from "@kuzo-mcp/types";
+
+import type { KuzoLogger } from "./logger.js";
+import { resolvePluginPackageDir } from "./plugin-resolver.js";
+
+interface RawCapability {
+  kind?: unknown;
+  env?: unknown;
+}
+
+interface RawKuzoPluginSection {
+  capabilities?: unknown;
+  optionalCapabilities?: unknown;
+}
+
+interface RawPackageJson {
+  kuzoPlugin?: RawKuzoPluginSection;
+}
+
+function extractCredentialEnvNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const item of raw) {
+    if (item == null || typeof item !== "object") continue;
+    const cap = item as RawCapability;
+    if (cap.kind === "credentials" && typeof cap.env === "string" && cap.env.length > 0) {
+      out.push(cap.env);
+    }
+  }
+  return out;
+}
+
+/**
+ * Read static `package.json#kuzoPlugin` capability env names for every
+ * enabled plugin. Failures per plugin are logged and skipped (so one bad
+ * plugin can't take down the whole boot); the loader at step 10 is the
+ * authoritative error path.
+ */
+export function collectDeclaredCredentialEnvNames(
+  kuzoConfig: KuzoConfig,
+  logger?: KuzoLogger,
+): Set<string> {
+  const declared = new Set<string>();
+
+  for (const [name, conf] of Object.entries(kuzoConfig.plugins)) {
+    if (!conf.enabled) continue;
+
+    let packageDir: string;
+    try {
+      packageDir = resolvePluginPackageDir(name, kuzoConfig);
+    } catch (err) {
+      logger?.warn(
+        `Could not resolve plugin "${name}" package dir for static manifest read: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      continue;
+    }
+
+    let pkgRaw: string;
+    try {
+      pkgRaw = readFileSync(join(packageDir, "package.json"), "utf-8");
+    } catch (err) {
+      logger?.warn(
+        `Could not read package.json for plugin "${name}" at ${packageDir}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      continue;
+    }
+
+    let pkg: RawPackageJson;
+    try {
+      pkg = JSON.parse(pkgRaw) as RawPackageJson;
+    } catch (err) {
+      logger?.warn(
+        `Could not parse package.json for plugin "${name}" at ${packageDir}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      continue;
+    }
+
+    const section = pkg.kuzoPlugin;
+    if (section == null || typeof section !== "object") continue;
+
+    for (const envName of extractCredentialEnvNames(section.capabilities)) {
+      declared.add(envName);
+    }
+    for (const envName of extractCredentialEnvNames(section.optionalCapabilities)) {
+      declared.add(envName);
+    }
+  }
+
+  return declared;
+}
