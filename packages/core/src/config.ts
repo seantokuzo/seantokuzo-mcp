@@ -62,34 +62,4 @@ export class ConfigManager {
   isPluginEnabled(name: string): boolean {
     return this.kuzoConfig.plugins[name]?.enabled ?? false;
   }
-
-  /**
-   * Extract and validate config for a specific plugin.
-   * Returns the config map and any missing required keys.
-   */
-  extractPluginConfig(
-    requiredKeys: string[],
-    optionalKeys: string[],
-  ): { config: Map<string, string>; missing: string[] } {
-    const config = new Map<string, string>();
-    const missing: string[] = [];
-
-    for (const key of requiredKeys) {
-      const value = process.env[key];
-      if (value) {
-        config.set(key, value);
-      } else {
-        missing.push(key);
-      }
-    }
-
-    for (const key of optionalKeys) {
-      const value = process.env[key];
-      if (value) {
-        config.set(key, value);
-      }
-    }
-
-    return { config, missing };
-  }
 }

@@ -10,8 +10,8 @@
  */
 
 import {
+  isCredentialCapability,
   isV2Plugin,
-  type Capability,
   type CredentialCapability,
   type CrossPluginCapability,
   type KuzoPlugin,
@@ -22,6 +22,7 @@ import {
 } from "@kuzo-mcp/types";
 import type { PluginRegistry } from "./registry.js";
 import type { ConfigManager } from "./config.js";
+import type { CredentialSource } from "./credentials/index.js";
 import { createPluginLogger, KuzoLogger } from "./logger.js";
 import { ConsentStore } from "./consent.js";
 import { AuditLogger } from "./audit.js";
@@ -41,6 +42,7 @@ export class PluginLoader {
     private logger: KuzoLogger,
     private consentStore: ConsentStore,
     private auditLogger: AuditLogger,
+    private credentialSource: CredentialSource,
   ) {
     // Parse trust env vars once at construction
     this.trustPlugins = new Set(
@@ -199,24 +201,7 @@ export class PluginLoader {
   private extractCredentialCapabilities(plugin: KuzoPlugin): CredentialCapability[] {
     if (!isV2Plugin(plugin)) return [];
     const allCaps = [...plugin.capabilities, ...(plugin.optionalCapabilities ?? [])];
-    return allCaps.filter((c): c is CredentialCapability => c.kind === "credentials");
-  }
-
-  // -------------------------------------------------------------------------
-  // Config extraction
-  // -------------------------------------------------------------------------
-
-  /** Extract required env var names from V2 credential capabilities */
-  private extractV2Config(plugin: KuzoPlugin): { required: string[]; optional: string[] } {
-    if (!isV2Plugin(plugin)) return { required: [], optional: [] };
-    const toEnvVars = (caps: Capability[]) =>
-      caps
-        .filter((c): c is CredentialCapability => c.kind === "credentials")
-        .map((c) => c.env);
-    return {
-      required: toEnvVars(plugin.capabilities),
-      optional: toEnvVars(plugin.optionalCapabilities ?? []),
-    };
+    return allCaps.filter(isCredentialCapability);
   }
 
   // -------------------------------------------------------------------------
@@ -308,11 +293,10 @@ export class PluginLoader {
       let missing: string[];
 
       if (isV2Plugin(plugin)) {
-        const v2Config = this.extractV2Config(plugin);
-        ({ config, missing } = this.configManager.extractPluginConfig(
-          v2Config.required,
-          v2Config.optional,
-        ));
+        ({ config, missing } = this.credentialSource.extractForPlugin({
+          required: plugin.capabilities.filter(isCredentialCapability),
+          optional: (plugin.optionalCapabilities ?? []).filter(isCredentialCapability),
+        }));
       } else {
         // V1 plugins (behind KUZO_TRUST_LEGACY) get an empty config — no config declarations
         config = new Map();
