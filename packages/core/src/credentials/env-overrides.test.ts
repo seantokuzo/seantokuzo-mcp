@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 
-import { AuditLogger } from "../audit.js";
+import { FileBackedAuditLogger, type AuditLogger } from "../audit.js";
 import { collectEnvOverrides, scrubProcessEnv } from "./env-overrides.js";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ function withEnvIsolation(t: TestContext): void {
 function freshAudit(t: TestContext): { audit: AuditLogger; logPath: string } {
   const dir = mkdtempSync(join(tmpdir(), "kuzo-scrub-audit-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const audit = new AuditLogger({ logDir: dir });
+  const audit = new FileBackedAuditLogger({ logDir: dir });
   return { audit, logPath: join(dir, "audit.log") };
 }
 

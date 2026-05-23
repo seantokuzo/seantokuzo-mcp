@@ -34,7 +34,7 @@ import chalk from "chalk";
 import { createSpinner } from "nanospinner";
 import pacote from "pacote";
 
-import { AuditLogger } from "@kuzo-mcp/core/audit";
+import { FileBackedAuditLogger, type AuditLogger } from "@kuzo-mcp/core/audit";
 import { ConsentStore } from "@kuzo-mcp/core/consent";
 import {
   DEFAULT_POLICY,
@@ -108,7 +108,7 @@ export async function runInstall(
   nameArg: string,
   options: InstallOptions,
 ): Promise<void> {
-  const audit = new AuditLogger();
+  const audit = new FileBackedAuditLogger();
 
   // --- Step 1: Resolve name@version -------------------------------------------
   const { friendlyName, pkg, versionSpec } = parseSpec(nameArg, options);

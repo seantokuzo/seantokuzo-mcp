@@ -9,7 +9,8 @@
  * Boot order (pinned by §C.1 — see invariants comment near `runServer`):
  *   1.  installExitGuard               (before anything that spawns children)
  *   2.  ConfigManager + loadDotenv     (populates process.env from .env)
- *   3.  ConsentStore + AuditLogger     (paths via @kuzo-mcp/core/paths)
+ *   3.  ConsentStore + FileBackedAuditLogger     (paths via @kuzo-mcp/core/paths)
+ *       + emit `audit.partition_initialized` for forensic correlation
  *   4.  chooseKeyProvider + EncryptedCredentialStore   (both INERT — no I/O)
  *   5.  collectDeclaredCredentialEnvNames               (static manifest read)
  *   6.  collectEnvOverrides                             (snapshot process.env)
@@ -34,7 +35,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
-import { AuditLogger } from "./audit.js";
+import { FileBackedAuditLogger } from "./audit.js";
+import { CHILD_PERMITTED_AUDIT_ACTIONS } from "./audit-partition.js";
 import { ConfigManager } from "./config.js";
 import { ConsentStore } from "./consent.js";
 import {
@@ -270,8 +272,23 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
 
   // 3. Consent + audit. Both classes default their paths to `kuzoHome()`
   //    internally, so `KUZO_HOME` flows through without an explicit pass.
+  //    `FileBackedAuditLogger` is the parent-owned writer per spec §C.10 —
+  //    plugin children flow through `IpcAuditLogger` and reach this writer
+  //    only via `plugin-process.handleAuditEvent`'s validation gauntlet.
   const consentStore = new ConsentStore();
-  const auditLogger = new AuditLogger({ logger: new KuzoLogger("audit") });
+  const auditLogger = new FileBackedAuditLogger({ logger: new KuzoLogger("audit") });
+
+  // Forensic-correlation seed: emit the child-permitted action list exactly
+  // once per server lifetime so audit reviewers can cross-reference any
+  // subsequent `audit.forged_action` event without that event having to
+  // re-embed the partition list per-entry (spec §C.10 nit N3).
+  auditLogger.log({
+    plugin: "kuzo",
+    action: "audit.partition_initialized",
+    outcome: "allowed",
+    source: "parent",
+    details: { permitted: Array.from(CHILD_PERMITTED_AUDIT_ACTIONS) },
+  });
 
   // 4. Credential store + key provider (INERT — no I/O, no decrypt)
   const keyProvider = chooseKeyProvider(auditLogger);

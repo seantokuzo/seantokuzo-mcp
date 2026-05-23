@@ -11,7 +11,8 @@ import { IpcChannel } from "./ipc.js";
 import type { CredentialCapability } from "@kuzo-mcp/types";
 import type { KuzoLogger } from "./logger.js";
 import type { PluginRegistry } from "./registry.js";
-import type { AuditLogger } from "./audit.js";
+import type { AuditEvent, AuditLogger } from "./audit.js";
+import { decideAudit, TokenBucket } from "./audit-ipc.js";
 
 import { assertNoFsArgInjection, kuzoHome } from "./paths.js";
 
@@ -60,6 +61,33 @@ const INIT_TIMEOUT_MS = 30_000;
 const MAX_OLD_SPACE_MB = 256;
 
 // ---------------------------------------------------------------------------
+// Audit IPC rate-limit policy (spec §C.10.1)
+// ---------------------------------------------------------------------------
+//
+// Per-child token bucket sized at 200 burst / 100 refill-per-sec. Excess
+// child audit events are DROPPED (not queued); drops are counted and
+// surfaced via a parent-side `audit.rate_limited` event at most once per
+// second. The decision logic + TokenBucket live in `audit-ipc.ts` so
+// they can be unit-tested without spawning a real child process.
+
+const AUDIT_BUCKET_CAPACITY = 200;
+const AUDIT_BUCKET_REFILL_PER_SEC = 100;
+const RATE_LIMIT_REPORT_INTERVAL_MS = 1_000;
+
+/** Minimal validation of inbound audit IPC payload. */
+function isAuditWireEvent(v: unknown): v is Omit<AuditEvent, "timestamp"> {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o["plugin"] === "string" &&
+    typeof o["action"] === "string" &&
+    typeof o["outcome"] === "string" &&
+    typeof o["details"] === "object" &&
+    o["details"] !== null
+  );
+}
+
+// ---------------------------------------------------------------------------
 // System env vars to forward to every child
 // ---------------------------------------------------------------------------
 
@@ -96,6 +124,18 @@ export class PluginProcess {
 
   // Pending callers waiting for spawn
   private spawnPromise: Promise<void> | null = null;
+
+  // Audit IPC rate-limit state (spec §C.10.1)
+  private readonly auditBucket = new TokenBucket(
+    AUDIT_BUCKET_CAPACITY,
+    AUDIT_BUCKET_REFILL_PER_SEC,
+  );
+  private rateLimitedSinceReport = 0;
+  private lastRateLimitReportAt = 0;
+
+  // Captured child PID for audit forensic stamping. Cleared in cleanup() so
+  // notifications that race the exit handler can't stamp a stale PID.
+  private childPid: number | undefined;
 
   constructor(
     private readonly pluginName: string,
@@ -181,6 +221,9 @@ export class PluginProcess {
       serialization: "json",
       stdio: ["ignore", "ignore", "pipe", "ipc"],
     });
+    // Capture PID immediately so audit notifications arriving during init
+    // stamp the correct child PID.
+    this.childPid = this.child.pid;
 
     // Pipe child stderr to parent stderr (for direct writes like uncaught exceptions)
     this.child.stderr?.on("data", (chunk: Buffer) => {
@@ -207,7 +250,7 @@ export class PluginProcess {
       throw new Error(`Unknown request from child: ${method}`);
     });
 
-    // Handle notifications from child (log messages)
+    // Handle notifications from child (log + audit)
     this.channel.onNotification((method, params) => {
       if (method === "log") {
         const { level, message, data, plugin } = params as {
@@ -220,6 +263,21 @@ export class PluginProcess {
         if (typeof logFn === "function") {
           (logFn as (msg: string, data?: unknown) => void).call(this.logger, `[${plugin}] ${message}`, data);
         }
+        return;
+      }
+      if (method === "audit") {
+        // Spec §C.10 — the parent owns the audit file writer; child IPC
+        // emissions flow through the rate-limit + identity validation +
+        // action-class allowlist gauntlet before reaching the AuditLogger.
+        const event = (params as { event?: unknown } | null)?.event;
+        if (!isAuditWireEvent(event)) {
+          this.logger.warn(
+            `Dropped malformed audit notification from "${this.pluginName}" — wire shape invalid`,
+          );
+          return;
+        }
+        this.handleAuditEvent(event);
+        return;
       }
     });
 
@@ -295,6 +353,92 @@ export class PluginProcess {
     }
 
     return this.channel.request<string>("readResource", { uri }, TOOL_CALL_TIMEOUT_MS);
+  }
+
+  // -------------------------------------------------------------------------
+  // Audit IPC (spec §C.10 + §C.10.1)
+  // -------------------------------------------------------------------------
+  //
+  // Inbound child audit notifications run through this gauntlet in order:
+  //   1. Rate-limit check (FIRST — forgeries also consume tokens so they
+  //      can't bypass the limit).
+  //   2. PID + source stamp (overwrites any caller-supplied value).
+  //   3. Plugin-identity validation — `event.plugin` must equal this
+  //      child's declared plugin name. Mismatch → `audit.forged_plugin_field`,
+  //      original event DROPPED.
+  //   4. Action-class allowlist — `event.action` must be a member of
+  //      `CHILD_PERMITTED_AUDIT_ACTIONS`. Else → `audit.forged_action`,
+  //      original DROPPED.
+  //   5. Trusted-path forward to the parent's file-backed AuditLogger.
+
+  private handleAuditEvent(event: Omit<AuditEvent, "timestamp">): void {
+    const childPid = this.childPid;
+    const decision = decideAudit(event, this.pluginName, childPid, this.auditBucket);
+
+    switch (decision.kind) {
+      case "rate_limited":
+        this.rateLimitedSinceReport++;
+        this.reportRateLimitIfDue(childPid);
+        return;
+
+      case "forged_plugin":
+        this.auditLogger.log({
+          plugin: "kuzo",
+          action: "audit.forged_plugin_field",
+          outcome: "denied",
+          source: "parent",
+          ...(childPid !== undefined ? { pid: childPid } : {}),
+          details: {
+            claimed_plugin: event.plugin,
+            actual_plugin: this.pluginName,
+            child_pid: childPid,
+            attempted_action: event.action,
+          },
+        });
+        return;
+
+      case "forged_action":
+        // Spec round-4 nit N3: don't embed `permitted` here — the
+        // `audit.partition_initialized` boot event covers it exactly
+        // once per server lifetime, and per-entry duplication pollutes
+        // the log.
+        this.auditLogger.log({
+          plugin: "kuzo",
+          action: "audit.forged_action",
+          outcome: "denied",
+          source: "parent",
+          ...(childPid !== undefined ? { pid: childPid } : {}),
+          details: {
+            plugin: this.pluginName,
+            child_pid: childPid,
+            attempted_action: event.action,
+          },
+        });
+        return;
+
+      case "allow":
+        this.auditLogger.log(decision.stamped);
+        return;
+    }
+  }
+
+  private reportRateLimitIfDue(childPid: number | undefined): void {
+    const now = Date.now();
+    if (now - this.lastRateLimitReportAt < RATE_LIMIT_REPORT_INTERVAL_MS) return;
+    this.auditLogger.log({
+      plugin: "kuzo",
+      action: "audit.rate_limited",
+      outcome: "denied",
+      source: "parent",
+      ...(childPid !== undefined ? { pid: childPid } : {}),
+      details: {
+        plugin: this.pluginName,
+        child_pid: childPid,
+        drops_in_window: this.rateLimitedSinceReport,
+      },
+    });
+    this.lastRateLimitReportAt = now;
+    this.rateLimitedSinceReport = 0;
   }
 
   // -------------------------------------------------------------------------
@@ -456,6 +600,9 @@ export class PluginProcess {
     this.channel?.close();
     this.channel = null;
     this.child = null;
+    // Clear the cached child PID so audit notifications that race the
+    // exit handler can't stamp a stale value.
+    this.childPid = undefined;
     if (this.state !== "shutdown" && this.state !== "degraded") {
       this.state = "idle";
     }

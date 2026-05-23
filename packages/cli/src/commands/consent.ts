@@ -12,7 +12,7 @@ import { pathToFileURL, fileURLToPath } from "url";
 import { resolve, dirname } from "path";
 import { existsSync } from "fs";
 import { ConsentStore } from "@kuzo-mcp/core/consent";
-import { AuditLogger, type AuditEvent } from "@kuzo-mcp/core/audit";
+import { FileBackedAuditLogger, type AuditEvent, type AuditLogger } from "@kuzo-mcp/core/audit";
 import {
   isV2Plugin,
   type Capability,
@@ -22,7 +22,7 @@ import { showSuccess, showWarning, showError, showInfo } from "../ui/display.js"
 
 /** Shared audit logger for CLI consent commands */
 function getAuditLogger(): AuditLogger {
-  return new AuditLogger();
+  return new FileBackedAuditLogger();
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -295,7 +295,7 @@ export async function revokeInteractive(pluginName?: string): Promise<void> {
  * Query and display the audit log.
  */
 export async function auditInteractive(sinceArg?: string): Promise<void> {
-  const auditLogger = new AuditLogger();
+  const auditLogger = new FileBackedAuditLogger();
   let since: Date | undefined;
 
   if (sinceArg) {

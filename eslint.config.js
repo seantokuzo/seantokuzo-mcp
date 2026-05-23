@@ -157,6 +157,98 @@ export default tseslint.config(
       ],
     },
   },
+  // Phase 2.6 Theme 5 (spec §C.10): file-writer monopoly. The plugin-host
+  // child MUST NOT write to `audit.log` directly — every audit event from
+  // a plugin flows through `IpcAuditLogger.notify("audit", …)` and the
+  // parent's `plugin-process.handleAuditEvent` validation gauntlet. This
+  // block re-lists the §C.9 `child_process` ban and the §E.2 kuzoHome
+  // selectors because flat-config rule merging is last-wins per file, and
+  // dropping either would regress those defenses on plugin-host.ts.
+  //
+  // The new bans are:
+  //   - `node:fs` / `fs` named imports `appendFile` + `appendFileSync`
+  //   - `./audit.js` + `@kuzo-mcp/core/audit` named import
+  //     `FileBackedAuditLogger`
+  //
+  // The structural guarantee is the IpcAuditLogger proxy in plugin-host.ts;
+  // this rule catches regressions before they ship.
+  {
+    files: ["packages/core/src/plugin-host.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            // §C.9 child_process ban — preserved across the last-wins merge.
+            {
+              name: "node:child_process",
+              message:
+                "child_process.fork/spawn/exec/execFile/spawnSync/execSync/execFileSync MUST NOT be invoked outside of packages/core/src/plugin-process.ts (the only allowed spawn site, after the boot-step-7 scrub). Type-only imports (`import type { ChildProcess }`) are permitted. See docs/credentials-spec.md §C.1 invariant 5 + §C.9.",
+              allowTypeImports: true,
+            },
+            {
+              name: "child_process",
+              message:
+                "Use 'node:child_process' for built-in modules — and only inside packages/core/src/plugin-process.ts. Type-only imports are permitted. See docs/credentials-spec.md §C.9.",
+              allowTypeImports: true,
+            },
+            // §C.10 audit-write monopoly — the new bans.
+            {
+              name: "node:fs",
+              importNames: ["appendFile", "appendFileSync"],
+              message:
+                "plugin-host.ts MUST NOT write audit.log directly — spec §C.10 file-writer monopoly. Send audit events via IpcAuditLogger (channel.notify(\"audit\", { event })). The parent's handleAuditEvent validates and writes.",
+            },
+            {
+              name: "fs",
+              importNames: ["appendFile", "appendFileSync"],
+              message:
+                "Use 'node:fs' for built-in modules. plugin-host.ts MUST NOT call appendFile* anyway — see spec §C.10.",
+            },
+            {
+              name: "./audit.js",
+              importNames: ["FileBackedAuditLogger"],
+              message:
+                "plugin-host.ts MUST NOT import FileBackedAuditLogger — spec §C.10 file-writer monopoly. Use the IpcAuditLogger proxy defined in this file (or the AuditLogger interface for typing).",
+            },
+            {
+              name: "@kuzo-mcp/core/audit",
+              importNames: ["FileBackedAuditLogger"],
+              message:
+                "plugin-host.ts MUST NOT import FileBackedAuditLogger — spec §C.10 file-writer monopoly. Same as the relative-import form above.",
+            },
+          ],
+        },
+      ],
+      // §C.9 + §E.2 syntax bans — preserved across the last-wins merge.
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "CallExpression[callee.object.name='childProcess']",
+          message:
+            "child_process methods are banned in pre-scrub paths (defense-in-depth vs. namespace-aliased imports / require). See docs/credentials-spec.md §C.9.",
+        },
+        {
+          selector:
+            "CallExpression:has(CallExpression:matches([callee.name='homedir'], [callee.object.name='os'][callee.property.name='homedir'])):has(Literal[value='.kuzo'])",
+          message:
+            "Don't inline `join(homedir(), '.kuzo', …)`. Import the appropriate helper (kuzoHome, pluginsRoot, consentFilePath, auditFilePath, tufCacheDir, …) from `@kuzo-mcp/core/paths` so KUZO_HOME overrides apply uniformly.",
+        },
+        {
+          selector:
+            "BinaryExpression[operator='+']:has(CallExpression:matches([callee.name='homedir'], [callee.object.name='os'][callee.property.name='homedir'])):has(Literal[value=/\\.kuzo/])",
+          message:
+            "Don't inline `homedir() + '.kuzo'` (or `homedir() + '/.kuzo'`). Import the appropriate helper from `@kuzo-mcp/core/paths` so KUZO_HOME overrides apply uniformly.",
+        },
+        {
+          selector:
+            "TemplateLiteral:has(CallExpression:matches([callee.name='homedir'], [callee.object.name='os'][callee.property.name='homedir'])):has(TemplateElement[value.cooked=/\\.kuzo/])",
+          message:
+            "Don't inline `` `${homedir()}/.kuzo` `` in a template literal. Import the appropriate helper from `@kuzo-mcp/core/paths` so KUZO_HOME overrides apply uniformly.",
+        },
+      ],
+    },
+  },
   {
     ignores: ["**/dist/", "**/node_modules/"],
   },

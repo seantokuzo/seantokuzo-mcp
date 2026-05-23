@@ -1,0 +1,63 @@
+/**
+ * Exhaustive trust-partition of every `AuditAction` variant (spec §C.10).
+ *
+ * The `Record<AuditAction, ...>` literal MUST enumerate every union member
+ * — TypeScript fails to compile if a variant is missing here. That makes
+ * the partition load-bearing: adding a new `AuditAction` to `audit.ts`
+ * without classifying it parent-only / child-permitted is a TYPE error,
+ * not a runtime surprise.
+ *
+ * Acceptance test (spec §F.1): drop any `"child-permitted"` entry below
+ * and `tsc --noEmit` MUST fail red with a "missing property" diagnostic.
+ *
+ * Future Themes that add new `AuditAction` variants MUST also add their
+ * partition classification here in the same change.
+ */
+
+import type { AuditAction } from "./audit.js";
+
+export const AUDIT_ACTION_PARTITION: Record<AuditAction, "parent-only" | "child-permitted"> = {
+  // child-permitted: the read-side broker emissions the in-child
+  // DefaultCredentialBroker legitimately produces during plugin tool
+  // execution. Every other variant is parent-only.
+  "credential.client_created": "child-permitted",
+  "credential.raw_access":     "child-permitted",
+  "credential.raw_denied":     "child-permitted",
+  "credential.fetch_created":  "child-permitted",
+
+  // parent-only: lifecycle / store / key-provider / boot
+  "credential.passphrase_consumed": "parent-only",
+  "credential.store_unlocked":      "parent-only",
+  "credential.store_locked":        "parent-only",
+  "credential.scrub_disabled":      "parent-only",
+
+  // parent-only: 2.5e Part D plugin lifecycle + 2.5c consent events
+  "plugin.loaded":                "parent-only",
+  "plugin.skipped":               "parent-only",
+  "plugin.failed":                "parent-only",
+  "plugin.installed":             "parent-only",
+  "plugin.uninstalled":           "parent-only",
+  "plugin.updated":               "parent-only",
+  "plugin.rolled_back":           "parent-only",
+  "plugin.trust_root_refreshed":  "parent-only",
+  "consent.granted":              "parent-only",
+  "consent.revoked":              "parent-only",
+  "consent.checked":              "parent-only",
+
+  // parent-only: this Theme — IPC validator + rate-limit + boot meta
+  "audit.forged_plugin_field":   "parent-only",
+  "audit.forged_action":         "parent-only",
+  "audit.rate_limited":          "parent-only",
+  "audit.partition_initialized": "parent-only",
+};
+
+/**
+ * Derived at module load — no per-call cost. Used by
+ * `plugin-process.handleAuditEvent` to gate child IPC traffic against
+ * the action-class allowlist.
+ */
+export const CHILD_PERMITTED_AUDIT_ACTIONS: ReadonlySet<AuditAction> = new Set(
+  (Object.entries(AUDIT_ACTION_PARTITION) as [AuditAction, string][])
+    .filter(([, scope]) => scope === "child-permitted")
+    .map(([action]) => action),
+);

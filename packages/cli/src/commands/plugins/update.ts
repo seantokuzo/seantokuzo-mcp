@@ -36,7 +36,7 @@ import {
   unlinkSync,
 } from "node:fs";
 
-import { AuditLogger } from "@kuzo-mcp/core/audit";
+import { FileBackedAuditLogger, type AuditLogger } from "@kuzo-mcp/core/audit";
 import {
   ConsentStore,
   diffCapabilities,
@@ -108,7 +108,7 @@ export async function runUpdate(
   nameArg: string | undefined,
   options: UpdateOptions,
 ): Promise<void> {
-  const audit = new AuditLogger();
+  const audit = new FileBackedAuditLogger();
 
   const policy = buildPolicy(options);
   const registry = resolveRegistry(options);
