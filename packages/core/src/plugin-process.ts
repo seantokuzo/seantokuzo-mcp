@@ -12,7 +12,13 @@ import type { CredentialCapability } from "@kuzo-mcp/types";
 import type { KuzoLogger } from "./logger.js";
 import type { PluginRegistry } from "./registry.js";
 import type { AuditEvent, AuditLogger } from "./audit.js";
-import { decideAudit, TokenBucket } from "./audit-ipc.js";
+import {
+  AUDIT_WIRE_MAX_BYTES,
+  decideAudit,
+  isAuditWireEvent,
+  TokenBucket,
+  withinAuditByteCap,
+} from "./audit-ipc.js";
 
 import { assertNoFsArgInjection, kuzoHome } from "./paths.js";
 
@@ -74,19 +80,6 @@ const AUDIT_BUCKET_CAPACITY = 200;
 const AUDIT_BUCKET_REFILL_PER_SEC = 100;
 const RATE_LIMIT_REPORT_INTERVAL_MS = 1_000;
 
-/** Minimal validation of inbound audit IPC payload. */
-function isAuditWireEvent(v: unknown): v is Omit<AuditEvent, "timestamp"> {
-  if (typeof v !== "object" || v === null) return false;
-  const o = v as Record<string, unknown>;
-  return (
-    typeof o["plugin"] === "string" &&
-    typeof o["action"] === "string" &&
-    typeof o["outcome"] === "string" &&
-    typeof o["details"] === "object" &&
-    o["details"] !== null
-  );
-}
-
 // ---------------------------------------------------------------------------
 // System env vars to forward to every child
 // ---------------------------------------------------------------------------
@@ -132,6 +125,11 @@ export class PluginProcess {
   );
   private rateLimitedSinceReport = 0;
   private lastRateLimitReportAt = 0;
+  // Round-1 Observability advisory: a burst that ends mid-window would
+  // otherwise lose the trailing drop count until the next drop arrives.
+  // This timer guarantees the trailing count is flushed within one
+  // interval of the last drop.
+  private rateLimitTrailingTimer: NodeJS.Timeout | null = null;
 
   // Captured child PID for audit forensic stamping. Cleared in cleanup() so
   // notifications that race the exit handler can't stamp a stale PID.
@@ -273,6 +271,12 @@ export class PluginProcess {
         if (!isAuditWireEvent(event)) {
           this.logger.warn(
             `Dropped malformed audit notification from "${this.pluginName}" — wire shape invalid`,
+          );
+          return;
+        }
+        if (!withinAuditByteCap(event)) {
+          this.logger.warn(
+            `Dropped oversize audit notification from "${this.pluginName}" — payload exceeds ${AUDIT_WIRE_MAX_BYTES} bytes`,
           );
           return;
         }
@@ -424,7 +428,19 @@ export class PluginProcess {
 
   private reportRateLimitIfDue(childPid: number | undefined): void {
     const now = Date.now();
-    if (now - this.lastRateLimitReportAt < RATE_LIMIT_REPORT_INTERVAL_MS) return;
+    if (now - this.lastRateLimitReportAt >= RATE_LIMIT_REPORT_INTERVAL_MS) {
+      // Window elapsed — emit immediately.
+      this.flushRateLimitDrops(childPid);
+      return;
+    }
+    // Window still open — make sure a trailing flush is queued so the
+    // accumulated drops aren't lost if the burst ends mid-window
+    // (round-1 Observability advisory).
+    this.scheduleTrailingRateLimitFlush();
+  }
+
+  private flushRateLimitDrops(childPid: number | undefined): void {
+    if (this.rateLimitedSinceReport === 0) return;
     this.auditLogger.log({
       plugin: "kuzo",
       action: "audit.rate_limited",
@@ -437,8 +453,22 @@ export class PluginProcess {
         drops_in_window: this.rateLimitedSinceReport,
       },
     });
-    this.lastRateLimitReportAt = now;
+    this.lastRateLimitReportAt = Date.now();
     this.rateLimitedSinceReport = 0;
+  }
+
+  private scheduleTrailingRateLimitFlush(): void {
+    if (this.rateLimitTrailingTimer !== null) return;
+    // Aim to fire RATE_LIMIT_REPORT_INTERVAL_MS after the LAST emit, but
+    // never less than 50ms to avoid a no-op tight loop when the interval
+    // is already past.
+    const elapsed = Date.now() - this.lastRateLimitReportAt;
+    const delayMs = Math.max(50, RATE_LIMIT_REPORT_INTERVAL_MS - elapsed);
+    this.rateLimitTrailingTimer = setTimeout(() => {
+      this.rateLimitTrailingTimer = null;
+      this.flushRateLimitDrops(this.childPid);
+    }, delayMs);
+    this.rateLimitTrailingTimer.unref();
   }
 
   // -------------------------------------------------------------------------
@@ -597,6 +627,19 @@ export class PluginProcess {
   private cleanup(): void {
     this.stopHeartbeat();
     this.clearStableTimer();
+    // Round-1 Observability advisory: drain any trailing rate-limit
+    // drops before the PID is cleared, so the forgery / drop forensics
+    // for this child generation are complete. Cancel the pending
+    // trailing timer (we're flushing manually) and force-emit by
+    // zeroing `lastRateLimitReportAt`.
+    if (this.rateLimitTrailingTimer) {
+      clearTimeout(this.rateLimitTrailingTimer);
+      this.rateLimitTrailingTimer = null;
+    }
+    if (this.rateLimitedSinceReport > 0) {
+      this.lastRateLimitReportAt = 0;
+      this.flushRateLimitDrops(this.childPid);
+    }
     this.channel?.close();
     this.channel = null;
     this.child = null;

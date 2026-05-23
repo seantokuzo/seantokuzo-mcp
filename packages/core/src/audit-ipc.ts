@@ -25,6 +25,58 @@ import type { AuditEvent } from "./audit.js";
 import { CHILD_PERMITTED_AUDIT_ACTIONS } from "./audit-partition.js";
 
 // ---------------------------------------------------------------------------
+// Wire-shape validation (spec §C.10 + round-1 review)
+// ---------------------------------------------------------------------------
+
+/**
+ * Round-1 Security advisory: cap inbound audit payload size.
+ * 100 events/sec × MB-scale payloads would starve fs / CPU even though
+ * the token bucket caps event *count*. 16 KiB is well above any
+ * legitimate audit detail (the existing emissions are all tiny) and
+ * well below any DoS-relevant scale.
+ */
+export const AUDIT_WIRE_MAX_BYTES = 16 * 1024;
+
+/** Allowed `outcome` values — the wire validator rejects anything else. */
+const VALID_AUDIT_OUTCOMES: ReadonlySet<string> = new Set([
+  "allowed",
+  "denied",
+  "error",
+]);
+
+/**
+ * Strict shape validation for an inbound audit IPC payload. Returns false on:
+ *  - wrong type / missing required string fields
+ *  - `outcome` not in the closed enum (round-1 Correctness advisory)
+ *  - `details` is an array rather than a plain object (round-1 Correctness)
+ */
+export function isAuditWireEvent(v: unknown): v is Omit<AuditEvent, "timestamp"> {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  if (typeof o["plugin"] !== "string") return false;
+  if (typeof o["action"] !== "string") return false;
+  if (typeof o["outcome"] !== "string") return false;
+  if (!VALID_AUDIT_OUTCOMES.has(o["outcome"])) return false;
+  if (typeof o["details"] !== "object" || o["details"] === null) return false;
+  if (Array.isArray(o["details"])) return false;
+  return true;
+}
+
+/**
+ * Reject oversize audit payloads (round-1 Security advisory). Runs after
+ * `isAuditWireEvent` succeeds — by then we know the event is structurally
+ * stringifiable. The `try` catches the BigInt / circular-reference case
+ * that JSON.stringify throws on.
+ */
+export function withinAuditByteCap(event: Omit<AuditEvent, "timestamp">): boolean {
+  try {
+    return JSON.stringify(event).length <= AUDIT_WIRE_MAX_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // TokenBucket — wall-clock rate limiter (spec §C.10.1)
 // ---------------------------------------------------------------------------
 

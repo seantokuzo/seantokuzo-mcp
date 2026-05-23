@@ -10,7 +10,13 @@ import { test } from "node:test";
 
 import type { AuditEvent } from "./audit.js";
 import { AUDIT_ACTION_PARTITION, CHILD_PERMITTED_AUDIT_ACTIONS } from "./audit-partition.js";
-import { TokenBucket, decideAudit } from "./audit-ipc.js";
+import {
+  AUDIT_WIRE_MAX_BYTES,
+  TokenBucket,
+  decideAudit,
+  isAuditWireEvent,
+  withinAuditByteCap,
+} from "./audit-ipc.js";
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -250,6 +256,139 @@ test("CHILD_PERMITTED_AUDIT_ACTIONS contains exactly the 4 read-side broker even
     );
   }
 });
+
+// ─── wire validator (round-1 Security + Correctness advisories) ──────────
+
+test("isAuditWireEvent: legit shape passes", () => {
+  assert.equal(
+    isAuditWireEvent({
+      plugin: "github",
+      action: "credential.client_created",
+      outcome: "allowed",
+      details: {},
+    }),
+    true,
+  );
+});
+
+test("isAuditWireEvent: missing plugin → false", () => {
+  assert.equal(
+    isAuditWireEvent({ action: "x", outcome: "allowed", details: {} }),
+    false,
+  );
+});
+
+test("isAuditWireEvent: non-enum outcome → false", () => {
+  assert.equal(
+    isAuditWireEvent({
+      plugin: "github",
+      action: "credential.client_created",
+      outcome: "totally_made_up",
+      details: {},
+    }),
+    false,
+    "outcome must be in the closed enum",
+  );
+});
+
+for (const outcome of ["allowed", "denied", "error"] as const) {
+  test(`isAuditWireEvent: outcome="${outcome}" accepted`, () => {
+    assert.equal(
+      isAuditWireEvent({
+        plugin: "github",
+        action: "credential.client_created",
+        outcome,
+        details: {},
+      }),
+      true,
+    );
+  });
+}
+
+test("isAuditWireEvent: array details → false (must be plain object)", () => {
+  assert.equal(
+    isAuditWireEvent({
+      plugin: "github",
+      action: "credential.client_created",
+      outcome: "allowed",
+      details: [1, 2, 3],
+    }),
+    false,
+  );
+});
+
+test("isAuditWireEvent: null details → false", () => {
+  assert.equal(
+    isAuditWireEvent({
+      plugin: "github",
+      action: "credential.client_created",
+      outcome: "allowed",
+      details: null,
+    }),
+    false,
+  );
+});
+
+test("isAuditWireEvent: string details → false", () => {
+  assert.equal(
+    isAuditWireEvent({
+      plugin: "github",
+      action: "credential.client_created",
+      outcome: "allowed",
+      details: "not an object",
+    }),
+    false,
+  );
+});
+
+test("isAuditWireEvent: non-object input → false", () => {
+  assert.equal(isAuditWireEvent(null), false);
+  assert.equal(isAuditWireEvent(undefined), false);
+  assert.equal(isAuditWireEvent("string"), false);
+  assert.equal(isAuditWireEvent(42), false);
+});
+
+// ─── withinAuditByteCap (round-1 Security advisory) ──────────────────────
+
+test("withinAuditByteCap: small event passes", () => {
+  assert.equal(
+    withinAuditByteCap({
+      plugin: "github",
+      action: "credential.client_created",
+      outcome: "allowed",
+      details: { service: "github" },
+    }),
+    true,
+  );
+});
+
+test("withinAuditByteCap: event larger than AUDIT_WIRE_MAX_BYTES fails", () => {
+  const big = "x".repeat(AUDIT_WIRE_MAX_BYTES + 1);
+  assert.equal(
+    withinAuditByteCap({
+      plugin: "github",
+      action: "credential.client_created",
+      outcome: "allowed",
+      details: { payload: big },
+    }),
+    false,
+  );
+});
+
+test("withinAuditByteCap: BigInt detail throws JSON.stringify → rejected", () => {
+  assert.equal(
+    withinAuditByteCap({
+      plugin: "github",
+      action: "credential.client_created",
+      outcome: "allowed",
+      // BigInt isn't JSON-serializable.
+      details: { huge: 12345678901234567890n as unknown as number },
+    }),
+    false,
+  );
+});
+
+// ─── partition exhaustiveness + invariants ────────────────────────────────
 
 test("AUDIT_ACTION_PARTITION classifies every union variant (no 'undefined' values)", () => {
   // The `Record<AuditAction, ...>` literal type enforces this at compile

@@ -191,9 +191,15 @@ export class FileBackedAuditLogger implements AuditLogger {
       this.maybeRotate();
     }
 
+    // The stderr echo's `details` content can originate in an untrusted
+    // child (post-Theme-5 IPC routing). A prior `String(v)`-based formatter
+    // let a compromised plugin inject newlines + ANSI escapes into the
+    // parent's terminal output to forge log lines / move the cursor /
+    // clear the screen. `JSON.stringify` escapes those bytes the same way
+    // the file write does — round-1 Security advisory.
     const tag = event.outcome === "denied" ? "[AUDIT:DENIED]" : "[AUDIT]";
     this.logger?.info(
-      `${tag} ${event.action} — plugin="${event.plugin}" ${formatDetails(event.details)}`,
+      `${tag} ${event.action} — plugin=${JSON.stringify(event.plugin)} details=${JSON.stringify(event.details)}`,
     );
   }
 
@@ -295,12 +301,3 @@ export class FileBackedAuditLogger implements AuditLogger {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function formatDetails(details: Record<string, unknown>): string {
-  return Object.entries(details)
-    .map(([k, v]) => `${k}=${String(v)}`)
-    .join(" ");
-}
