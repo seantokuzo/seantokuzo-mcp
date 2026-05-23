@@ -166,14 +166,22 @@ export default tseslint.config(
   // dropping either would regress those defenses on plugin-host.ts.
   //
   // The new bans are:
-  //   - `node:fs` / `fs` named imports `appendFile` + `appendFileSync`
+  //   - `node:fs` / `fs` / `node:fs/promises` / `fs/promises` named imports
+  //     `appendFile` + `appendFileSync` (round-2 Architecture advisory:
+  //     promises module + namespace-import bypass).
   //   - `./audit.js` + `@kuzo-mcp/core/audit` named import
-  //     `FileBackedAuditLogger`
+  //     `FileBackedAuditLogger`.
+  //   - `fs.appendFile*` namespace-aliased call expressions (round-2
+  //     defense-in-depth vs. `import * as fs from "node:fs"`).
+  //
+  // `files:` glob widened from `plugin-host.ts` exact to `plugin-host*.ts`
+  // so any future helper file (`plugin-host-foo.ts`) inherits the bans
+  // automatically — round-2 Architecture advisory.
   //
   // The structural guarantee is the IpcAuditLogger proxy in plugin-host.ts;
   // this rule catches regressions before they ship.
   {
-    files: ["packages/core/src/plugin-host.ts"],
+    files: ["packages/core/src/plugin-host*.ts"],
     rules: {
       "no-restricted-imports": [
         "error",
@@ -206,6 +214,18 @@ export default tseslint.config(
                 "Use 'node:fs' for built-in modules. plugin-host.ts MUST NOT call appendFile* anyway — see spec §C.10.",
             },
             {
+              name: "node:fs/promises",
+              importNames: ["appendFile"],
+              message:
+                "plugin-host.ts MUST NOT write audit.log directly via the promises API either — spec §C.10 file-writer monopoly. Use IpcAuditLogger.",
+            },
+            {
+              name: "fs/promises",
+              importNames: ["appendFile"],
+              message:
+                "Use 'node:fs/promises' for built-in modules. plugin-host.ts MUST NOT call appendFile via either form — see spec §C.10.",
+            },
+            {
               name: "./audit.js",
               importNames: ["FileBackedAuditLogger"],
               message:
@@ -227,6 +247,17 @@ export default tseslint.config(
           selector: "CallExpression[callee.object.name='childProcess']",
           message:
             "child_process methods are banned in pre-scrub paths (defense-in-depth vs. namespace-aliased imports / require). See docs/credentials-spec.md §C.9.",
+        },
+        // §C.10 — defense-in-depth vs. `import * as fs from "node:fs"; fs.appendFile(...)`
+        // and similar namespace-aliased calls (round-2 Architecture +
+        // Correctness advisory). Pattern catches `fs.appendFile`,
+        // `fs.appendFileSync`, `fsPromises.appendFile`, and any
+        // `*fs*.appendFile*` shape via the property regex.
+        {
+          selector:
+            "CallExpression[callee.type='MemberExpression'][callee.property.name=/^appendFile(Sync)?$/]",
+          message:
+            "appendFile* MUST NOT be called from plugin-host*.ts — spec §C.10 file-writer monopoly. Catches the namespace-import bypass (e.g. `import * as fs from \"node:fs\"; fs.appendFile(...)`). Send audit events via IpcAuditLogger instead.",
         },
         {
           selector:

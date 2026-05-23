@@ -21,7 +21,9 @@
  * spinning up a real child process.
  */
 
-import type { AuditEvent } from "./audit.js";
+import { Buffer } from "node:buffer";
+
+import type { AuditEvent, AuditOutcome } from "./audit.js";
 import { CHILD_PERMITTED_AUDIT_ACTIONS } from "./audit-partition.js";
 
 // ---------------------------------------------------------------------------
@@ -37,12 +39,21 @@ import { CHILD_PERMITTED_AUDIT_ACTIONS } from "./audit-partition.js";
  */
 export const AUDIT_WIRE_MAX_BYTES = 16 * 1024;
 
-/** Allowed `outcome` values — the wire validator rejects anything else. */
-const VALID_AUDIT_OUTCOMES: ReadonlySet<string> = new Set([
-  "allowed",
-  "denied",
-  "error",
-]);
+/**
+ * Allowed `outcome` values — the wire validator rejects anything else.
+ * Derived from the `AuditOutcome` union via a `Record<AuditOutcome, true>`
+ * exhaustiveness check (round-2 Architecture advisory). If a future change
+ * adds a new outcome to the union, this file fails to compile until the
+ * record is updated.
+ */
+const AUDIT_OUTCOME_VALUES: Record<AuditOutcome, true> = {
+  allowed: true,
+  denied: true,
+  error: true,
+};
+const VALID_AUDIT_OUTCOMES: ReadonlySet<string> = new Set(
+  Object.keys(AUDIT_OUTCOME_VALUES),
+);
 
 /**
  * Strict shape validation for an inbound audit IPC payload. Returns false on:
@@ -65,12 +76,16 @@ export function isAuditWireEvent(v: unknown): v is Omit<AuditEvent, "timestamp">
 /**
  * Reject oversize audit payloads (round-1 Security advisory). Runs after
  * `isAuditWireEvent` succeeds — by then we know the event is structurally
- * stringifiable. The `try` catches the BigInt / circular-reference case
- * that JSON.stringify throws on.
+ * stringifiable. Uses `Buffer.byteLength` rather than `String.length` so
+ * the cap is denominated in actual UTF-8 bytes, not UTF-16 code units
+ * (round-2 Security + Correctness advisory — multibyte content would
+ * otherwise let the on-disk byte budget exceed the nominal cap). The
+ * `try` catches the BigInt / circular-reference case that JSON.stringify
+ * throws on.
  */
 export function withinAuditByteCap(event: Omit<AuditEvent, "timestamp">): boolean {
   try {
-    return JSON.stringify(event).length <= AUDIT_WIRE_MAX_BYTES;
+    return Buffer.byteLength(JSON.stringify(event), "utf8") <= AUDIT_WIRE_MAX_BYTES;
   } catch {
     return false;
   }

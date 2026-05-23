@@ -36,7 +36,18 @@ class IpcAuditLogger implements AuditLogger {
   constructor(private readonly channel: IpcChannel) {}
 
   log(event: Omit<AuditEvent, "timestamp">): void {
-    this.channel.notify("audit", { event });
+    // Match FileBackedAuditLogger's never-throw contract — audit emission
+    // must never break the operation that triggered it. `IpcChannel.notify`
+    // short-circuits on `closed` but `process.send` can still raise
+    // synchronously in a teardown race (channel disconnected before
+    // `closed` was set). Round-2 Correctness advisory.
+    try {
+      this.channel.notify("audit", { event });
+    } catch (err) {
+      process.stderr.write(
+        `IpcAuditLogger: notify failed — ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
   }
 
   /**

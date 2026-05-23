@@ -388,6 +388,24 @@ test("withinAuditByteCap: BigInt detail throws JSON.stringify → rejected", () 
   );
 });
 
+test("withinAuditByteCap: cap is denominated in UTF-8 bytes, not UTF-16 code units (round-2 fix)", () => {
+  // Each "💥" is 1 UTF-16 surrogate pair (.length === 2) but 4 UTF-8 bytes.
+  // Half the cap in UTF-16 code units = the FULL cap in bytes (assuming
+  // all content is 💥). Round-1 used .length and would have accepted
+  // double the byte budget.
+  const halfCapInUtf16Units = "💥".repeat(AUDIT_WIRE_MAX_BYTES / 4 + 1);
+  assert.equal(
+    withinAuditByteCap({
+      plugin: "github",
+      action: "credential.client_created",
+      outcome: "allowed",
+      details: { payload: halfCapInUtf16Units },
+    }),
+    false,
+    "must reject when UTF-8 byte length exceeds the cap, even though UTF-16 length would have fit",
+  );
+});
+
 // ─── partition exhaustiveness + invariants ────────────────────────────────
 
 test("AUDIT_ACTION_PARTITION classifies every union variant (no 'undefined' values)", () => {

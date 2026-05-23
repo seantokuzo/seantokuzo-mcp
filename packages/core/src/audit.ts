@@ -163,7 +163,11 @@ export class FileBackedAuditLogger implements AuditLogger {
   constructor(options: AuditLoggerOptions = {}) {
     const dir = options.logDir ?? kuzoHome();
     if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+      // mode: 0o700 matches the 0o600 we set on `audit.log` itself —
+      // both should be unreadable by other users on the host. Without
+      // this, mkdirSync uses the process umask (typically 0o755 =
+      // world-readable). Round-2 Security advisory.
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
     }
     this.logPath = join(dir, "audit.log");
     this.logger = options.logger;
