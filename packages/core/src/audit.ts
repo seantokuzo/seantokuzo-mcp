@@ -32,8 +32,8 @@ import {
   statSync,
   renameSync,
   unlinkSync,
-} from "fs";
-import { join } from "path";
+} from "node:fs";
+import { join } from "node:path";
 import type { KuzoLogger } from "./logger.js";
 
 import { kuzoHome } from "./paths.js";
@@ -182,22 +182,33 @@ export class FileBackedAuditLogger implements AuditLogger {
    * circular details and falls back to a `"[unserializable]"` placeholder.
    */
   log(event: Omit<AuditEvent, "timestamp">): void {
+    // Defense-in-depth — round-4 Security blocking. The parent's
+    // authoritative timestamp goes LAST in the spread so any caller
+    // (trusted or otherwise) that accidentally includes a `timestamp`
+    // field can't override it. `decideAudit` already strips reserved
+    // fields on the IPC ingress path; this is the belt-and-suspenders
+    // second layer for parent-side callers (server.ts, CLI commands).
     const full: AuditEvent = {
-      timestamp: new Date().toISOString(),
       ...event,
+      timestamp: new Date().toISOString(),
     };
 
+    let writeOk = false;
     try {
       // `mode: 0o600` applies only when appendFileSync creates the file
       // (i.e. on first ever write). Keeps audit.log unreadable by other
       // users on the host out of the box.
       appendFileSync(this.logPath, safeStringify(full) + "\n", { mode: 0o600 });
+      writeOk = true;
     } catch {
       this.logger?.error(`Failed to write audit log to ${this.logPath}`);
     }
 
     // Amortize the stat cost — check file size every Nth write only.
-    if (++this.writesSinceLastStat >= WRITES_BETWEEN_ROTATE_CHECKS) {
+    // Only increment on a successful write (round-4 Correctness advisory)
+    // so a series of write failures doesn't skip the rotation check by
+    // burning the counter.
+    if (writeOk && ++this.writesSinceLastStat >= WRITES_BETWEEN_ROTATE_CHECKS) {
       this.writesSinceLastStat = 0;
       this.maybeRotate();
     }

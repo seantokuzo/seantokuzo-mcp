@@ -136,6 +136,70 @@ test("decideAudit: caller-supplied source/pid are overwritten by the stamp", () 
   assert.equal(decision.stamped.pid, 12345, "pid MUST be overwritten to the real child PID");
 });
 
+test("decideAudit: child-supplied timestamp does NOT leak into stamped output (round-4 Sec BLOCKING)", () => {
+  // A compromised child can put extra fields in the wire payload — the
+  // type system doesn't enforce Omit<AuditEvent, "timestamp"> at runtime.
+  // decideAudit must explicitly take only the 4 wire fields so a smuggled
+  // timestamp never reaches FileBackedAuditLogger (which would otherwise
+  // see it and — pre-fix — accept it via spread order).
+  const event = {
+    ...legitEvent(),
+    timestamp: "1990-01-01T00:00:00.000Z", // back-dated forgery attempt
+  } as unknown as Omit<AuditEvent, "timestamp">;
+  const decision = decideAudit(event, "github", 12345);
+
+  assert.equal(decision.kind, "allow");
+  if (decision.kind !== "allow") return;
+  assert.equal(
+    "timestamp" in decision.stamped,
+    false,
+    "stamped event MUST NOT carry a child-supplied timestamp — parent stamps the authoritative one",
+  );
+});
+
+test("decideAudit: child smuggles pid when childPid is undefined (post-cleanup race) → not stamped (round-4 Sec advisory)", () => {
+  // If the child has been cleaned up but a stray notification arrives,
+  // childPid is undefined. Pre-fix the spread of `event` would smuggle
+  // the child-supplied pid through. Post-fix the explicit construction
+  // simply omits the pid field entirely.
+  const event = {
+    ...legitEvent(),
+    pid: 99999, // smuggling attempt
+  } as unknown as Omit<AuditEvent, "timestamp">;
+  const decision = decideAudit(event, "github", undefined);
+
+  assert.equal(decision.kind, "allow");
+  if (decision.kind !== "allow") return;
+  assert.equal(
+    "pid" in decision.stamped,
+    false,
+    "stamped event MUST NOT carry a child-supplied pid when childPid is undefined",
+  );
+});
+
+test("decideAudit: stamped output contains ONLY the 5 expected fields (no smuggled extras)", () => {
+  // Defense-in-depth — confirm decideAudit's explicit construction doesn't
+  // accidentally let any extra field through. Tests against future
+  // refactor regressions (round-4 Security advisory).
+  const event = {
+    ...legitEvent(),
+    extra_smuggled_field: "should not appear",
+    timestamp: "1990-01-01T00:00:00.000Z",
+    pid: 99999,
+    source: "parent",
+  } as unknown as Omit<AuditEvent, "timestamp">;
+  const decision = decideAudit(event, "github", 12345);
+
+  assert.equal(decision.kind, "allow");
+  if (decision.kind !== "allow") return;
+  const keys = Object.keys(decision.stamped).sort();
+  assert.deepEqual(
+    keys,
+    ["action", "details", "outcome", "pid", "plugin", "source"],
+    `unexpected keys in stamped output: ${keys.join(", ")}`,
+  );
+});
+
 // ─── decideAudit: plugin-identity forgery ─────────────────────────────────
 
 test("decideAudit: plugin field mismatch → forged_plugin", () => {

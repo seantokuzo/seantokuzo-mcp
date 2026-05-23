@@ -291,7 +291,18 @@ export class PluginProcess {
           );
           return;
         }
-        this.handleAuditEvent(event);
+        // Defense-in-depth — round-4 Correctness advisory. The
+        // `FileBackedAuditLogger.log` and `decideAudit` paths already
+        // never throw, but wrap the whole handler so any future writer
+        // added under handleAuditEvent doesn't quietly break IPC if it
+        // forgets the contract.
+        try {
+          this.handleAuditEvent(event);
+        } catch (err) {
+          this.logger.error(
+            `handleAuditEvent threw for "${this.pluginName}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
         return;
       }
     });

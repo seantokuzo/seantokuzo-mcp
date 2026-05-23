@@ -165,9 +165,22 @@ export function decideAudit(
   declaredPluginName: string,
   childPid: number | undefined,
 ): AuditDecision {
-  // 1. Stamp source + PID (overwriting any caller-supplied value).
+  // 1. Construct the stamped event field-by-field rather than spreading
+  //    the untrusted `event`. The wire validator only checks that the
+  //    four required fields are present — it does NOT reject extra
+  //    fields. A child could otherwise smuggle `timestamp` (overriding
+  //    the parent's authoritative stamp via spread order downstream),
+  //    `pid` (smuggling a value when `childPid` is undefined during a
+  //    post-cleanup race), or `source: "parent"` (claiming parent trust
+  //    boundary). Explicit construction takes only the 4 wire fields,
+  //    stamps source: "child" unconditionally, and stamps the real
+  //    childPid (or omits the field if undefined). Round-4 Security
+  //    blocking + two related advisories.
   const stamped: Omit<AuditEvent, "timestamp"> = {
-    ...event,
+    plugin: event.plugin,
+    action: event.action,
+    outcome: event.outcome,
+    details: event.details,
     source: "child",
     ...(childPid !== undefined ? { pid: childPid } : {}),
   };
