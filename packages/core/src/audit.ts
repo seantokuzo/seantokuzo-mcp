@@ -26,11 +26,16 @@ export type AuditAction =
   // Phase 2.6 Theme 2 — storage primitives. The variants below are introduced
   // here so the new code in `packages/core/src/credentials/` typechecks against
   // the closed union. Actual write-side wiring (set / deleted / rotated /
-  // migrated / wiped / tested / scrub_disabled) lands with Theme 6/7 (B.1–B.3
+  // migrated / wiped / tested) lands with Theme 6/7 (B.1–B.3
   // commands + broker-side emissions). Spec §0 build order.
   | "credential.passphrase_consumed"
   | "credential.store_unlocked"
   | "credential.store_locked"
+  // Phase 2.6 Theme 3 — env-override scrub kill-switch. Emitted by
+  // `scrubProcessEnv` when KUZO_NO_ENV_SCRUB=1 (round-4 A2/B11). The
+  // boot-flag --no-scrub path in §C.1 (Theme 4) reuses this action with
+  // its own reason string.
+  | "credential.scrub_disabled"
   | "plugin.loaded"
   | "plugin.skipped"
   | "plugin.failed"

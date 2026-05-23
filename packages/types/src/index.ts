@@ -73,6 +73,11 @@ export type Capability =
   | CrossPluginCapability
   | SystemCapability;
 
+/** Type guard: narrows a Capability to CredentialCapability. */
+export function isCredentialCapability(c: Capability): c is CredentialCapability {
+  return c.kind === "credentials";
+}
+
 // ---------------------------------------------------------------------------
 // Logger
 // ---------------------------------------------------------------------------
