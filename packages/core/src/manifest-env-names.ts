@@ -100,9 +100,9 @@ export function collectDeclaredCredentialEnvNames(
       continue;
     }
 
-    let pkg: RawPackageJson;
+    let parsed: unknown;
     try {
-      pkg = JSON.parse(pkgRaw) as RawPackageJson;
+      parsed = JSON.parse(pkgRaw);
     } catch (err) {
       logger?.warn(
         `Could not parse package.json for plugin "${name}" at ${packageDir}: ${
@@ -111,6 +111,16 @@ export function collectDeclaredCredentialEnvNames(
       );
       continue;
     }
+    // `JSON.parse("null")` returns `null`; `JSON.parse("42")` returns a number.
+    // A degenerate package.json that isn't a JSON object would crash the
+    // following property access otherwise — skip it loudly instead.
+    if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      logger?.warn(
+        `Skipping plugin "${name}" — package.json at ${packageDir} did not decode to a JSON object.`,
+      );
+      continue;
+    }
+    const pkg = parsed as RawPackageJson;
 
     const section = pkg.kuzoPlugin;
     if (section == null || typeof section !== "object") continue;
