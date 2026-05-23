@@ -294,19 +294,73 @@ The first real release shipped after a 4-PR fixup saga uncovered three real bugs
 
 **On a fresh session, when user says "next":**
 
-1. **Start at Theme 5 — C.10 + C.10.1 — Plugin-host audit emissions over IPC + rate-limit + log rotation.** Read `docs/credentials-spec.md` §C.10 + §C.10.1. Open a new branch `phase-2.6/audit-ipc` (or per-Theme convention).
+1. **Start at Theme 5 — C.10 + C.10.1 — Plugin-host audit emissions over IPC + rate-limit + log rotation.** Read `docs/credentials-spec.md` §C.10 (lines 2115–2342) + §C.10.1 (lines 2343–2454). Open a new branch `phase-2.6/audit-ipc` (or per-Theme convention).
 
-   Theme 5 surface per §C.10 + §C.10.1:
-   - **Audit-emit allowlist for children.** The only child-side audit events that the parent accepts as authoritative are the four 2.5b read-side broker emissions (`credential.client_created`, `credential.raw_access`, `credential.raw_denied`, `credential.fetch_created`). Anything else a child tries to emit lands as `audit.forged_action` from the parent's perspective. The check is the load-bearing security boundary — a compromised plugin must not be able to impersonate another plugin or fabricate non-credential events.
-   - **`packages/core/src/audit-partition.ts` (new)** — Exhaustiveness check via TS's `satisfies` over the `AuditAction` union, partitioning into `CHILD_ALLOWED` vs `PARENT_ONLY`. Round-1/2 review takeaway requires this so adding a new `AuditAction` variant in Theme 6+ surfaces a TS error here, not a silent drop in security posture.
-   - **`packages/core/src/plugin-host.ts`** — Child sends `audit.emit` IPC notification (fire-and-forget); plugin field is set by the child's own `pluginName` constant, NOT user-controlled.
-   - **`packages/core/src/plugin-process.ts`** — Parent receives child audit emissions, validates: (a) action is in `CHILD_ALLOWED`, (b) `plugin` field matches the child's pinned identity, (c) outcome is sane. Mismatches emit `audit.forged_action` with the child's pinned identity + the attempted emit body for forensics.
-   - **Rate-limit (§C.10.1)** — Per-plugin debounce / ceiling per second. Spec recommends ~100/sec ceiling with a leak-rate drain. Drops over ceiling emit a single `audit.rate_limited` per drain window (don't flood the audit log with rate-limit notifications themselves).
-   - **Log rotation (§C.10.1)** — Size-based rotation (e.g., 10 MB → audit.log.1) with N retained generations (e.g., 5). On boot, prune older. Theme 9's directory-watch rotation cache invalidation comes later.
-   - Tests: rate-limit unit tests + forged-emit unit tests + audit-partition exhaustiveness compile-time check.
-   - Quality gate: `pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm test:credentials && pnpm test:parity` all clean.
+   **Build-order constraint:** Theme 5 MUST land before any §B.7 write-side audit events (`credential.set` / `.deleted` / `.rotated` / `.migrated` / `.migration_partial` / `.wiped` / `.tested`) ship — Theme 7's CLI surface depends on the IPC trust boundary being in place. Theme 5 is a pure refactor + new IPC handlers; no new user-visible behaviour beyond audit-log entries from forgery attempts.
 
-   **Pre-Theme-5 carryover from Theme 4 round-4:** the verdict synthesizer's `actions/checkout@v4` step failed once with a git auth glitch (separate from issue #48). If it recurs in Theme 5+, file a tracking issue (suggested title: "claude-code-review synthesizer job intermittently fails on actions/checkout auth"). Not load-bearing — specialists posted their JSON sentinels successfully, only the aggregation step crashed.
+   **Theme 5 surface (concrete):**
+
+   1. **Refactor `packages/core/src/audit.ts` (round-4 A3).** Split the existing concrete class:
+      - `export interface AuditLogger { log(event); query(filters?); }`
+      - `export class FileBackedAuditLogger implements AuditLogger { ... }` — only consumer of `appendFileSync` / `readFileSync` against `audit.log`. Move all existing impl + add the §C.10.1 rotation here.
+      - Update `packages/core/src/server.ts` + every `packages/cli/src/commands/*` import from `AuditLogger` (class) → `FileBackedAuditLogger`. `IpcAuditLogger` (new in plugin-host) and `FileBackedAuditLogger` both `implements AuditLogger`.
+      - **Breaking export change** — note in the eventual phase-close CHANGELOG. Pre-1.0 cadence per `CLAUDE.md` says patch bump is fine.
+
+   2. **Extend `AuditEvent` in `packages/core/src/audit.ts`** with `source?: "parent" | "child"` and `pid?: number`. Pre-2.6 entries omit `source`; consumers treat missing as `"parent"`.
+
+   3. **Extend `AuditAction` union** (`packages/core/src/audit.ts`) with the four new Theme-5 variants (all parent-only):
+      - `audit.forged_plugin_field` — child claimed wrong plugin identity
+      - `audit.forged_action` — child correctly identified but emitted parent-only action
+      - `audit.rate_limited` — child exceeded the per-plugin token-bucket ceiling
+      - `audit.partition_initialized` — one-time boot emit listing permitted child actions
+
+   4. **`packages/core/src/audit-partition.ts` (NEW).** Copy-paste the `AUDIT_ACTION_PARTITION: Record<AuditAction, "parent-only" | "child-permitted">` literal from spec §C.10 lines 2237–2277 verbatim. The `Record<AuditAction, ...>` is the load-bearing exhaustiveness check — adding a new union variant without classifying it here is a TS compile error. Derives `CHILD_PERMITTED_AUDIT_ACTIONS: ReadonlySet<AuditAction>` from the entries. **Acceptance test (§F.1 #4):** drop the `"credential.client_created"` entry from the literal and assert `tsc --noEmit` fails red.
+
+   5. **`packages/core/src/plugin-host.ts`** — Replace the direct file-backed `AuditLogger` with a new `IpcAuditLogger` proxy:
+      ```ts
+      class IpcAuditLogger implements AuditLogger {
+        constructor(private readonly ipc: IpcChannel) {}
+        log(event: Omit<AuditEvent, "pid">): void { this.ipc.notify("audit", { event }); }
+        query(): never { throw new Error("audit.query() is parent-only"); }
+      }
+      ```
+      Plugin's `DefaultCredentialBroker` is constructed with this `IpcAuditLogger`. Every existing emission path (`credential.client_created` / `.raw_access` / `.raw_denied` / `.fetch_created`) flows through IPC transparently.
+
+   6. **`packages/core/src/plugin-process.ts`** — Add `handleAuditEvent(event)` IPC receiver (spec §C.10 lines 2145–2197). Validation order:
+      1. **Rate-limit check FIRST** (§C.10.1 — token bucket, 100/sec sustained, 200 burst, 100/sec wall-clock refill). Forged emits still count toward the rate limit so they can't be used to bypass it. Drops increment `rateLimitedSinceReport`; emit one `audit.rate_limited` per second (parent-side, with `details: { plugin, child_pid, drops_in_window }`).
+      2. **PID + source stamp.** Overwrite any caller-supplied `pid` with the actual `childPid`; force `source: "child"`.
+      3. **Plugin-identity validation** — if `event.plugin !== declaredPluginName`, emit `audit.forged_plugin_field` (with `details.claimed_plugin` + `details.actual_plugin`), DROP the original.
+      4. **Action-class allowlist** — if `event.action ∉ CHILD_PERMITTED_AUDIT_ACTIONS`, emit `audit.forged_action` (with `details.attempted_action` only — do NOT embed `details.permitted` per round-4 nit N3; the `audit.partition_initialized` boot event covers that once per server lifetime), DROP the original.
+      5. **Trusted path** — `this.auditLogger.log(stampedEvent)` with `source: "child"` preserved.
+
+   7. **`runServer()` boot extension (`packages/core/src/server.ts`).** After step 1 (exit guard) and before step 9 (loader), emit the one-time `audit.partition_initialized` event with `details: { permitted: Array.from(CHILD_PERMITTED_AUDIT_ACTIONS) }`. Forensic readers correlate against subsequent `audit.forged_action` entries.
+
+   8. **`FileBackedAuditLogger` rotation (§C.10.1).** Spec lines 2408–2444. Implementation outline:
+      - Constants: `ROTATE_THRESHOLD_BYTES = 50 * 1024 * 1024`, `RETAIN_ROTATED_COUNT = 5`.
+      - After every 100th `log()` call (amortized stat cost), `fs.statSync(audit.log).size` check.
+      - If over threshold: rename `audit.log.5 → unlink`, `audit.log.4 → audit.log.5`, …, `audit.log.1 → audit.log.2`, `audit.log → audit.log.1`. Atomic per-file (rename only, no copy).
+      - Next `appendFileSync` recreates `audit.log` via create-if-missing.
+      - `kuzo audit --since <window>` (existing CLI in `consent.ts`-adjacent commands) must glob across `audit.log` + `audit.log.{1..5}`. Update reader path.
+
+   9. **ESLint guard scoped to `plugin-host.ts`** (`eslint.config.js`). Ban `appendFile` / `appendFileSync` and the named import `FileBackedAuditLogger`. Mirrors the §C.9 pattern from Theme 4. Defense-in-depth — the structural guarantee is the file-writer monopoly invariant (`audit.ts` imported only by `server.ts` + `cli/commands/*`), the ESLint rule catches regressions before they ship.
+
+   **Acceptance criteria (spec §F.1):**
+   - [ ] Synthetic test: child emits `plugin: "kuzo"` → `audit.forged_plugin_field` lands, impersonated entry NOT written. `grep -c 'plugin.*kuzo' audit.log` for synthesized line is zero.
+   - [ ] Synthetic test: child correctly claims `plugin: "github"` but emits `action: "credential.rotated"` → `audit.forged_action` lands with `details.attempted_action === "credential.rotated"`, impersonated entry NOT written.
+   - [ ] Synthetic test: child legitimately emits `action: "credential.client_created"` → lands with `source: "child"` and child's PID.
+   - [ ] TypeScript exhaustiveness: dropping any entry from `AUDIT_ACTION_PARTITION` fails `tsc --noEmit` red.
+   - [ ] Plugin emitting 10,000 audit events in a tight loop produces ≤ 200 written entries (the burst) plus subsequent throttled drops; `audit.rate_limited` events appear at most once per second.
+   - [ ] `audit.log` exceeding 50 MiB triggers atomic rotation to `audit.log.1` on next write; existing `audit.log.5` is deleted. `kuzo audit --since 30d` reads across all rotated files in chronological order.
+   - [ ] After rotation, the parent process still writes new entries to a fresh `audit.log` (no file handle staleness).
+   - [ ] Forensic correlation: `audit.partition_initialized` appears exactly once per `kuzo serve` boot, before any `audit.forged_action` event in the same log file.
+
+   **Quality gate:** `pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm test:credentials && pnpm test:parity` all clean. Parity is again the load-bearing end-to-end test — it exercises live child→parent IPC for `plugin.loaded` and tool calls.
+
+   **Pre-Theme-5 carryover from Theme 4 round-4:** the round-4 verdict synthesizer's `actions/checkout@v4` step failed once with `fatal: could not read Username for 'https://github.com': terminal prompts disabled` — separate CI infra glitch from issue #48's bot-allowlist. All 3 specialists posted JSON sentinels successfully; only the aggregation step crashed. If it recurs in Theme 5+, file a tracking issue (suggested title: "claude-code-review synthesizer job intermittently fails on actions/checkout auth").
+
+   **Pre-Theme-5 carryover from Theme 4 round-4 SEC advisories (deferred to Theme 7 install CLI):**
+   - ESLint `child_process` rule has coverage gaps vs `import("…").then`, `createRequire(import.meta.url)("…")`, aliased identifier dynamic import. Reviewer themselves tagged "Low priority" — keep on the Theme 7 review-readiness checklist.
+   - `resolvePluginPackageDir` joins `installedRoot` with the friendly plugin name without shape validation. Reviewer noted user-owned `kuzo.config.ts` is not the attack surface; the install CLI is the growth path. Add a name-validation regex (`/^[a-z][a-z0-9-]{0,62}$/`) at the top of `resolvePluginPackageDir` + `resolvePluginEntry` + the install CLI entry point when Theme 7 lands.
 
 2. **Continue Theme 6 onwards** per the build order above. Each Theme is its own PR; the Theme 8 migrate PR ships alone with extra reviewer focus per round-4 advisory.
 
