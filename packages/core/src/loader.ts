@@ -25,7 +25,7 @@ import type { ConfigManager } from "./config.js";
 import type { CredentialSource } from "./credentials/index.js";
 import { createPluginLogger, KuzoLogger } from "./logger.js";
 import { ConsentStore } from "./consent.js";
-import { AuditLogger } from "./audit.js";
+import type { AuditLogger } from "./audit.js";
 import { PluginProcess } from "./plugin-process.js";
 import { resolvePluginEntry } from "./plugin-resolver.js";
 

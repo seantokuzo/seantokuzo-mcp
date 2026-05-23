@@ -173,7 +173,14 @@ export class FileBackedAuditLogger implements AuditLogger {
     this.logger = options.logger;
   }
 
-  /** Record an audit event to file + stderr. */
+  /**
+   * Record an audit event to file + stderr.
+   *
+   * Never-throw contract (round-2 Correctness): audit emission must never
+   * break the operation that triggered it. Both the file write and the
+   * stderr echo route through `safeStringify`, which catches BigInt /
+   * circular details and falls back to a `"[unserializable]"` placeholder.
+   */
   log(event: Omit<AuditEvent, "timestamp">): void {
     const full: AuditEvent = {
       timestamp: new Date().toISOString(),
@@ -184,7 +191,7 @@ export class FileBackedAuditLogger implements AuditLogger {
       // `mode: 0o600` applies only when appendFileSync creates the file
       // (i.e. on first ever write). Keeps audit.log unreadable by other
       // users on the host out of the box.
-      appendFileSync(this.logPath, JSON.stringify(full) + "\n", { mode: 0o600 });
+      appendFileSync(this.logPath, safeStringify(full) + "\n", { mode: 0o600 });
     } catch {
       this.logger?.error(`Failed to write audit log to ${this.logPath}`);
     }
@@ -196,14 +203,12 @@ export class FileBackedAuditLogger implements AuditLogger {
     }
 
     // The stderr echo's `details` content can originate in an untrusted
-    // child (post-Theme-5 IPC routing). A prior `String(v)`-based formatter
-    // let a compromised plugin inject newlines + ANSI escapes into the
-    // parent's terminal output to forge log lines / move the cursor /
-    // clear the screen. `JSON.stringify` escapes those bytes the same way
-    // the file write does — round-1 Security advisory.
+    // child (post-Theme-5 IPC routing). `safeStringify` escapes control
+    // bytes the same way the file write does and tolerates BigInt /
+    // circular references — round-1 + round-3 Security advisories.
     const tag = event.outcome === "denied" ? "[AUDIT:DENIED]" : "[AUDIT]";
     this.logger?.info(
-      `${tag} ${event.action} — plugin=${JSON.stringify(event.plugin)} details=${JSON.stringify(event.details)}`,
+      `${tag} ${event.action} — plugin=${safeStringify(event.plugin)} details=${safeStringify(event.details)}`,
     );
   }
 
@@ -302,6 +307,24 @@ export class FileBackedAuditLogger implements AuditLogger {
       this.logger?.error(`Failed to rotate ${this.logPath} → ${this.logPath}.1`);
     }
     // Next log() recreates audit.log via appendFileSync's create-if-missing.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Safe JSON.stringify — round-3 Security advisory. Falls back to a
+ * placeholder string when the input contains BigInts, circular refs,
+ * or anything else that throws. Used by both the file write and the
+ * stderr echo so neither can violate the never-throw contract.
+ */
+function safeStringify(v: unknown): string {
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return '"[unserializable]"';
   }
 }
 

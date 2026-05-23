@@ -265,8 +265,19 @@ export class PluginProcess {
       }
       if (method === "audit") {
         // Spec §C.10 — the parent owns the audit file writer; child IPC
-        // emissions flow through the rate-limit + identity validation +
-        // action-class allowlist gauntlet before reaching the AuditLogger.
+        // emissions flow through the rate-limit + wire-validation +
+        // identity + action-class allowlist gauntlet before reaching
+        // the AuditLogger.
+        //
+        // Rate-limit FIRST (round-3 Security advisory): consume from
+        // the bucket BEFORE wire validation so malformed / oversize /
+        // forged frames cannot bypass the limit and spam logger.warn
+        // at IPC line rate.
+        if (!this.auditBucket.consume(1)) {
+          this.rateLimitedSinceReport++;
+          this.reportRateLimitIfDue(this.childPid);
+          return;
+        }
         const event = (params as { event?: unknown } | null)?.event;
         if (!isAuditWireEvent(event)) {
           this.logger.warn(
@@ -363,28 +374,24 @@ export class PluginProcess {
   // Audit IPC (spec §C.10 + §C.10.1)
   // -------------------------------------------------------------------------
   //
-  // Inbound child audit notifications run through this gauntlet in order:
-  //   1. Rate-limit check (FIRST — forgeries also consume tokens so they
-  //      can't bypass the limit).
-  //   2. PID + source stamp (overwrites any caller-supplied value).
-  //   3. Plugin-identity validation — `event.plugin` must equal this
+  // Rate-limit + wire-shape + byte-cap gating happens in the notification
+  // handler above (round-3 Security advisory — rate-limit FIRST so every
+  // shape of frame counts toward the bucket). By the time this method
+  // runs, the event has passed all three gates. The gauntlet here is:
+  //   1. PID + source stamp (overwrites any caller-supplied value).
+  //   2. Plugin-identity validation — `event.plugin` must equal this
   //      child's declared plugin name. Mismatch → `audit.forged_plugin_field`,
   //      original event DROPPED.
-  //   4. Action-class allowlist — `event.action` must be a member of
+  //   3. Action-class allowlist — `event.action` must be a member of
   //      `CHILD_PERMITTED_AUDIT_ACTIONS`. Else → `audit.forged_action`,
   //      original DROPPED.
-  //   5. Trusted-path forward to the parent's file-backed AuditLogger.
+  //   4. Trusted-path forward to the parent's file-backed AuditLogger.
 
   private handleAuditEvent(event: Omit<AuditEvent, "timestamp">): void {
     const childPid = this.childPid;
-    const decision = decideAudit(event, this.pluginName, childPid, this.auditBucket);
+    const decision = decideAudit(event, this.pluginName, childPid);
 
     switch (decision.kind) {
-      case "rate_limited":
-        this.rateLimitedSinceReport++;
-        this.reportRateLimitIfDue(childPid);
-        return;
-
       case "forged_plugin":
         this.auditLogger.log({
           plugin: "kuzo",
@@ -637,7 +644,10 @@ export class PluginProcess {
       this.rateLimitTrailingTimer = null;
     }
     if (this.rateLimitedSinceReport > 0) {
-      this.lastRateLimitReportAt = 0;
+      // `flushRateLimitDrops` only gates on `rateLimitedSinceReport > 0`,
+      // not on `lastRateLimitReportAt` — so a prior version's "force-emit
+      // by zeroing lastRateLimitReportAt" line was dead code (round-3
+      // Correctness advisory). The flush happens unconditionally here.
       this.flushRateLimitDrops(this.childPid);
     }
     this.channel?.close();

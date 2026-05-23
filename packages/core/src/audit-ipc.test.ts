@@ -97,11 +97,13 @@ test("TokenBucket: no partial consume — consume(N) all-or-nothing", () => {
 });
 
 // ─── decideAudit: happy path ──────────────────────────────────────────────
+//
+// Round-3 refactor: rate-limit lives in the IPC notification handler now,
+// not in decideAudit. The TokenBucket tests above still cover the bucket
+// itself. The decideAudit tests below cover stamp + identity + action-class.
 
 test("decideAudit: legit child-permitted action → allow + stamps source + pid", () => {
-  const clock = fakeClock();
-  const bucket = new TokenBucket(200, 100, clock.now);
-  const decision = decideAudit(legitEvent(), "github", 12345, bucket);
+  const decision = decideAudit(legitEvent(), "github", 12345);
 
   assert.equal(decision.kind, "allow");
   if (decision.kind !== "allow") return;
@@ -112,9 +114,7 @@ test("decideAudit: legit child-permitted action → allow + stamps source + pid"
 });
 
 test("decideAudit: undefined childPid → no pid field on the stamped event", () => {
-  const clock = fakeClock();
-  const bucket = new TokenBucket(200, 100, clock.now);
-  const decision = decideAudit(legitEvent(), "github", undefined, bucket);
+  const decision = decideAudit(legitEvent(), "github", undefined);
 
   assert.equal(decision.kind, "allow");
   if (decision.kind !== "allow") return;
@@ -123,14 +123,12 @@ test("decideAudit: undefined childPid → no pid field on the stamped event", ()
 });
 
 test("decideAudit: caller-supplied source/pid are overwritten by the stamp", () => {
-  const clock = fakeClock();
-  const bucket = new TokenBucket(200, 100, clock.now);
   const event: Omit<AuditEvent, "timestamp"> = {
     ...legitEvent(),
     source: "parent",   // child trying to claim parent — must be overwritten
     pid: 99999,         // child trying to spoof pid — must be overwritten
   };
-  const decision = decideAudit(event, "github", 12345, bucket);
+  const decision = decideAudit(event, "github", 12345);
 
   assert.equal(decision.kind, "allow");
   if (decision.kind !== "allow") return;
@@ -141,39 +139,31 @@ test("decideAudit: caller-supplied source/pid are overwritten by the stamp", () 
 // ─── decideAudit: plugin-identity forgery ─────────────────────────────────
 
 test("decideAudit: plugin field mismatch → forged_plugin", () => {
-  const clock = fakeClock();
-  const bucket = new TokenBucket(200, 100, clock.now);
   const event = { ...legitEvent(), plugin: "kuzo" }; // claiming core
-  const decision = decideAudit(event, "github", 12345, bucket);
+  const decision = decideAudit(event, "github", 12345);
   assert.equal(decision.kind, "forged_plugin");
 });
 
 test("decideAudit: cross-plugin impersonation → forged_plugin", () => {
-  const clock = fakeClock();
-  const bucket = new TokenBucket(200, 100, clock.now);
   const event = { ...legitEvent(), plugin: "jira" }; // github child claiming to be jira
-  const decision = decideAudit(event, "github", 12345, bucket);
+  const decision = decideAudit(event, "github", 12345);
   assert.equal(decision.kind, "forged_plugin");
 });
 
 // ─── decideAudit: action-class forgery ────────────────────────────────────
 
 test("decideAudit: parent-only action → forged_action", () => {
-  const clock = fakeClock();
-  const bucket = new TokenBucket(200, 100, clock.now);
   const event: Omit<AuditEvent, "timestamp"> = {
     plugin: "github",
     action: "consent.granted", // parent-only
     outcome: "allowed",
     details: {},
   };
-  const decision = decideAudit(event, "github", 12345, bucket);
+  const decision = decideAudit(event, "github", 12345);
   assert.equal(decision.kind, "forged_action");
 });
 
 test("decideAudit: unknown action string → forged_action (Set lookup tolerates)", () => {
-  const clock = fakeClock();
-  const bucket = new TokenBucket(200, 100, clock.now);
   // Pretend the wire layer let through an action not in the union.
   const event: Omit<AuditEvent, "timestamp"> = {
     plugin: "github",
@@ -181,58 +171,8 @@ test("decideAudit: unknown action string → forged_action (Set lookup tolerates
     outcome: "allowed",
     details: {},
   };
-  const decision = decideAudit(event, "github", 12345, bucket);
+  const decision = decideAudit(event, "github", 12345);
   assert.equal(decision.kind, "forged_action");
-});
-
-// ─── decideAudit: rate limit ──────────────────────────────────────────────
-
-test("decideAudit: rate-limit check fires before any validation", () => {
-  const clock = fakeClock();
-  const bucket = new TokenBucket(200, 100, clock.now);
-  for (let i = 0; i < 200; i++) {
-    assert.equal(decideAudit(legitEvent(), "github", 12345, bucket).kind, "allow");
-  }
-  // Bucket is empty — even a legit event returns rate_limited.
-  const decision = decideAudit(legitEvent(), "github", 12345, bucket);
-  assert.equal(decision.kind, "rate_limited");
-});
-
-test("decideAudit: forgery attempts also consume tokens (cannot bypass rate limit)", () => {
-  const clock = fakeClock();
-  const bucket = new TokenBucket(200, 100, clock.now);
-  // Drain via forgery attempts — every consume() should succeed even though
-  // the events themselves would be classified forgery.
-  for (let i = 0; i < 200; i++) {
-    const decision = decideAudit(
-      { ...legitEvent(), plugin: "kuzo" }, // forgery
-      "github",
-      12345,
-      bucket,
-    );
-    assert.equal(decision.kind, "forged_plugin", `iter #${i} should be forged_plugin`);
-  }
-  // Bucket is drained — next event (even legit) returns rate_limited.
-  const decision = decideAudit(legitEvent(), "github", 12345, bucket);
-  assert.equal(decision.kind, "rate_limited");
-});
-
-test("decideAudit: after wall-clock refill the gauntlet resumes", () => {
-  const clock = fakeClock();
-  const bucket = new TokenBucket(200, 100, clock.now);
-  for (let i = 0; i < 200; i++) decideAudit(legitEvent(), "github", 12345, bucket);
-  assert.equal(decideAudit(legitEvent(), "github", 12345, bucket).kind, "rate_limited");
-
-  // 1 second of wall-clock → 100 tokens refilled.
-  clock.advance(1_000);
-  for (let i = 0; i < 100; i++) {
-    assert.equal(
-      decideAudit(legitEvent(), "github", 12345, bucket).kind,
-      "allow",
-      `post-refill consume #${i + 1} should allow`,
-    );
-  }
-  assert.equal(decideAudit(legitEvent(), "github", 12345, bucket).kind, "rate_limited");
 });
 
 // ─── partition exhaustiveness + invariants ────────────────────────────────

@@ -181,7 +181,13 @@ export default tseslint.config(
   // The structural guarantee is the IpcAuditLogger proxy in plugin-host.ts;
   // this rule catches regressions before they ship.
   {
-    files: ["packages/core/src/plugin-host*.ts"],
+    // `plugin-host*.ts` matches `plugin-host.ts` + `plugin-host-foo.ts`;
+    // `plugin-host/**/*.ts` covers a future refactor that moves plugin-host
+    // into a subdirectory (round-3 Security forward-compat advisory).
+    files: [
+      "packages/core/src/plugin-host*.ts",
+      "packages/core/src/plugin-host/**/*.ts",
+    ],
     rules: {
       "no-restricted-imports": [
         "error",

@@ -3,19 +3,17 @@
  * traffic (spec §C.10 + §C.10.1).
  *
  * The plugin-host child runs `IpcAuditLogger.notify("audit", { event })`.
- * The parent's `plugin-process.handleAuditEvent` receives the
- * notification and runs the event through this gauntlet in order:
+ * The parent's `plugin-process` notification handler runs the event
+ * through this gauntlet in order:
  *
- *   1. Rate-limit check — `TokenBucket.consume(1)`. Forged emissions
- *      consume tokens too so the rate limit can't be bypassed by
- *      emitting only forgeries.
- *   2. PID + source stamp — overwrites any caller-supplied value.
- *   3. Plugin-identity validation — `event.plugin` must equal the
- *      child's declared plugin name. Mismatch → `forged_plugin`.
- *   4. Action-class allowlist — `event.action` must be a member of
- *      `CHILD_PERMITTED_AUDIT_ACTIONS`. Mismatch → `forged_action`.
- *   5. Allow — stamped event flows through to the parent's
- *      file-backed AuditLogger.
+ *   1. Rate-limit check (in the notification handler, BEFORE this
+ *      function — round-3 Security advisory). EVERY inbound IPC frame
+ *      counts toward the bucket: malformed, oversize, forged, and
+ *      legitimate alike. No shape of message bypasses the limit.
+ *   2. Wire-shape validation (`isAuditWireEvent` + `withinAuditByteCap`).
+ *      Drops with `logger.warn` rather than emitting an audit entry.
+ *   3. `decideAudit` (this function): stamp PID + source → identity
+ *      check → action-class allowlist → allow.
  *
  * Extracted into its own module so it can be unit-tested without
  * spinning up a real child process.
@@ -139,10 +137,15 @@ export class TokenBucket {
 // ---------------------------------------------------------------------------
 // AuditDecision — gauntlet outcome (spec §C.10)
 // ---------------------------------------------------------------------------
+//
+// Rate-limiting is NOT in this decision (round-3 Security advisory).
+// The notification handler in `plugin-process.ts` consumes from the
+// TokenBucket BEFORE wire validation, so every shape of inbound IPC
+// frame (malformed / oversize / forged / legitimate) is gated by the
+// same bucket. `decideAudit` only sees events that have passed
+// rate-limit + wire-shape + byte-cap.
 
 export type AuditDecision =
-  /** Rate limit exhausted — drop the event, increment the drop counter. */
-  | { kind: "rate_limited" }
   /** Child claimed a plugin identity it doesn't own — drop, emit forgery. */
   | { kind: "forged_plugin" }
   /** Child correctly claimed identity but emitted a parent-only action — drop, emit forgery. */
@@ -156,31 +159,26 @@ export type AuditDecision =
  * @param event Wire-shape event from the child IpcAuditLogger.
  * @param declaredPluginName The plugin name this child was constructed with.
  * @param childPid OS pid of the child (`undefined` if not captured yet).
- * @param bucket Rate-limit bucket for this child.
  */
 export function decideAudit(
   event: Omit<AuditEvent, "timestamp">,
   declaredPluginName: string,
   childPid: number | undefined,
-  bucket: TokenBucket,
 ): AuditDecision {
-  // 1. Rate-limit FIRST so forgery attempts also consume tokens.
-  if (!bucket.consume(1)) return { kind: "rate_limited" };
-
-  // 2. Stamp source + PID (overwriting any caller-supplied value).
+  // 1. Stamp source + PID (overwriting any caller-supplied value).
   const stamped: Omit<AuditEvent, "timestamp"> = {
     ...event,
     source: "child",
     ...(childPid !== undefined ? { pid: childPid } : {}),
   };
 
-  // 3. Plugin-identity validation.
+  // 2. Plugin-identity validation.
   if (stamped.plugin !== declaredPluginName) return { kind: "forged_plugin" };
 
-  // 4. Action-class allowlist. The Set lookup tolerates arbitrary
+  // 3. Action-class allowlist. The Set lookup tolerates arbitrary
   //    strings — unknown actions fall through to the forgery branch.
   if (!CHILD_PERMITTED_AUDIT_ACTIONS.has(stamped.action)) return { kind: "forged_action" };
 
-  // 5. Allow.
+  // 4. Allow.
   return { kind: "allow", stamped };
 }

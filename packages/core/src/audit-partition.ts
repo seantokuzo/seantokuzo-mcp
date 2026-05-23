@@ -55,9 +55,18 @@ export const AUDIT_ACTION_PARTITION: Record<AuditAction, "parent-only" | "child-
  * Derived at module load — no per-call cost. Used by
  * `plugin-process.handleAuditEvent` to gate child IPC traffic against
  * the action-class allowlist.
+ *
+ * Cast is tightened (round-3 Correctness advisory): scope is the closed
+ * `"parent-only" | "child-permitted"` literal union rather than `string`,
+ * so the filter callback is typechecked against the actual values.
  */
 export const CHILD_PERMITTED_AUDIT_ACTIONS: ReadonlySet<AuditAction> = new Set(
-  (Object.entries(AUDIT_ACTION_PARTITION) as [AuditAction, string][])
+  (
+    Object.entries(AUDIT_ACTION_PARTITION) as [
+      AuditAction,
+      "parent-only" | "child-permitted",
+    ][]
+  )
     .filter(([, scope]) => scope === "child-permitted")
     .map(([action]) => action),
 );
