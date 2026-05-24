@@ -155,6 +155,18 @@ export interface CredentialBroker {
    *     are missing — the broker re-throws nothing on undefined.
    *   - `credential.client_created` audit fires from `getClient` on the
    *     first successful invocation (parent receives via IPC).
+   *
+   * **Manifest-contract responsibility (spec §C.4).** For first-party
+   * services the broker enforces that the plugin declared `access: "client"`
+   * for every env the service requires. For third-party services this
+   * check is **deliberately delegated to the plugin author** — the factory
+   * is the contract. A plugin that declares `access: "raw"` for `MY_TOKEN`
+   * and then registers a factory that builds a client from the same env is
+   * lying to its own manifest; the consequence is self-contained to the
+   * plugin's own process (no cross-trust escalation — the loader scoped
+   * the config map by env-name, not by access mode). Plugin authors keep
+   * their `CredentialCapability.access` declarations honest because the
+   * consent UI surfaces these to the user; the broker does not police it.
    */
   registerClientFactory<T>(
     service: string,

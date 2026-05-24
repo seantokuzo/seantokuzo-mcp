@@ -186,8 +186,16 @@ export class DefaultCredentialBroker implements CredentialBroker {
     }
 
     // Enforce the "all declared with access:client" manifest contract for
-    // first-party services. Third-party factories run unchecked — the
-    // factory's own undefined-on-missing-cred behaviour is the contract.
+    // first-party services. Third-party factories DELIBERATELY skip this
+    // check (spec §C.4) — the plugin author owns the
+    // manifest↔factory parity for their own service. A third-party plugin
+    // that declares `access: "raw"` for its token and then registers a
+    // factory that builds a client from the same env is lying to its own
+    // manifest; the consequence is self-contained (the loader scoped the
+    // config Map by env-name, not by access mode — no cross-trust
+    // escalation). The consent UI surfaces declared access modes to the
+    // user; that is the user-facing line of defense, not this code path.
+    // See `CredentialBroker.registerClientFactory` JSDoc for the contract.
     const firstPartyEnvs = FIRST_PARTY_SERVICE_ENVS[service];
     if (firstPartyEnvs) {
       const clientAccessibleEnvs = new Set(
