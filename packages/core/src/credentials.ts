@@ -169,7 +169,12 @@ export class DefaultCredentialBroker implements CredentialBroker {
       // initialize() after a transient setup failure.
       return;
     }
-    this.clientFactories.set(service, factory as ClientFactory);
+    // No cast needed: `(config, logger) => T | undefined` is assignable to
+    // `(config, logger) => unknown` via return-type covariance. Removing
+    // the previous `as ClientFactory` surfaces real future signature drift
+    // as a type error instead of silently swallowing it (round-4
+    // Correctness advisory).
+    this.clientFactories.set(service, factory);
   }
 
   getClient<T>(service: string): T | undefined {

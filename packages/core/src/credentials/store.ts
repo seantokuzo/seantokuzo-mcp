@@ -179,6 +179,19 @@ export class EncryptedCredentialStore implements CredentialStore {
    * Spec §C.5 mandates an emit even on a never-unlocked close so forensics
    * can correlate "stopped without ever unlocking" — but the spec doesn't
    * mandate one PER call. Round-2 Security/Architecture advisory A1.
+   *
+   * **Lifecycle contract: lock-once-per-instance** (round-4 Security
+   * advisory A1). The store can be re-unlocked from disk after a
+   * `close()` via the lazy-decrypt path in `get()` (see the existing
+   * "get() after close() re-decrypts" test). When the re-unlocked store
+   * is then closed again, this flag stays set — the second close is
+   * silent. Forensic consumers wanting to correlate multi-cycle
+   * lifecycles should observe `credential.store_unlocked` (which DOES
+   * fire on each unlock) rather than expecting a paired re-emit of
+   * `store_locked`. This is by design: in normal operation each store
+   * instance closes once at process exit, and the documented
+   * "lock-once-per-instance" semantic is simpler to reason about than a
+   * paired emit-per-cycle scheme.
    */
   private hasEmittedClose = false;
 
