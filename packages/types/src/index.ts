@@ -133,6 +133,45 @@ export interface CredentialBroker {
 
   /** Check availability without accessing the value */
   hasCredential(key: string): boolean;
+
+  /**
+   * Register a `getClient` factory for a third-party service. Lets plugins
+   * extend the broker with their own pre-authenticated client without
+   * importing core internals (spec §C.4).
+   *
+   * Constraints:
+   *   - First-party service names (`"github"`, `"jira"`) are reserved and
+   *     cannot be overridden — registering them throws.
+   *   - Re-registering the same service in the same broker is a no-op
+   *     (idempotent). Each plugin gets its own broker instance, so there
+   *     is no cross-plugin override surface — a registration in plugin A's
+   *     broker has no visibility into plugin B's broker.
+   *   - Call `registerClientFactory` synchronously inside `initialize()`
+   *     BEFORE the first `getClient(...)` call. Module-top-level
+   *     registration is impossible (no `PluginContext` reference exists
+   *     before `initialize` runs).
+   *   - The factory receives the plugin's scoped credential Map plus the
+   *     plugin logger. It must return `undefined` when required credentials
+   *     are missing — the broker re-throws nothing on undefined.
+   *   - `credential.client_created` audit fires from `getClient` on the
+   *     first successful invocation (parent receives via IPC).
+   *
+   * **Manifest-contract responsibility (spec §C.4).** For first-party
+   * services the broker enforces that the plugin declared `access: "client"`
+   * for every env the service requires. For third-party services this
+   * check is **deliberately delegated to the plugin author** — the factory
+   * is the contract. A plugin that declares `access: "raw"` for `MY_TOKEN`
+   * and then registers a factory that builds a client from the same env is
+   * lying to its own manifest; the consequence is self-contained to the
+   * plugin's own process (no cross-trust escalation — the loader scoped
+   * the config map by env-name, not by access mode). Plugin authors keep
+   * their `CredentialCapability.access` declarations honest because the
+   * consent UI surfaces these to the user; the broker does not police it.
+   */
+  registerClientFactory<T>(
+    service: string,
+    factory: (config: Map<string, string>, logger: PluginLogger) => T | undefined,
+  ): void;
 }
 
 // ---------------------------------------------------------------------------

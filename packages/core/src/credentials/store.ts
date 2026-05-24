@@ -172,6 +172,28 @@ export class EncryptedCredentialStore implements CredentialStore {
    *  thread the salt back through `acquireKey()`. Set by `unlockFromDisk()`,
    *  cleared by `reload()` / `close()`. */
   private cachedKdfParams: Buffer | undefined;
+  /**
+   * Sticky flag — flipped on the FIRST `close()` call, never reset. Gates
+   * the `credential.store_locked` audit emit so repeat-close scenarios
+   * (signal-handler + finally idempotent teardowns) don't double-emit.
+   * Spec §C.5 mandates an emit even on a never-unlocked close so forensics
+   * can correlate "stopped without ever unlocking" — but the spec doesn't
+   * mandate one PER call. Round-2 Security/Architecture advisory A1.
+   *
+   * **Lifecycle contract: lock-once-per-instance** (round-4 Security
+   * advisory A1). The store can be re-unlocked from disk after a
+   * `close()` via the lazy-decrypt path in `get()` (see the existing
+   * "get() after close() re-decrypts" test). When the re-unlocked store
+   * is then closed again, this flag stays set — the second close is
+   * silent. Forensic consumers wanting to correlate multi-cycle
+   * lifecycles should observe `credential.store_unlocked` (which DOES
+   * fire on each unlock) rather than expecting a paired re-emit of
+   * `store_locked`. This is by design: in normal operation each store
+   * instance closes once at process exit, and the documented
+   * "lock-once-per-instance" semantic is simpler to reason about than a
+   * paired emit-per-cycle scheme.
+   */
+  private hasEmittedClose = false;
 
   constructor(options: EncryptedCredentialStoreOptions) {
     this.filePath = options.filePath;
@@ -249,20 +271,35 @@ export class EncryptedCredentialStore implements CredentialStore {
   // ─── Lifecycle ──────────────────────────────────────────────────────────
 
   close(): void {
+    // Snapshot priorCount BEFORE any clearing so the audit reflects what
+    // was actually decrypted in this process lifetime. 0 on a never-unlocked
+    // store — still emitted so forensics can correlate "server stopped
+    // without ever unlocking" against "server stopped with N creds live".
+    const priorCount = this.cache?.size ?? 0;
     if (this.cache !== undefined) {
       // Best-effort cleanup; V8 strings can't be overwritten.
       for (const k of this.cache.keys()) this.cache.delete(k);
       this.cache = undefined;
       this.payloadMeta = undefined;
       this.cachedKdfParams = undefined;
+    }
+    // wipeKeyCache is the parent's real master-key wipe — call on every
+    // close() so a malformed teardown path can't leave the key Buffer
+    // populated. Cheap (Buffer.fill is a few cycles) and idempotent in
+    // every KeyProvider implementation.
+    this.keyProvider.wipeKeyCache?.();
+    // Emit credential.store_locked ONCE per store instance. First close
+    // (whether the store was unlocked or not) is the forensic signal;
+    // subsequent close() calls are silent. Round-2 advisory A1.
+    if (!this.hasEmittedClose) {
+      this.hasEmittedClose = true;
       this.auditLogger?.log({
         plugin: "kuzo",
         action: "credential.store_locked",
         outcome: "allowed",
-        details: { backend: this.backend },
+        details: { backend: this.backend, priorCount },
       });
     }
-    this.keyProvider.wipeKeyCache?.();
   }
 
   // ─── Internals ──────────────────────────────────────────────────────────

@@ -4,8 +4,14 @@
  * Plugins receive pre-authenticated clients or scoped fetch wrappers
  * instead of raw tokens. Raw access is an audited escape hatch.
  *
- * First-party client factories (GitHub, Jira) are hardcoded here.
- * Third-party plugins can register their own factories in Phase 2.5d+.
+ * Each plugin runs its own broker instance in its own child process (2.5d
+ * isolation). First-party defaults (`github`, `jira`) are pre-loaded into
+ * every broker at construction. Third-party plugins extend their own broker
+ * via `registerClientFactory` (spec §C.4) — first-party names are
+ * write-locked.
+ *
+ * No module-scope state. Construction takes an optional `clientFactories`
+ * override (test seam) — production code uses the built-in defaults.
  */
 
 import type {
@@ -19,7 +25,7 @@ import { GitHubClient } from "@kuzo-mcp/plugin-github/client";
 import { JiraClient } from "@kuzo-mcp/plugin-jira/client";
 
 // ---------------------------------------------------------------------------
-// Client factory registry — hardcoded for first-party services (Option A)
+// Client factories — first-party defaults
 // ---------------------------------------------------------------------------
 
 type ClientFactory = (
@@ -28,22 +34,18 @@ type ClientFactory = (
 ) => unknown | undefined;
 
 /**
- * Maps service name → the primary env vars the factory consumes.
- * Used to verify that the plugin declared `access: "client"` for at least
- * one of the service's credentials.
+ * First-party services keyed by their canonical name. Pre-loaded into every
+ * `DefaultCredentialBroker` instance at construction so each plugin's broker
+ * has its own copy (no shared mutable state across child processes).
+ *
+ * Third-party plugins MUST NOT re-register these names — `registerClientFactory`
+ * throws. Adding a new first-party service is a deliberate change here +
+ * `FIRST_PARTY_SERVICE_ENVS` below + the broker's hardcoded import.
  */
-const serviceEnvMapping: Record<string, string[]> = {
-  github: ["GITHUB_TOKEN"],
-  jira: ["JIRA_HOST", "JIRA_EMAIL", "JIRA_API_TOKEN"],
-};
-
-/**
- * Factory functions for first-party services.
- * Each reads from the config map (already scoped to the plugin by the loader)
- * and returns a fully-configured client. Returns undefined if required
- * credentials are missing.
- */
-const clientFactories = new Map<string, ClientFactory>([
+const FIRST_PARTY_FACTORIES: ReadonlyMap<string, ClientFactory> = new Map<
+  string,
+  ClientFactory
+>([
   [
     "github",
     (config, logger) => {
@@ -68,6 +70,19 @@ const clientFactories = new Map<string, ClientFactory>([
   ],
 ]);
 
+/**
+ * For each first-party service, the env vars the factory reads from `config`.
+ * Used by `getClient` to enforce that the plugin declared `access: "client"`
+ * for ALL of the service's credentials — a manifest-contract check that's
+ * independent of factory behaviour. Third-party services skip this check
+ * (the factory itself decides which envs to read and returns `undefined`
+ * on missing creds).
+ */
+const FIRST_PARTY_SERVICE_ENVS: Readonly<Record<string, readonly string[]>> = {
+  github: ["GITHUB_TOKEN"],
+  jira: ["JIRA_HOST", "JIRA_EMAIL", "JIRA_API_TOKEN"],
+};
+
 // ---------------------------------------------------------------------------
 // DefaultCredentialBroker
 // ---------------------------------------------------------------------------
@@ -83,6 +98,12 @@ export interface CredentialBrokerOptions {
   logger: PluginLogger;
   /** Structured audit logger (file + stderr) */
   auditLogger?: AuditLogger;
+  /**
+   * Override the first-party client factory map (test seam — production
+   * code should not pass this). When omitted the broker is pre-loaded
+   * with `FIRST_PARTY_FACTORIES`.
+   */
+  clientFactories?: ReadonlyMap<string, ClientFactory>;
 }
 
 export class DefaultCredentialBroker implements CredentialBroker {
@@ -91,6 +112,15 @@ export class DefaultCredentialBroker implements CredentialBroker {
   private readonly capabilities: CredentialCapability[];
   private readonly logger: PluginLogger;
   private readonly auditLogger: AuditLogger | undefined;
+  /**
+   * Instance-owned factory map. Pre-loaded from `FIRST_PARTY_FACTORIES`;
+   * extended by `registerClientFactory`. Cleared by `shutdown()`.
+   *
+   * Per-instance Map (NOT module-scope per round-4 advisory A1) so each
+   * child process's broker is independently testable and tear-down
+   * affects only this plugin's process.
+   */
+  private readonly clientFactories: Map<string, ClientFactory>;
   private readonly clientCache = new Map<string, unknown>();
 
   constructor(options: CredentialBrokerOptions) {
@@ -99,16 +129,60 @@ export class DefaultCredentialBroker implements CredentialBroker {
     this.capabilities = options.capabilities;
     this.logger = options.logger;
     this.auditLogger = options.auditLogger;
+    // Construction-time enforcement of the first-party reservation set
+    // (round-1 Security advisory A1). `registerClientFactory` already
+    // write-locks the reserved names at runtime; this gate makes the
+    // SAME invariant self-enforcing on the constructor path so a future
+    // caller cannot launder a malicious "github" / "jira" factory
+    // through the `options.clientFactories` test-seam. The throw is
+    // belt-and-suspenders — no production caller passes the option
+    // today, but the safety net is now structural, not conventional.
+    if (options.clientFactories) {
+      for (const reserved of FIRST_PARTY_FACTORIES.keys()) {
+        if (options.clientFactories.has(reserved)) {
+          throw new Error(
+            `DefaultCredentialBroker: clientFactories override cannot redefine first-party service "${reserved}". ` +
+              `Reserved services (${[...FIRST_PARTY_FACTORIES.keys()].join(", ")}) are write-locked.`,
+          );
+        }
+      }
+    }
+    // Seed from either the override (tests, post-guard) or the first-party
+    // defaults. `new Map(iterable)` copies entries — mutating
+    // `this.clientFactories` never touches the source.
+    this.clientFactories = new Map(options.clientFactories ?? FIRST_PARTY_FACTORIES);
+  }
+
+  registerClientFactory<T>(
+    service: string,
+    factory: (config: Map<string, string>, logger: PluginLogger) => T | undefined,
+  ): void {
+    if (FIRST_PARTY_FACTORIES.has(service)) {
+      throw new Error(
+        `Plugin "${this.pluginName}" cannot override first-party client factory for "${service}". ` +
+          `First-party services (${[...FIRST_PARTY_FACTORIES.keys()].join(", ")}) are reserved.`,
+      );
+    }
+    if (this.clientFactories.has(service)) {
+      // Idempotent: re-registering the same (plugin, service) pair is a no-op.
+      // Silent to avoid log noise — call site may legitimately retry during
+      // initialize() after a transient setup failure.
+      return;
+    }
+    // No cast needed: `(config, logger) => T | undefined` is assignable to
+    // `(config, logger) => unknown` via return-type covariance. Removing
+    // the previous `as ClientFactory` surfaces real future signature drift
+    // as a type error instead of silently swallowing it (round-4
+    // Correctness advisory).
+    this.clientFactories.set(service, factory);
   }
 
   getClient<T>(service: string): T | undefined {
-    // Return cached client if already created
     if (this.clientCache.has(service)) {
       return this.clientCache.get(service) as T;
     }
 
-    // Check that a factory exists for this service
-    const factory = clientFactories.get(service);
+    const factory = this.clientFactories.get(service);
     if (!factory) {
       this.logger.warn(
         `credential broker: unknown service "${service}" — no client factory registered`,
@@ -116,27 +190,34 @@ export class DefaultCredentialBroker implements CredentialBroker {
       return undefined;
     }
 
-    // Verify the plugin declared "client" access for ALL of the service's credentials
-    const serviceEnvs = serviceEnvMapping[service];
-    if (!serviceEnvs) return undefined;
-
-    const clientAccessibleEnvs = new Set(
-      this.capabilities
-        .filter((cap) => cap.access === "client")
-        .map((cap) => cap.env),
-    );
-    const hasClientAccess = serviceEnvs.every((env) =>
-      clientAccessibleEnvs.has(env),
-    );
-    if (!hasClientAccess) {
-      this.logger.warn(
-        `credential broker: plugin "${this.pluginName}" requested client for "${service}" ` +
-          `but did not declare access: "client" for all required credentials`,
+    // Enforce the "all declared with access:client" manifest contract for
+    // first-party services. Third-party factories DELIBERATELY skip this
+    // check (spec §C.4) — the plugin author owns the
+    // manifest↔factory parity for their own service. A third-party plugin
+    // that declares `access: "raw"` for its token and then registers a
+    // factory that builds a client from the same env is lying to its own
+    // manifest; the consequence is self-contained (the loader scoped the
+    // config Map by env-name, not by access mode — no cross-trust
+    // escalation). The consent UI surfaces declared access modes to the
+    // user; that is the user-facing line of defense, not this code path.
+    // See `CredentialBroker.registerClientFactory` JSDoc for the contract.
+    const firstPartyEnvs = FIRST_PARTY_SERVICE_ENVS[service];
+    if (firstPartyEnvs) {
+      const clientAccessibleEnvs = new Set(
+        this.capabilities
+          .filter((cap) => cap.access === "client")
+          .map((cap) => cap.env),
       );
-      return undefined;
+      const hasClientAccess = firstPartyEnvs.every((env) => clientAccessibleEnvs.has(env));
+      if (!hasClientAccess) {
+        this.logger.warn(
+          `credential broker: plugin "${this.pluginName}" requested client for "${service}" ` +
+            `but did not declare access: "client" for all required credentials`,
+        );
+        return undefined;
+      }
     }
 
-    // Create the client via factory
     const client = factory(this.config, this.logger);
     if (client === undefined) return undefined;
 
@@ -248,6 +329,26 @@ export class DefaultCredentialBroker implements CredentialBroker {
 
   hasCredential(key: string): boolean {
     return this.config.has(key);
+  }
+
+  /**
+   * Drop per-plugin scoped state (spec §C.5 child-side scrub). Called from
+   * `plugin-host.ts` AFTER `plugin.shutdown()` and BEFORE `process.exit`.
+   *
+   * Honest scope (R13): V8 strings can't be overwritten in place, so
+   * `Map.clear()` just drops references — the underlying UTF-16 buffers
+   * remain reachable until GC. The win is that simple heap-traversal tools
+   * stop finding live references; a determined attacker scanning raw heap
+   * pages can still surface unreachable strings until GC reclaims them.
+   *
+   * Master-key buffers are wiped in the PARENT via `EncryptedCredentialStore.close`
+   * (which calls `keyProvider.wipeKeyCache?.()` — that path IS a real
+   * `Buffer.fill(0)` zero). The child never holds the master key.
+   */
+  shutdown(): void {
+    this.config.clear();
+    this.clientFactories.clear();
+    this.clientCache.clear();
   }
 }
 

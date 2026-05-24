@@ -49,9 +49,7 @@ export type AuditAction =
   | "credential.fetch_created"
   // Phase 2.6 Theme 2 — storage primitives. The variants below are introduced
   // here so the new code in `packages/core/src/credentials/` typechecks against
-  // the closed union. Actual write-side wiring (set / deleted / rotated /
-  // migrated / wiped / tested) lands with Theme 6/7 (B.1–B.3
-  // commands + broker-side emissions). Spec §0 build order.
+  // the closed union.
   | "credential.passphrase_consumed"
   | "credential.store_unlocked"
   | "credential.store_locked"
@@ -60,6 +58,20 @@ export type AuditAction =
   // boot-flag --no-scrub path in §C.1 (Theme 4) reuses this action with
   // its own reason string.
   | "credential.scrub_disabled"
+  // Phase 2.6 Theme 6 — broker write-side events (spec §C.4 + spec table
+  // §C.10 line 2215). All seven are parent-only — emissions originate from
+  // the `kuzo credentials *` CLI surface arriving in Theme 7/8, not from
+  // the in-child broker. Adding them now reserves the type-union slots so
+  // Theme 7/8 PRs don't have to extend two files at once and so the
+  // exhaustiveness check in `audit-partition.ts` blocks any child-emission
+  // attempt at compile time.
+  | "credential.set"
+  | "credential.deleted"
+  | "credential.rotated"
+  | "credential.migrated"
+  | "credential.migration_partial"
+  | "credential.wiped"
+  | "credential.tested"
   | "plugin.loaded"
   | "plugin.skipped"
   | "plugin.failed"

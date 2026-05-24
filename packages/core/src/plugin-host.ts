@@ -102,6 +102,7 @@ async function main(): Promise<void> {
   const channel = new IpcChannel(process);
   let plugin: KuzoPlugin | null = null;
   let pluginContext: PluginContext | null = null;
+  let credentialBroker: DefaultCredentialBroker | null = null;
   let toolMap: Map<string, ToolDefinition> | null = null;
 
   // ── Handle incoming requests from parent ──
@@ -164,6 +165,7 @@ async function main(): Promise<void> {
       logger,
       auditLogger,
     });
+    credentialBroker = credentials;
 
     // Build IPC-backed callTool (routes through parent's registry).
     // Use 120s timeout to match parent-side TOOL_CALL_TIMEOUT_MS — default 30s
@@ -235,8 +237,23 @@ async function main(): Promise<void> {
   // ── Shutdown ──
 
   async function handleShutdown(): Promise<{ ok: true }> {
-    if (plugin?.shutdown) {
-      await plugin.shutdown();
+    // Per spec §C.5 child-side scrub — wired AFTER plugin.shutdown() so the
+    // plugin can finish whatever it was doing with its credentials map, then
+    // BEFORE process.exit so the in-memory references are dropped before the
+    // process tears down. The parent never holds the child's broker, so there
+    // is no parallel shutdown path in `server.ts`.
+    //
+    // try/finally so the broker scrub runs even if `plugin.shutdown()`
+    // rejects (round-2 Security/Correctness advisory). The throw still
+    // propagates after the finally — the parent's `plugin-process`
+    // observes the rejected request, which is the correct surfacing of a
+    // plugin's failed shutdown.
+    try {
+      if (plugin?.shutdown) {
+        await plugin.shutdown();
+      }
+    } finally {
+      credentialBroker?.shutdown();
     }
     // Give response time to flush, then exit
     setTimeout(() => process.exit(0), 100);
