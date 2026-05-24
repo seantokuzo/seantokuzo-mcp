@@ -367,13 +367,16 @@ export class PluginLoader {
           }
         : proxyBase;
 
-      // Minimal context for registry — proxy tools don't use it
+      // Minimal context for registry — proxy tools don't use it. Plugins
+      // never call into this broker (proxy tools route through PluginProcess
+      // → child broker), so every method either no-ops or throws on use.
       const proxyContext: PluginContext = {
         credentials: {
           getClient: () => undefined,
           createAuthenticatedFetch: () => { throw new Error("Proxy context"); },
           getRawCredential: () => undefined,
           hasCredential: () => false,
+          registerClientFactory: () => { throw new Error("Proxy context — registerClientFactory runs in the child broker"); },
         },
         logger: pluginLogger,
         callTool: async () => { throw new Error("Proxy context — use PluginProcess"); },

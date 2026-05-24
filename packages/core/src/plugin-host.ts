@@ -102,6 +102,7 @@ async function main(): Promise<void> {
   const channel = new IpcChannel(process);
   let plugin: KuzoPlugin | null = null;
   let pluginContext: PluginContext | null = null;
+  let credentialBroker: DefaultCredentialBroker | null = null;
   let toolMap: Map<string, ToolDefinition> | null = null;
 
   // ── Handle incoming requests from parent ──
@@ -164,6 +165,7 @@ async function main(): Promise<void> {
       logger,
       auditLogger,
     });
+    credentialBroker = credentials;
 
     // Build IPC-backed callTool (routes through parent's registry).
     // Use 120s timeout to match parent-side TOOL_CALL_TIMEOUT_MS — default 30s
@@ -238,6 +240,12 @@ async function main(): Promise<void> {
     if (plugin?.shutdown) {
       await plugin.shutdown();
     }
+    // Per spec §C.5 child-side scrub — wired AFTER plugin.shutdown() so the
+    // plugin can finish whatever it was doing with its credentials map, then
+    // BEFORE process.exit so the in-memory references are dropped before the
+    // process tears down. The parent never holds the child's broker, so there
+    // is no parallel shutdown path in `server.ts`.
+    credentialBroker?.shutdown();
     // Give response time to flush, then exit
     setTimeout(() => process.exit(0), 100);
     return { ok: true };

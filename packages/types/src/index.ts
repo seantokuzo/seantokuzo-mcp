@@ -133,6 +133,33 @@ export interface CredentialBroker {
 
   /** Check availability without accessing the value */
   hasCredential(key: string): boolean;
+
+  /**
+   * Register a `getClient` factory for a third-party service. Lets plugins
+   * extend the broker with their own pre-authenticated client without
+   * importing core internals (spec §C.4).
+   *
+   * Constraints:
+   *   - First-party service names (`"github"`, `"jira"`) are reserved and
+   *     cannot be overridden — registering them throws.
+   *   - Re-registering the same service in the same broker is a no-op
+   *     (idempotent). Each plugin gets its own broker instance, so there
+   *     is no cross-plugin override surface — a registration in plugin A's
+   *     broker has no visibility into plugin B's broker.
+   *   - Call `registerClientFactory` synchronously inside `initialize()`
+   *     BEFORE the first `getClient(...)` call. Module-top-level
+   *     registration is impossible (no `PluginContext` reference exists
+   *     before `initialize` runs).
+   *   - The factory receives the plugin's scoped credential Map plus the
+   *     plugin logger. It must return `undefined` when required credentials
+   *     are missing — the broker re-throws nothing on undefined.
+   *   - `credential.client_created` audit fires from `getClient` on the
+   *     first successful invocation (parent receives via IPC).
+   */
+  registerClientFactory<T>(
+    service: string,
+    factory: (config: Map<string, string>, logger: PluginLogger) => T | undefined,
+  ): void;
 }
 
 // ---------------------------------------------------------------------------

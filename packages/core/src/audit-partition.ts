@@ -31,6 +31,21 @@ export const AUDIT_ACTION_PARTITION: Record<AuditAction, "parent-only" | "child-
   "credential.store_locked":        "parent-only",
   "credential.scrub_disabled":      "parent-only",
 
+  // parent-only: Theme 6 broker write-side events. Every one of these is
+  // emitted from the parent CLI (`kuzo credentials *` lands in Theme 7/8),
+  // NEVER from the in-child broker. A compromised plugin attempting to
+  // emit any of these is caught at the IPC boundary by
+  // `plugin-process.handleAuditEvent` (which checks
+  // `CHILD_PERMITTED_AUDIT_ACTIONS`) and rewritten as
+  // `audit.forged_action`.
+  "credential.set":               "parent-only",
+  "credential.deleted":           "parent-only",
+  "credential.rotated":           "parent-only",
+  "credential.migrated":          "parent-only",
+  "credential.migration_partial": "parent-only",
+  "credential.wiped":             "parent-only",
+  "credential.tested":            "parent-only",
+
   // parent-only: 2.5e Part D plugin lifecycle + 2.5c consent events
   "plugin.loaded":                "parent-only",
   "plugin.skipped":               "parent-only",

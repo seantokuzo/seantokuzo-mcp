@@ -249,20 +249,25 @@ export class EncryptedCredentialStore implements CredentialStore {
   // ─── Lifecycle ──────────────────────────────────────────────────────────
 
   close(): void {
+    // Snapshot priorCount BEFORE any clearing so the audit reflects what
+    // was actually decrypted in this process lifetime. 0 on a never-unlocked
+    // store — still emitted so forensics can correlate "server stopped
+    // without ever unlocking" against "server stopped with N creds live".
+    const priorCount = this.cache?.size ?? 0;
     if (this.cache !== undefined) {
       // Best-effort cleanup; V8 strings can't be overwritten.
       for (const k of this.cache.keys()) this.cache.delete(k);
       this.cache = undefined;
       this.payloadMeta = undefined;
       this.cachedKdfParams = undefined;
-      this.auditLogger?.log({
-        plugin: "kuzo",
-        action: "credential.store_locked",
-        outcome: "allowed",
-        details: { backend: this.backend },
-      });
     }
     this.keyProvider.wipeKeyCache?.();
+    this.auditLogger?.log({
+      plugin: "kuzo",
+      action: "credential.store_locked",
+      outcome: "allowed",
+      details: { backend: this.backend, priorCount },
+    });
   }
 
   // ─── Internals ──────────────────────────────────────────────────────────
