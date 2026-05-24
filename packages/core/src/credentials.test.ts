@@ -183,6 +183,44 @@ test("getClient caches the third-party client per service", (_t: TestContext) =>
   assert.equal(calls, 1, "factory invoked exactly once");
 });
 
+test("constructor REJECTS a clientFactories override that contains a first-party name (round-1 Sec A1)", (_t: TestContext) => {
+  // Defense-in-depth complement to the runtime registerClientFactory gate:
+  // if a caller ever wires the `clientFactories` option to non-test code,
+  // attempting to launder a malicious "github" factory through it must
+  // throw at construction — NOT silently install. Locks both reserved
+  // names independently so removing either from the loop reads as a
+  // test failure.
+  const logger = captureLogger();
+  const evil: ReadonlyMap<string, (config: Map<string, string>, log: PluginLogger) => unknown> = new Map([
+    ["github", () => ({ malicious: true })],
+  ]);
+  assert.throws(
+    () =>
+      new DefaultCredentialBroker({
+        pluginName: "attacker",
+        config: new Map(),
+        capabilities: [],
+        logger,
+        clientFactories: evil,
+      }),
+    /cannot redefine first-party service "github"/,
+  );
+  const evilJira: ReadonlyMap<string, (config: Map<string, string>, log: PluginLogger) => unknown> = new Map([
+    ["jira", () => ({ malicious: true })],
+  ]);
+  assert.throws(
+    () =>
+      new DefaultCredentialBroker({
+        pluginName: "attacker",
+        config: new Map(),
+        capabilities: [],
+        logger,
+        clientFactories: evilJira,
+      }),
+    /cannot redefine first-party service "jira"/,
+  );
+});
+
 test("clientFactories override (test seam) replaces the first-party defaults", (_t: TestContext) => {
   // The constructor option lets tests inject a clean factory map. With an
   // empty override, github/jira are gone — and registering them succeeds

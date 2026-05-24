@@ -129,9 +129,27 @@ export class DefaultCredentialBroker implements CredentialBroker {
     this.capabilities = options.capabilities;
     this.logger = options.logger;
     this.auditLogger = options.auditLogger;
-    // Seed from either the override (tests) or the first-party defaults.
-    // `new Map(iterable)` copies entries — mutating `this.clientFactories`
-    // never touches the source.
+    // Construction-time enforcement of the first-party reservation set
+    // (round-1 Security advisory A1). `registerClientFactory` already
+    // write-locks the reserved names at runtime; this gate makes the
+    // SAME invariant self-enforcing on the constructor path so a future
+    // caller cannot launder a malicious "github" / "jira" factory
+    // through the `options.clientFactories` test-seam. The throw is
+    // belt-and-suspenders — no production caller passes the option
+    // today, but the safety net is now structural, not conventional.
+    if (options.clientFactories) {
+      for (const reserved of FIRST_PARTY_FACTORIES.keys()) {
+        if (options.clientFactories.has(reserved)) {
+          throw new Error(
+            `DefaultCredentialBroker: clientFactories override cannot redefine first-party service "${reserved}". ` +
+              `Reserved services (${[...FIRST_PARTY_FACTORIES.keys()].join(", ")}) are write-locked.`,
+          );
+        }
+      }
+    }
+    // Seed from either the override (tests, post-guard) or the first-party
+    // defaults. `new Map(iterable)` copies entries — mutating
+    // `this.clientFactories` never touches the source.
     this.clientFactories = new Map(options.clientFactories ?? FIRST_PARTY_FACTORIES);
   }
 
