@@ -221,6 +221,54 @@ test("close() emits credential.store_locked when an auditLogger is provided", (t
   assert.deepEqual(events.map((e) => e.action), ["credential.store_locked"]);
 });
 
+test("close() called twice emits credential.store_locked only ONCE (round-2 A1)", (t) => {
+  // Signal handlers + idempotent teardowns can legitimately call close()
+  // more than once. The store_locked event should fire on the FIRST close
+  // (the forensic signal "this process is shutting down its store") and
+  // stay silent on subsequent calls, regardless of whether the cache was
+  // ever populated.
+  const { filePath } = freshTmp(t);
+  const provider = new InMemoryKeyProvider();
+  const events: Array<{ action: string; priorCount?: unknown }> = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const auditLogger: any = {
+    log(event: { action: string; details?: { priorCount?: unknown } }) {
+      events.push({ action: event.action, priorCount: event.details?.priorCount });
+    },
+  };
+  const store = new EncryptedCredentialStore({ filePath, keyProvider: provider, auditLogger });
+  store.set("FOO", "bar");
+  store.close();
+  store.close();
+  store.close();
+  const locked = events.filter((e) => e.action === "credential.store_locked");
+  assert.equal(locked.length, 1, "exactly one credential.store_locked across three close() calls");
+  assert.equal(locked[0]!.priorCount, 1, "priorCount reflects the FIRST close, not the third");
+});
+
+test("close() on a never-unlocked store STILL emits exactly once with priorCount=0 (round-2 A1)", (t) => {
+  // The unconditional emit shape exists so forensics can correlate
+  // "stopped without ever unlocking" against "stopped with N creds live."
+  // A never-unlocked close must emit priorCount=0 — but only on the first
+  // close, not on every repeat call.
+  const { filePath } = freshTmp(t);
+  const provider = new InMemoryKeyProvider();
+  const events: Array<{ action: string; priorCount?: unknown }> = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const auditLogger: any = {
+    log(event: { action: string; details?: { priorCount?: unknown } }) {
+      events.push({ action: event.action, priorCount: event.details?.priorCount });
+    },
+  };
+  const store = new EncryptedCredentialStore({ filePath, keyProvider: provider, auditLogger });
+  // No set, no get — store remains never-unlocked.
+  store.close();
+  store.close();
+  const locked = events.filter((e) => e.action === "credential.store_locked");
+  assert.equal(locked.length, 1, "exactly one emit on never-unlocked store across two close() calls");
+  assert.equal(locked[0]!.priorCount, 0);
+});
+
 test("get() after close() re-decrypts from disk and emits store_unlocked", (t) => {
   const { filePath } = freshTmp(t);
   const seed = Buffer.alloc(32, 0xcc);

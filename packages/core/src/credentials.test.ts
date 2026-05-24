@@ -40,7 +40,9 @@ function captureAudit(): AuditLogger & { events: AuditEvent[] } {
   return {
     events,
     log(event: Omit<AuditEvent, "timestamp">) {
-      events.push({ timestamp: new Date().toISOString(), ...event } as AuditEvent);
+      // No `as AuditEvent` cast — the structural spread already satisfies
+      // the type; the cast would mask new required fields on AuditEvent.
+      events.push({ timestamp: new Date().toISOString(), ...event });
     },
     query() {
       return events;

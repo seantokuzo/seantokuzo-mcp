@@ -172,6 +172,15 @@ export class EncryptedCredentialStore implements CredentialStore {
    *  thread the salt back through `acquireKey()`. Set by `unlockFromDisk()`,
    *  cleared by `reload()` / `close()`. */
   private cachedKdfParams: Buffer | undefined;
+  /**
+   * Sticky flag — flipped on the FIRST `close()` call, never reset. Gates
+   * the `credential.store_locked` audit emit so repeat-close scenarios
+   * (signal-handler + finally idempotent teardowns) don't double-emit.
+   * Spec §C.5 mandates an emit even on a never-unlocked close so forensics
+   * can correlate "stopped without ever unlocking" — but the spec doesn't
+   * mandate one PER call. Round-2 Security/Architecture advisory A1.
+   */
+  private hasEmittedClose = false;
 
   constructor(options: EncryptedCredentialStoreOptions) {
     this.filePath = options.filePath;
@@ -261,13 +270,23 @@ export class EncryptedCredentialStore implements CredentialStore {
       this.payloadMeta = undefined;
       this.cachedKdfParams = undefined;
     }
+    // wipeKeyCache is the parent's real master-key wipe — call on every
+    // close() so a malformed teardown path can't leave the key Buffer
+    // populated. Cheap (Buffer.fill is a few cycles) and idempotent in
+    // every KeyProvider implementation.
     this.keyProvider.wipeKeyCache?.();
-    this.auditLogger?.log({
-      plugin: "kuzo",
-      action: "credential.store_locked",
-      outcome: "allowed",
-      details: { backend: this.backend, priorCount },
-    });
+    // Emit credential.store_locked ONCE per store instance. First close
+    // (whether the store was unlocked or not) is the forensic signal;
+    // subsequent close() calls are silent. Round-2 advisory A1.
+    if (!this.hasEmittedClose) {
+      this.hasEmittedClose = true;
+      this.auditLogger?.log({
+        plugin: "kuzo",
+        action: "credential.store_locked",
+        outcome: "allowed",
+        details: { backend: this.backend, priorCount },
+      });
+    }
   }
 
   // ─── Internals ──────────────────────────────────────────────────────────
