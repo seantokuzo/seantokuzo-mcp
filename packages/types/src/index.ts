@@ -300,6 +300,22 @@ export interface KuzoPluginV2 extends KuzoPluginBase {
 
   /** Optional capabilities — plugin works without them */
   optionalCapabilities?: Capability[];
+
+  /**
+   * OPTIONAL. If provided, called by `kuzo credentials test <name>` (spec §B.9).
+   * Performs a single, cheap, idempotent API call to the plugin's service to
+   * verify the named credential is accepted. MUST NOT mutate any state on the
+   * remote system.
+   *
+   * Returns:
+   *   `{ ok: true, message?: string }`  — credential accepted, optional detail.
+   *   `{ ok: false, message: string, httpStatus?: number }` — rejected; message shown to the user.
+   *   throws — uncaught error; reported as "test failed: <error>".
+   */
+  testCredential?(
+    name: string,
+    broker: CredentialBroker,
+  ): Promise<{ ok: boolean; message?: string; httpStatus?: number }>;
 }
 
 /** Union of all plugin manifest versions */

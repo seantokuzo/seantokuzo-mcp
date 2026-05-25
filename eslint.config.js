@@ -136,6 +136,31 @@ export default tseslint.config(
           message:
             "child_process methods are banned in pre-scrub paths (defense-in-depth vs. namespace-aliased imports / require). See docs/credentials-spec.md §C.9.",
         },
+        // Theme-4 deferred advisory: the static-import ban (no-restricted-imports)
+        // doesn't see dynamic `import()`, `createRequire(...)(...)`, or a
+        // createRequire-bound `require()`. These selectors close that gap.
+        {
+          selector: "ImportExpression[source.value='node:child_process']",
+          message:
+            "Dynamic import() of node:child_process is banned in pre-scrub paths — same as the static-import ban. Only packages/core/src/plugin-process.ts may spawn, after the boot-step-7 scrub. See docs/credentials-spec.md §C.9.",
+        },
+        {
+          selector: "ImportExpression[source.value='child_process']",
+          message:
+            "Dynamic import() of child_process is banned in pre-scrub paths — use the node: form only inside plugin-process.ts. See docs/credentials-spec.md §C.9.",
+        },
+        {
+          selector:
+            "CallExpression[callee.callee.name='createRequire'][arguments.0.value=/child_process/]",
+          message:
+            "createRequire(...)(\"node:child_process\") bypasses the static-import ban and is forbidden in pre-scrub paths. See docs/credentials-spec.md §C.9.",
+        },
+        {
+          selector:
+            "CallExpression[callee.name='require'][arguments.0.value=/child_process/]",
+          message:
+            "require(\"node:child_process\") — including a createRequire-bound `require` alias — is forbidden in pre-scrub paths. See docs/credentials-spec.md §C.9.",
+        },
         {
           selector:
             "CallExpression:has(CallExpression:matches([callee.name='homedir'], [callee.object.name='os'][callee.property.name='homedir'])):has(Literal[value='.kuzo'])",
@@ -253,6 +278,30 @@ export default tseslint.config(
           selector: "CallExpression[callee.object.name='childProcess']",
           message:
             "child_process methods are banned in pre-scrub paths (defense-in-depth vs. namespace-aliased imports / require). See docs/credentials-spec.md §C.9.",
+        },
+        // Theme-4 deferred advisory: dynamic-import / createRequire / require
+        // escape hatches for child_process — preserved across the last-wins merge.
+        {
+          selector: "ImportExpression[source.value='node:child_process']",
+          message:
+            "Dynamic import() of node:child_process is banned in pre-scrub paths — same as the static-import ban. See docs/credentials-spec.md §C.9.",
+        },
+        {
+          selector: "ImportExpression[source.value='child_process']",
+          message:
+            "Dynamic import() of child_process is banned in pre-scrub paths. See docs/credentials-spec.md §C.9.",
+        },
+        {
+          selector:
+            "CallExpression[callee.callee.name='createRequire'][arguments.0.value=/child_process/]",
+          message:
+            "createRequire(...)(\"node:child_process\") bypasses the static-import ban and is forbidden in pre-scrub paths. See docs/credentials-spec.md §C.9.",
+        },
+        {
+          selector:
+            "CallExpression[callee.name='require'][arguments.0.value=/child_process/]",
+          message:
+            "require(\"node:child_process\") — including a createRequire-bound `require` alias — is forbidden in pre-scrub paths. See docs/credentials-spec.md §C.9.",
         },
         // §C.10 — defense-in-depth vs. `import * as fs from "node:fs"; fs.appendFile(...)`
         // and similar namespace-aliased calls (round-2 Architecture +

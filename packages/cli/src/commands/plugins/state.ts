@@ -7,15 +7,10 @@
  * Also owns `ensurePluginsRoot()` — first-run bootstrap of the plugins dir.
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
-import { indexJsonPath, pluginsRoot } from "./paths.js";
+import { ensurePluginsRoot } from "../../paths-fs.js";
+import { indexJsonPath } from "./paths.js";
 
 export const PLUGINS_INDEX_SCHEMA_VERSION = 1;
 export const MAX_RETAINED_VERSIONS = 3;
@@ -35,11 +30,6 @@ export interface PluginIndexEntry {
 export interface PluginsIndex {
   schemaVersion: typeof PLUGINS_INDEX_SCHEMA_VERSION;
   plugins: Record<string, PluginIndexEntry>;
-}
-
-/** Create `~/.kuzo/plugins/` if it doesn't exist. Idempotent. */
-export function ensurePluginsRoot(): void {
-  mkdirSync(pluginsRoot(), { recursive: true });
 }
 
 /** Read index.json, returning an empty index if the file is missing. */

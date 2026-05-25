@@ -52,3 +52,27 @@ export {
   scrubProcessEnv,
   type ScrubProcessEnvResult,
 } from "./env-overrides.js";
+
+// Phase 2.6 Theme 7 — install-time env-name reservation policy (spec §A.12).
+// Consumed by `kuzo plugins install/update/uninstall` in `@kuzo-mcp/cli`.
+export {
+  ENV_NAME_FORMAT,
+  ENV_NAMESPACE_FORMAT_VERSION,
+  EnvNamespaceError,
+  exitCodeForEnvNamespaceError,
+  FIRST_PARTY_ENV_RESERVATIONS,
+  readEnvNamespaceRegistry,
+  removePluginEnvNames,
+  RESERVED_SYSTEM_ENVS,
+  upsertPluginEnvNames,
+  validateEnvNames,
+  writeEnvNamespaceRegistry,
+  type EnvNamespaceErrorCode,
+  type EnvNamespaceRegistry,
+  type ValidateEnvNamesArgs,
+} from "./env-namespace.js";
+
+// Phase 2.6 — KeyProvider selection (spec §A.5 precedence). Imports the
+// concrete provider module (not this barrel) to avoid an import cycle, so it's
+// safe to surface here for the `kuzo credentials` + `kuzo serve` call sites.
+export { chooseKeyProvider } from "../key-provider-choice.js";

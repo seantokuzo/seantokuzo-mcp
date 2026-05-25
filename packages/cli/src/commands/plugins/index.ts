@@ -76,6 +76,10 @@ export function registerPluginsCommands(program: Command): void {
       "Verify and print the install plan without writing to disk",
     )
     .option("-y, --yes", "Skip all confirmation prompts")
+    .option(
+      "--no-onboarding-hint",
+      "Skip the Claude Code wiring reminder (or set KUZO_NO_ONBOARDING_HINT=1)",
+    )
     .action(async (name: string, options: InstallOptions) => {
       try {
         await runInstall(name, options);
@@ -152,6 +156,10 @@ export function registerPluginsCommands(program: Command): void {
       "Verify + print the per-plugin plan without writing to disk",
     )
     .option("-y, --yes", "Skip all confirmation prompts")
+    .option(
+      "--no-onboarding-hint",
+      "Skip the Claude Code wiring reminder (or set KUZO_NO_ONBOARDING_HINT=1)",
+    )
     .action(async (name: string | undefined, options: UpdateOptions) => {
       try {
         await runUpdate(name, options);
@@ -230,9 +238,9 @@ export function registerPluginsCommands(program: Command): void {
     .description(
       "Clear the Sigstore TUF + attestations caches so next install re-fetches",
     )
-    .action(() => {
+    .action(async () => {
       try {
-        runRefreshTrustRoot();
+        await runRefreshTrustRoot();
       } catch (err) {
         const message = (err as Error).message || String(err);
         console.error(chalk.red(`\n✗ ${message}`));

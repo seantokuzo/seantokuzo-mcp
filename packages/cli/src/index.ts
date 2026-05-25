@@ -41,6 +41,7 @@ import {
   auditInteractive,
 } from "./commands/consent.js";
 import { registerPluginsCommands } from "./commands/plugins/index.js";
+import { registerCredentialsCommands } from "./commands/credentials/index.js";
 import { showBanner, showGoodbye, showError } from "./ui/display.js";
 
 /** Inline replacement for the deleted `utils/config.ts` helper. */
@@ -65,6 +66,11 @@ program
       "revoke",
       "audit",
       "plugins",
+      // §B.11 — a fresh install with no env vars must reach `kuzo credentials
+      // set` (to provision) and `kuzo serve` (to run); gating them on
+      // isConfigured() would be a chicken-and-egg lockout.
+      "credentials",
+      "serve",
     ];
     if (
       !noConfigCommands.includes(commandName ?? "") &&
@@ -331,6 +337,11 @@ program
 // Plugins Commands
 // ============================================
 registerPluginsCommands(program);
+
+// ============================================
+// Credentials Commands
+// ============================================
+registerCredentialsCommands(program);
 
 // ============================================
 // Interactive Mode (default)

@@ -78,6 +78,15 @@ export interface KeyProvider {
    * primarily drops Buffer references after `fill(0)`.
    */
   wipeKeyCache?(): void;
+
+  /**
+   * Delete the persisted master-key entry, if this provider has one. Returns
+   * true when an entry existed and was removed. Used ONLY by
+   * `kuzo credentials wipe --confirm` (spec §A.11) — never on the normal
+   * acquire/init path. Providers with no persisted entry (passphrase derives
+   * from `KUZO_PASSPHRASE`; null/memory hold nothing) don't implement it.
+   */
+  deleteMasterKey?(): boolean;
 }
 
 // ─── KeychainKeyProvider ───────────────────────────────────────────────────
@@ -224,6 +233,16 @@ export class KeychainKeyProvider implements KeyProvider {
     if (this.cachedKey) this.cachedKey.fill(0);
     this.cachedKey = undefined;
     this.cachedGeneration = undefined;
+  }
+
+  /**
+   * Remove the keychain master-key entry (spec §A.11 wipe). Does NOT call
+   * `getPassword()` first — a delete needs no read, so it won't trigger a
+   * macOS read prompt. Returns true if an entry existed and was removed.
+   */
+  deleteMasterKey(): boolean {
+    this.wipeKeyCache();
+    return this.entry.deletePassword();
   }
 }
 

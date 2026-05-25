@@ -45,7 +45,11 @@ import {
   type KuzoPluginV2,
 } from "@kuzo-mcp/types";
 
-import { acquireLock, PluginsLockedError } from "./lock.js";
+import {
+  acquireKuzoLock,
+  LockBusyError,
+  LockCrossVersionError,
+} from "../../lock.js";
 import { currentSymlink, versionDir } from "./paths.js";
 import { loadVersionedManifest, StagingError, STAGING_ERROR_EXIT_CODES } from "./staging.js";
 import { readIndex, writeIndex, type PluginIndexEntry } from "./state.js";
@@ -159,7 +163,7 @@ export async function runRollback(
   // a best-effort revert if the symlink flip fails. Index.json writes are
   // atomic (tmp + rename), so an index-write failure leaves disk state
   // untouched and the symlink preserved — worst case is the user re-runs.
-  const release = acquireLock("rollback");
+  const lock = await acquireKuzoLock("rollback");
   try {
     const freshIndex = readIndex();
     const freshEntry = freshIndex.plugins[friendlyName];
@@ -192,7 +196,7 @@ export async function runRollback(
       throw err;
     }
   } finally {
-    release();
+    await lock.release();
   }
 
   audit.log({
@@ -453,6 +457,6 @@ const ROLLBACK_ERROR_EXIT_CODES: Record<RollbackErrorCode, number> = {
 export function exitCodeForRollbackError(err: unknown): number {
   if (err instanceof RollbackError) return err.exitCode;
   if (err instanceof StagingError) return STAGING_ERROR_EXIT_CODES[err.code];
-  if (err instanceof PluginsLockedError) return 30;
+  if (err instanceof LockBusyError || err instanceof LockCrossVersionError) return 30;
   return 1;
 }

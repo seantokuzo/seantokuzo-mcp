@@ -109,3 +109,8 @@ export function attestationsCacheDir(): string {
 export function kuzoHomeLockPath(): string {
   return join(kuzoHome(), ".lock");
 }
+
+/** Local env-name namespace registry (Phase 2.6 §A.12.2). */
+export function envNamespaceFilePath(): string {
+  return join(kuzoHome(), "env-namespace.json");
+}
