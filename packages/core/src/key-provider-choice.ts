@@ -35,7 +35,7 @@ import {
   NullKeyProvider,
   PassphraseKeyProvider,
   type KeyProvider,
-} from "./credentials/index.js";
+} from "./credentials/key-provider.js";
 
 export function chooseKeyProvider(auditLogger: AuditLogger): KeyProvider {
   if (process.env.KUZO_DISABLE_KEYCHAIN === "1") {

@@ -46,6 +46,10 @@ export const AUDIT_ACTION_PARTITION: Record<AuditAction, "parent-only" | "child-
   "credential.wiped":             "parent-only",
   "credential.tested":            "parent-only",
 
+  // parent-only: Theme 7 install-time env-name reservation (spec §A.12.4).
+  // Produced only by the `kuzo plugins install/update/uninstall` CLI surface.
+  "credential.namespace_validated": "parent-only",
+
   // parent-only: 2.5e Part D plugin lifecycle + 2.5c consent events
   "plugin.loaded":                "parent-only",
   "plugin.skipped":               "parent-only",

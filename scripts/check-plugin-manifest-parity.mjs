@@ -21,8 +21,8 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const cwd = process.cwd();
 const pkgJsonPath = resolve(cwd, "package.json");
@@ -131,6 +131,40 @@ if (diffs.length > 0) {
     `\nFix: align package.json#kuzoPlugin with the runtime manifest exported from src/index.ts (or vice versa). See docs/credentials-spec.md §A.0.1.`,
   );
   process.exit(1);
+}
+
+// §A.12.1 — a first-party plugin's declared credential envs MUST equal its row
+// in FIRST_PARTY_ENV_RESERVATIONS. Loaded from core's built dist via a
+// script-relative path; skipped only when core isn't built yet (per-plugin
+// postbuild during `tsc -b`). The root `check:manifest` run — which fires after
+// the full `tsc -b` completes — always has core's dist and is authoritative.
+const reservationsUrl = pathToFileURL(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../packages/core/dist/credentials/env-namespace.js",
+  ),
+).href;
+let reservations;
+try {
+  ({ FIRST_PARTY_ENV_RESERVATIONS: reservations } = await import(reservationsUrl));
+} catch {
+  reservations = undefined; // core dist not built yet — root check:manifest enforces.
+}
+if (reservations && Object.prototype.hasOwnProperty.call(reservations, pkgName)) {
+  const reserved = [...reservations[pkgName]].sort();
+  const declaredCredEnvs = [...runtimeCaps, ...runtimeOpt]
+    .filter((c) => c && c.kind === "credentials" && typeof c.env === "string")
+    .map((c) => c.env)
+    .sort();
+  if (stableStringify(reserved) !== stableStringify(declaredCredEnvs)) {
+    fail(
+      `${pkgName}: FIRST_PARTY_ENV_RESERVATIONS drift — the reservation map has ` +
+        `[${reserved.join(", ")}] but the manifest declares credential envs ` +
+        `[${declaredCredEnvs.join(", ")}]. Align packages/core/src/credentials/` +
+        `env-namespace.ts with the plugin manifest (spec §A.12.1).`,
+    );
+  }
+  console.log(`✓ ${pkgName}: env reservation parity OK ([${reserved.join(", ")}]).`);
 }
 
 console.log(

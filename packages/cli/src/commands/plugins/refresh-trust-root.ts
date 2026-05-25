@@ -18,14 +18,18 @@ import chalk from "chalk";
 import { FileBackedAuditLogger } from "@kuzo-mcp/core/audit";
 import { attestationsCacheDir, tufCacheDir } from "@kuzo-mcp/core/paths";
 
-import { acquireLock, PluginsLockedError } from "./lock.js";
+import {
+  acquireKuzoLock,
+  LockBusyError,
+  LockCrossVersionError,
+} from "../../lock.js";
 
-export function runRefreshTrustRoot(): void {
+export async function runRefreshTrustRoot(): Promise<void> {
   const audit = new FileBackedAuditLogger();
-  // Let PluginsLockedError bubble to the Commander action so
-  // exitCodeForRefreshTrustRootError can map it. No async work happens in
-  // here — keep the function synchronous to surface errors directly.
-  const release = acquireLock("refresh-trust-root");
+  // Let the lock errors bubble to the Commander action so
+  // exitCodeForRefreshTrustRootError can map them. Async because the shared
+  // kuzo-home lock (§B.6) is acquired asynchronously.
+  const lock = await acquireKuzoLock("refresh-trust-root");
   try {
     const wipedTuf = wipeIfExists(tufCacheDir());
     const wipedAttestations = wipeIfExists(attestationsCacheDir());
@@ -42,7 +46,7 @@ export function runRefreshTrustRoot(): void {
 
     printSuccess(wipedTuf, wipedAttestations);
   } finally {
-    release();
+    await lock.release();
   }
 }
 
@@ -78,6 +82,6 @@ function printSuccess(wipedTuf: boolean, wipedAttestations: boolean): void {
 }
 
 export function exitCodeForRefreshTrustRootError(err: unknown): number {
-  if (err instanceof PluginsLockedError) return 30;
+  if (err instanceof LockBusyError || err instanceof LockCrossVersionError) return 30;
   return 1;
 }

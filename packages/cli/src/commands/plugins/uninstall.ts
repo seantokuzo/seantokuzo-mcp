@@ -19,10 +19,19 @@ import { existsSync, rmSync } from "node:fs";
 import boxen from "boxen";
 import chalk from "chalk";
 
-import { FileBackedAuditLogger } from "@kuzo-mcp/core/audit";
+import { FileBackedAuditLogger, type AuditLogger } from "@kuzo-mcp/core/audit";
 import { ConsentStore } from "@kuzo-mcp/core/consent";
+import {
+  readEnvNamespaceRegistry,
+  removePluginEnvNames,
+  writeEnvNamespaceRegistry,
+} from "@kuzo-mcp/core/credentials";
 
-import { acquireLock, PluginsLockedError } from "./lock.js";
+import {
+  acquireKuzoLock,
+  LockBusyError,
+  LockCrossVersionError,
+} from "../../lock.js";
 import { pluginDir } from "./paths.js";
 import { readIndex, writeIndex, type PluginIndexEntry } from "./state.js";
 
@@ -59,9 +68,9 @@ export async function runUninstall(
     }
   }
 
-  // Let PluginsLockedError bubble to the Commander action so
-  // exitCodeForUninstallError can map it.
-  const release = acquireLock("uninstall");
+  // Let the lock errors bubble to the Commander action so
+  // exitCodeForUninstallError can map them.
+  const lock = await acquireKuzoLock("uninstall");
   try {
     const removedVersions = options.keepVersions
       ? []
@@ -76,6 +85,10 @@ export async function runUninstall(
 
     delete index.plugins[friendlyName];
     writeIndex(index);
+
+    // §A.12.4 — release the plugin's env-name claim so the names become
+    // reclaimable. Best-effort: a corrupt registry must not block uninstall.
+    releaseEnvNamespace(friendlyName, entry.packageName, audit);
 
     const consentStore = new ConsentStore();
     const consentRevoked = consentStore.revokeConsent(friendlyName);
@@ -95,7 +108,7 @@ export async function runUninstall(
 
     printSuccess(friendlyName, entry, options, removedVersions);
   } finally {
-    release();
+    await lock.release();
   }
 }
 
@@ -118,6 +131,28 @@ function resolveInstalled(
     }
   }
   return undefined;
+}
+
+/** §A.12.4 — drop the plugin's env-name claim from the local registry. */
+function releaseEnvNamespace(
+  friendlyName: string,
+  packageName: string,
+  audit: AuditLogger,
+): void {
+  try {
+    const registry = readEnvNamespaceRegistry();
+    if (!(packageName in registry.plugins)) return;
+    const removed = registry.plugins[packageName] ?? [];
+    writeEnvNamespaceRegistry(removePluginEnvNames(registry, packageName));
+    audit.log({
+      plugin: friendlyName,
+      action: "credential.namespace_validated",
+      outcome: "allowed",
+      details: { package: packageName, action: "uninstalled", envs_added: [], envs_removed: removed },
+    });
+  } catch {
+    // Registry maintenance is best-effort — never block an uninstall.
+  }
 }
 
 function notInstalledMessage(nameArg: string, installed: string[]): string {
@@ -184,6 +219,6 @@ const UNINSTALL_ERROR_EXIT_CODES: Record<UninstallErrorCode, number> = {
 
 export function exitCodeForUninstallError(err: unknown): number {
   if (err instanceof UninstallError) return err.exitCode;
-  if (err instanceof PluginsLockedError) return 30;
+  if (err instanceof LockBusyError || err instanceof LockCrossVersionError) return 30;
   return 1;
 }

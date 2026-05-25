@@ -72,6 +72,11 @@ export type AuditAction =
   | "credential.migration_partial"
   | "credential.wiped"
   | "credential.tested"
+  // Phase 2.6 Theme 7 — install-time env-name reservation (spec §A.12.4).
+  // Emitted by `kuzo plugins install/update/uninstall` after the four-check
+  // env-name validation completes. Parent-only — the CLI install surface is
+  // the only producer; a child can never trigger a namespace validation.
+  | "credential.namespace_validated"
   | "plugin.loaded"
   | "plugin.skipped"
   | "plugin.failed"

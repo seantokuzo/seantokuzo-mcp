@@ -43,6 +43,14 @@ import {
   type ConsentRecord,
 } from "@kuzo-mcp/core/consent";
 import {
+  EnvNamespaceError,
+  readEnvNamespaceRegistry,
+  upsertPluginEnvNames,
+  validateEnvNames,
+  writeEnvNamespaceRegistry,
+  type EnvNamespaceErrorCode,
+} from "@kuzo-mcp/core/credentials";
+import {
   DEFAULT_POLICY,
   exitCodeFor,
   type ProvenanceErrorCode,
@@ -51,12 +59,19 @@ import {
   verifyPackageProvenance,
 } from "@kuzo-mcp/core/provenance";
 import {
+  isCredentialCapability,
   isV2Plugin,
   type Capability,
   type KuzoPluginV2,
 } from "@kuzo-mcp/types";
 
-import { acquireLock, PluginsLockedError } from "./lock.js";
+import {
+  acquireKuzoLock,
+  LockBusyError,
+  LockCrossVersionError,
+  NOOP_LOCK,
+  type LockHandle,
+} from "../../lock.js";
 import {
   currentSymlink,
   stagingDir,
@@ -82,6 +97,7 @@ import {
   printSummaryCard,
 } from "./summary-card.js";
 import { writeVerificationFile } from "./verification-cache.js";
+import { maybePrintOnboardingHint } from "./post-install.js";
 
 export interface UpdateOptions {
   to?: string;
@@ -91,6 +107,8 @@ export interface UpdateOptions {
   allowRegistry?: string;
   dryRun?: boolean;
   yes?: boolean;
+  /** Commander negatable `--no-onboarding-hint` → false. Default true. */
+  onboardingHint?: boolean;
 }
 
 const NPM_REGISTRY = "https://registry.npmjs.org/";
@@ -118,7 +136,7 @@ export async function runUpdate(
   // uninstall can remove the plugin after we computed targets, and we'd
   // then "resurrect" its directory + index entry. Lock first, then read.
   // Dry-run performs no writes, so it can safely skip the lock.
-  const release = options.dryRun ? () => {} : acquireLock("update");
+  const lock: LockHandle = options.dryRun ? NOOP_LOCK : await acquireKuzoLock("update");
   const results: UpdateResult[] = [];
 
   try {
@@ -153,7 +171,7 @@ export async function runUpdate(
       results.push(result);
     }
   } finally {
-    release();
+    await lock.release();
   }
 
   printSummary(results, options.dryRun === true);
@@ -164,7 +182,12 @@ export async function runUpdate(
   const failures = results.filter(
     (r): r is Extract<UpdateResult, { kind: "failed" }> => r.kind === "failed",
   );
-  if (failures.length === 0) return;
+  if (failures.length === 0) {
+    if (!options.dryRun && results.some((r) => r.kind === "updated")) {
+      maybePrintOnboardingHint({ onboardingHint: options.onboardingHint });
+    }
+    return;
+  }
   if (results.length === 1) throw failures[0]!.error;
   throw new UpdateError(
     "E_PARTIAL_FAILURE",
@@ -323,6 +346,22 @@ async function updateOne(
     return { kind: "failed", name: friendlyName, error: err as Error };
   }
 
+  // --- §A.12.4: re-validate the (possibly changed) env set before commit ---
+  // validateEnvNames excludes this plugin's own rows, so kept envs are a no-op
+  // and only newly-added envs are checked against the system / first-party /
+  // cross-plugin rules.
+  const newEnvs = credentialEnvNames(manifest);
+  try {
+    validateEnvNames({
+      packageName: entry.packageName,
+      envNames: newEnvs,
+      registry: readEnvNamespaceRegistry(),
+    });
+  } catch (err) {
+    cleanupStaging(friendlyName);
+    return { kind: "failed", name: friendlyName, error: err as Error };
+  }
+
   // --- Capability diff + re-consent ------------------------------------
   const consentStore = new ConsentStore();
   const existingConsent = consentStore.getConsent(friendlyName);
@@ -360,6 +399,23 @@ async function updateOne(
     cleanupStaging(friendlyName);
     return { kind: "failed", name: friendlyName, error: err as Error };
   }
+
+  // §A.12.4 — update the env-name claim under the lock; audit the add/remove diff.
+  const priorEnvs = readEnvNamespaceRegistry().plugins[entry.packageName] ?? [];
+  writeEnvNamespaceRegistry(
+    upsertPluginEnvNames(readEnvNamespaceRegistry(), entry.packageName, newEnvs),
+  );
+  audit.log({
+    plugin: friendlyName,
+    action: "credential.namespace_validated",
+    outcome: "allowed",
+    details: {
+      package: entry.packageName,
+      action: "updated",
+      envs_added: newEnvs.filter((e) => !priorEnvs.includes(e)),
+      envs_removed: priorEnvs.filter((e) => !newEnvs.includes(e)),
+    },
+  });
 
   audit.log({
     plugin: friendlyName,
@@ -495,6 +551,13 @@ async function runUpdateConsentFlow(
   }
   store.grantConsent(plugin, allCaps);
   return true;
+}
+
+/** Credential env names a manifest declares (required + optional). */
+function credentialEnvNames(manifest: KuzoPluginV2): string[] {
+  return [...manifest.capabilities, ...(manifest.optionalCapabilities ?? [])]
+    .filter(isCredentialCapability)
+    .map((c) => c.env);
 }
 
 /**
@@ -640,10 +703,19 @@ export class ProvenanceFailure extends Error {
   }
 }
 
+/** §A.12 / §B.10 env-name reservation exit codes. */
+const ENV_NAMESPACE_EXIT: Record<EnvNamespaceErrorCode, number> = {
+  E_INVALID_ENV_NAME_FORMAT: 70,
+  E_RESERVED_SYSTEM_ENV: 67,
+  E_RESERVED_FIRST_PARTY_ENV: 68,
+  E_ENV_NAME_COLLISION: 69,
+};
+
 export function exitCodeForUpdateError(err: unknown): number {
   if (err instanceof ProvenanceFailure) return err.exitCode;
   if (err instanceof UpdateError) return err.exitCode;
   if (err instanceof StagingError) return STAGING_ERROR_EXIT_CODES[err.code];
-  if (err instanceof PluginsLockedError) return 30;
+  if (err instanceof EnvNamespaceError) return ENV_NAMESPACE_EXIT[err.code];
+  if (err instanceof LockBusyError || err instanceof LockCrossVersionError) return 30;
   return 1;
 }

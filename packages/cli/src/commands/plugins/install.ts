@@ -37,6 +37,14 @@ import pacote from "pacote";
 import { FileBackedAuditLogger, type AuditLogger } from "@kuzo-mcp/core/audit";
 import { ConsentStore } from "@kuzo-mcp/core/consent";
 import {
+  EnvNamespaceError,
+  readEnvNamespaceRegistry,
+  upsertPluginEnvNames,
+  validateEnvNames,
+  writeEnvNamespaceRegistry,
+  type EnvNamespaceErrorCode,
+} from "@kuzo-mcp/core/credentials";
+import {
   DEFAULT_POLICY,
   exitCodeFor,
   type ProvenanceErrorCode,
@@ -45,12 +53,19 @@ import {
   verifyPackageProvenance,
 } from "@kuzo-mcp/core/provenance";
 import {
+  isCredentialCapability,
   isV2Plugin,
   type Capability,
   type KuzoPluginV2,
 } from "@kuzo-mcp/types";
 
-import { acquireLock, PluginsLockedError } from "./lock.js";
+import {
+  acquireKuzoLock,
+  LockBusyError,
+  LockCrossVersionError,
+  NOOP_LOCK,
+  type LockHandle,
+} from "../../lock.js";
 import {
   currentSymlink,
   pluginDir,
@@ -79,6 +94,7 @@ import {
   printSummaryCard,
 } from "./summary-card.js";
 import { writeVerificationFile } from "./verification-cache.js";
+import { runPostInstall } from "./post-install.js";
 
 export interface InstallOptions {
   version?: string;
@@ -89,6 +105,8 @@ export interface InstallOptions {
   allowRegistry?: string;
   dryRun?: boolean;
   yes?: boolean;
+  /** Commander negatable `--no-onboarding-hint` → false. Default true. */
+  onboardingHint?: boolean;
 }
 
 const NPM_REGISTRY = "https://registry.npmjs.org/";
@@ -135,7 +153,7 @@ export async function runInstall(
   // --- Step 2: Dry-run doesn't touch disk → skip lock ------------------------
   // PluginsLockedError bubbles to the Commander action where exitCodeForError
   // maps it. Keep this module free of process.exit so callers stay testable.
-  const release = options.dryRun ? () => {} : acquireLock("install");
+  const lock: LockHandle = options.dryRun ? NOOP_LOCK : await acquireKuzoLock("install");
 
   try {
     // --- Step 3: Verify provenance ------------------------------------------
@@ -212,6 +230,19 @@ export async function runInstall(
       );
     }
 
+    // --- Step 8.5: Env-name reservation (§A.12.3) — before any state mutation
+    const credentialEnvs = credentialEnvNames(manifest);
+    try {
+      validateEnvNames({
+        packageName: pkg,
+        envNames: credentialEnvs,
+        registry: readEnvNamespaceRegistry(),
+      });
+    } catch (err) {
+      cleanupStaging(friendlyName);
+      throw err; // EnvNamespaceError → exitCodeForError maps to 67–70
+    }
+
     // --- Step 9: Consent ----------------------------------------------------
     const consentStore = new ConsentStore();
     const consented = await runConsentFlow(manifest, consentStore, options);
@@ -240,6 +271,18 @@ export async function runInstall(
       verification,
     );
 
+    // §A.12.2 — materialize the env-name claim atomically under the same lock
+    // that published index.json. First-party plugins get pre-registered here.
+    writeEnvNamespaceRegistry(
+      upsertPluginEnvNames(readEnvNamespaceRegistry(), pkg, credentialEnvs),
+    );
+    audit.log({
+      plugin: friendlyName,
+      action: "credential.namespace_validated",
+      outcome: "allowed",
+      details: { package: pkg, action: "installed", envs_added: credentialEnvs, envs_removed: [] },
+    });
+
     audit.log({
       plugin: friendlyName,
       action: "plugin.installed",
@@ -253,8 +296,15 @@ export async function runInstall(
     });
 
     printSuccess(friendlyName, resolvedVersion, commitResult);
+
+    // §B.3 + R40 — inline credential prompt + Claude Code onboarding hint.
+    // Best-effort; the plugin is already committed so this never fails install.
+    await runPostInstall(manifest, {
+      yes: options.yes,
+      onboardingHint: options.onboardingHint,
+    });
   } finally {
-    release();
+    await lock.release();
   }
 }
 
@@ -290,10 +340,20 @@ function parseSpec(
       `"${rawName}" is neither a built-in plugin nor a valid npm package name.`,
     );
   }
-  // Friendly name = last path segment of package name.
+  // Friendly name = last path segment of package name. It becomes a directory
+  // under pluginsRoot(), so it MUST be a safe single segment — guards against
+  // `kuzo plugins install ..` style traversal (Theme-4 deferred advisory).
   const friendly = rawName.includes("/")
     ? rawName.slice(rawName.indexOf("/") + 1)
     : rawName;
+  if (!/^[a-z][a-z0-9-]{0,62}$/.test(friendly)) {
+    throw new InstallError(
+      "E_INVALID_SPEC",
+      `Derived plugin name "${friendly}" must match /^[a-z][a-z0-9-]{0,62}$/ ` +
+        `(lowercase, letter-led, digits and hyphens only). This guards the plugins ` +
+        `directory against path traversal.`,
+    );
+  }
   return { friendlyName: friendly, pkg: rawName, versionSpec };
 }
 
@@ -537,12 +597,28 @@ export class ProvenanceFailure extends Error {
   }
 }
 
+/** Credential env names a manifest declares (required + optional). */
+function credentialEnvNames(manifest: KuzoPluginV2): string[] {
+  return [...manifest.capabilities, ...(manifest.optionalCapabilities ?? [])]
+    .filter(isCredentialCapability)
+    .map((c) => c.env);
+}
+
+/** §A.12 / §B.10 env-name reservation exit codes. */
+const ENV_NAMESPACE_EXIT: Record<EnvNamespaceErrorCode, number> = {
+  E_INVALID_ENV_NAME_FORMAT: 70,
+  E_RESERVED_SYSTEM_ENV: 67,
+  E_RESERVED_FIRST_PARTY_ENV: 68,
+  E_ENV_NAME_COLLISION: 69,
+};
+
 /** Maps CLI-surface errors to process exit codes; used by the Commander action. */
 export function exitCodeForError(err: unknown): number {
   if (err instanceof ProvenanceFailure) return err.exitCode;
   if (err instanceof InstallError) return err.exitCode;
   if (err instanceof StagingError) return STAGING_ERROR_EXIT_CODES[err.code];
-  if (err instanceof PluginsLockedError) return 30;
+  if (err instanceof EnvNamespaceError) return ENV_NAMESPACE_EXIT[err.code];
+  if (err instanceof LockBusyError || err instanceof LockCrossVersionError) return 30;
   return 1;
 }
 

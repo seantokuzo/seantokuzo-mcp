@@ -33,6 +33,25 @@ export const BUILTIN_PLUGINS: Readonly<Record<string, string>> = Object.freeze({
   "jira": "@kuzo-mcp/plugin-jira",
 });
 
+/**
+ * Friendly plugin names become path segments under `pluginsRoot()` (e.g.
+ * `<root>/<name>/current/pkg`). This regex guards every `join(root, name, …)`
+ * against traversal (`..`, absolute paths, separators) and shell-meta names.
+ * Theme-4 round-4 deferred advisory.
+ */
+const SAFE_PLUGIN_NAME = /^[a-z][a-z0-9-]{0,62}$/;
+
+/** Throw unless `name` is a safe single path segment for the plugins dir. */
+export function assertSafePluginName(name: string): void {
+  if (!SAFE_PLUGIN_NAME.test(name)) {
+    throw new Error(
+      `Invalid plugin name "${name}": must match ${SAFE_PLUGIN_NAME.source} ` +
+        `(lowercase, letter-led, digits and hyphens only). This guards the plugins ` +
+        `directory against path traversal.`,
+    );
+  }
+}
+
 /** Read the `main` entry from an installed package's package.json */
 function readMainEntry(packageRoot: string): string {
   const pkgJsonPath = join(packageRoot, "package.json");
@@ -69,6 +88,7 @@ export function resolvePluginPackageDir(
   name: string,
   kuzoConfig: KuzoConfig,
 ): string {
+  assertSafePluginName(name);
   const pkg = BUILTIN_PLUGINS[name] ?? kuzoConfig.plugins[name]?.packageName;
   if (!pkg) {
     throw new Error(
@@ -105,6 +125,7 @@ export function resolvePluginEntry(
   name: string,
   kuzoConfig: KuzoConfig,
 ): string {
+  assertSafePluginName(name);
   const pkg = BUILTIN_PLUGINS[name] ?? kuzoConfig.plugins[name]?.packageName;
   if (!pkg) {
     throw new Error(
