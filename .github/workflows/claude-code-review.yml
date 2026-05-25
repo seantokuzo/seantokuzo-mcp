@@ -491,10 +491,29 @@ jobs:
                           (PR additions+deletions > 500 — get via `gh pr view --json additions,deletions`)
                If `claude-deep-review` label already present, do not re-apply.
 
-            6. Post or update sticky body. If existing, PATCH:
-               `gh api -X PATCH "repos/${{ github.repository }}/issues/comments/<comment_id>" -f body='<NEW_BODY>'`
-               If new, post:
-               `gh pr comment ${{ needs.preflight.outputs.pr_number }} --body '<BODY>'`
+            6. Post or update the sticky body. CRITICAL — the body contains `|`,
+               `>`, backticks, and apostrophes. NEVER inline it as a shell-quoted
+               argument (`-f body='...'` / `--body '...'`); those special chars
+               break the quoting, the command gets re-tried in shapes that miss
+               the allowlist, and you burn the whole turn budget on permission
+               denials. ALWAYS feed the body through a QUOTED heredoc piped to
+               stdin — a quoted delimiter (`<<'KUZOSTICKY'`) makes every byte
+               literal, so no body content can break it. One Bash call each.
+
+               If a sticky already exists (you parsed its <comment_id> in step 2),
+               PATCH it (reads body from stdin via `-F 'body=@-'`):
+               ```
+               gh api -X PATCH "repos/${{ github.repository }}/issues/comments/<comment_id>" -F 'body=@-' <<'KUZOSTICKY'
+               <NEW_BODY>
+               KUZOSTICKY
+               ```
+               If no sticky exists yet, create one (reads body from stdin via
+               `--body-file -`):
+               ```
+               gh pr comment ${{ needs.preflight.outputs.pr_number }} --body-file - <<'KUZOSTICKY'
+               <NEW_BODY>
+               KUZOSTICKY
+               ```
 
             7. If escalating and label not present:
                `gh pr edit ${{ needs.preflight.outputs.pr_number }} --add-label claude-deep-review`
@@ -537,6 +556,6 @@ jobs:
           claude_args: |
             --model claude-opus-4-7
             --effort high
-            --max-turns 30
+            --max-turns 50
             --disallowedTools "Edit,Write,NotebookEdit"
-            --allowedTools "Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/issues/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api -X PATCH:*),Bash(gh label create:*),Bash(gh label list:*),Bash(jq:*)"
+            --allowedTools "Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh api:*),Bash(gh label create:*),Bash(gh label list:*),Bash(jq:*)"

@@ -474,9 +474,24 @@ jobs:
                increment (default 1 if no sticky). HARD CAP at 4 — if exceeded, set
                verdict = rethink + escalate to human.
 
-            5. Post or PATCH the sticky:
-               - If step-2 found a comment_id: `gh api -X PATCH "repos/${{ github.repository }}/issues/comments/<id>" -f body='<BODY>'`
-               - Otherwise: `gh pr comment ${{ needs.preflight.outputs.pr_number }} --body '<BODY>'`
+            5. Post or PATCH the sticky. CRITICAL — the body contains `|`, `>`,
+               backticks, and apostrophes. NEVER inline it as a shell-quoted
+               argument (`-f body='...'` / `--body '...'`); those break the
+               quoting and burn the turn budget on permission denials. ALWAYS feed
+               the body through a QUOTED heredoc piped to stdin (`<<'KUZOSTICKY'`
+               makes every byte literal). One Bash call each.
+               - If step-2 found a comment_id, PATCH it:
+                 ```
+                 gh api -X PATCH "repos/${{ github.repository }}/issues/comments/<id>" -F 'body=@-' <<'KUZOSTICKY'
+                 <BODY>
+                 KUZOSTICKY
+                 ```
+               - Otherwise create it:
+                 ```
+                 gh pr comment ${{ needs.preflight.outputs.pr_number }} --body-file - <<'KUZOSTICKY'
+                 <BODY>
+                 KUZOSTICKY
+                 ```
 
             STICKY BODY:
 
@@ -511,6 +526,6 @@ jobs:
           claude_args: |
             --model claude-opus-4-7
             --effort high
-            --max-turns 30
+            --max-turns 50
             --disallowedTools "Edit,Write,NotebookEdit"
-            --allowedTools "Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/issues/*),Bash(gh api repos/seantokuzo/seantokuzo-mcp/pulls/*),Bash(gh api -X PATCH:*),Bash(jq:*)"
+            --allowedTools "Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh api:*),Bash(gh label create:*),Bash(gh label list:*),Bash(jq:*)"
