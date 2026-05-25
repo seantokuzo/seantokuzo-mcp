@@ -14,6 +14,7 @@ import { test, type TestContext } from "node:test";
 import { envNamespaceFilePath } from "../paths.js";
 import {
   EnvNamespaceError,
+  exitCodeForEnvNamespaceError,
   readEnvNamespaceRegistry,
   removePluginEnvNames,
   upsertPluginEnvNames,
@@ -116,6 +117,15 @@ test("collision: re-validating the SAME plugin's kept env is a no-op", () => {
   assert.doesNotThrow(() =>
     validateEnvNames({ packageName: "@a/foo", envNames: ["MYAPI_KEY"], registry }),
   );
+});
+
+test("exitCodeForEnvNamespaceError maps each code to its §B.10 exit", () => {
+  const make = (code: Parameters<typeof exitCodeForEnvNamespaceError>[0]["code"]): EnvNamespaceError =>
+    new EnvNamespaceError(code, "X", "x");
+  assert.equal(exitCodeForEnvNamespaceError(make("E_RESERVED_SYSTEM_ENV")), 67);
+  assert.equal(exitCodeForEnvNamespaceError(make("E_RESERVED_FIRST_PARTY_ENV")), 68);
+  assert.equal(exitCodeForEnvNamespaceError(make("E_ENV_NAME_COLLISION")), 69);
+  assert.equal(exitCodeForEnvNamespaceError(make("E_INVALID_ENV_NAME_FORMAT")), 70);
 });
 
 test("uninstall releases the claim: removed env becomes re-claimable", () => {

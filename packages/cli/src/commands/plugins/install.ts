@@ -38,11 +38,11 @@ import { FileBackedAuditLogger, type AuditLogger } from "@kuzo-mcp/core/audit";
 import { ConsentStore } from "@kuzo-mcp/core/consent";
 import {
   EnvNamespaceError,
+  exitCodeForEnvNamespaceError,
   readEnvNamespaceRegistry,
   upsertPluginEnvNames,
   validateEnvNames,
   writeEnvNamespaceRegistry,
-  type EnvNamespaceErrorCode,
 } from "@kuzo-mcp/core/credentials";
 import {
   DEFAULT_POLICY,
@@ -53,7 +53,6 @@ import {
   verifyPackageProvenance,
 } from "@kuzo-mcp/core/provenance";
 import {
-  isCredentialCapability,
   isV2Plugin,
   type Capability,
   type KuzoPluginV2,
@@ -95,6 +94,7 @@ import {
 } from "./summary-card.js";
 import { writeVerificationFile } from "./verification-cache.js";
 import { runPostInstall } from "./post-install.js";
+import { credentialEnvNames } from "./manifest-utils.js";
 
 export interface InstallOptions {
   version?: string;
@@ -598,27 +598,12 @@ export class ProvenanceFailure extends Error {
   }
 }
 
-/** Credential env names a manifest declares (required + optional). */
-function credentialEnvNames(manifest: KuzoPluginV2): string[] {
-  return [...manifest.capabilities, ...(manifest.optionalCapabilities ?? [])]
-    .filter(isCredentialCapability)
-    .map((c) => c.env);
-}
-
-/** §A.12 / §B.10 env-name reservation exit codes. */
-const ENV_NAMESPACE_EXIT: Record<EnvNamespaceErrorCode, number> = {
-  E_INVALID_ENV_NAME_FORMAT: 70,
-  E_RESERVED_SYSTEM_ENV: 67,
-  E_RESERVED_FIRST_PARTY_ENV: 68,
-  E_ENV_NAME_COLLISION: 69,
-};
-
 /** Maps CLI-surface errors to process exit codes; used by the Commander action. */
 export function exitCodeForError(err: unknown): number {
   if (err instanceof ProvenanceFailure) return err.exitCode;
   if (err instanceof InstallError) return err.exitCode;
   if (err instanceof StagingError) return STAGING_ERROR_EXIT_CODES[err.code];
-  if (err instanceof EnvNamespaceError) return ENV_NAMESPACE_EXIT[err.code];
+  if (err instanceof EnvNamespaceError) return exitCodeForEnvNamespaceError(err);
   if (err instanceof LockBusyError || err instanceof LockCrossVersionError) return 30;
   return 1;
 }

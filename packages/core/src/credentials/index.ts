@@ -59,6 +59,7 @@ export {
   ENV_NAME_FORMAT,
   ENV_NAMESPACE_FORMAT_VERSION,
   EnvNamespaceError,
+  exitCodeForEnvNamespaceError,
   FIRST_PARTY_ENV_RESERVATIONS,
   readEnvNamespaceRegistry,
   removePluginEnvNames,

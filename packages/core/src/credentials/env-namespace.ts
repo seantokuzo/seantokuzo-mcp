@@ -88,6 +88,24 @@ export class EnvNamespaceError extends Error {
   }
 }
 
+/**
+ * §B.10 process exit code for an env-name reservation failure. Single owner so
+ * the `kuzo plugins install` / `update` error mappers don't each duplicate the
+ * code table.
+ */
+export function exitCodeForEnvNamespaceError(err: EnvNamespaceError): number {
+  switch (err.code) {
+    case "E_RESERVED_SYSTEM_ENV":
+      return 67;
+    case "E_RESERVED_FIRST_PARTY_ENV":
+      return 68;
+    case "E_ENV_NAME_COLLISION":
+      return 69;
+    case "E_INVALID_ENV_NAME_FORMAT":
+      return 70;
+  }
+}
+
 // ─── §A.12.2 Local namespace registry ───────────────────────────────────────
 
 export const ENV_NAMESPACE_FORMAT_VERSION = 1 as const;
