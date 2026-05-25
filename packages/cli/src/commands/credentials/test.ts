@@ -97,6 +97,14 @@ async function testJira(name: string): Promise<void> {
   }
 
   const base = host!.startsWith("http") ? host! : `https://${host!}`;
+  if (base.startsWith("http://")) {
+    // Refuse to send Basic auth (base64 email:token) over cleartext (round-1
+    // Security advisory). The user must point JIRA_HOST at an https:// host.
+    throw new CredentialsCliError(
+      "E_TEST_UNAVAILABLE",
+      `Refusing to test ${name}: JIRA_HOST is http:// — Basic auth would be sent over cleartext. Use an https:// host.`,
+    );
+  }
   const url = `${base.replace(/\/+$/, "")}/rest/api/3/myself`;
   const authz = "Basic " + Buffer.from(`${email!}:${token!}`).toString("base64");
 

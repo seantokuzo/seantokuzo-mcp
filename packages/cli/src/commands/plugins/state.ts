@@ -12,11 +12,6 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { ensurePluginsRoot } from "../../paths-fs.js";
 import { indexJsonPath } from "./paths.js";
 
-// Re-exported so existing importers (`staging.ts`, install/update/uninstall)
-// keep their `import { ensurePluginsRoot } from "./state.js"` working after the
-// §B.6 R28 split relocated the implementation to `paths-fs.ts`.
-export { ensurePluginsRoot };
-
 export const PLUGINS_INDEX_SCHEMA_VERSION = 1;
 export const MAX_RETAINED_VERSIONS = 3;
 

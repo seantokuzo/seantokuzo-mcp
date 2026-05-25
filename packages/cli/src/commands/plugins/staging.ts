@@ -40,7 +40,7 @@ import {
   stagingPkgDir,
   versionPkgDir,
 } from "./paths.js";
-import { ensurePluginsRoot } from "./state.js";
+import { ensurePluginsRoot } from "../../paths-fs.js";
 
 // ---------------------------------------------------------------------------
 // Errors

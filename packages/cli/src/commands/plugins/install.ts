@@ -151,8 +151,9 @@ export async function runInstall(
   }
 
   // --- Step 2: Dry-run doesn't touch disk → skip lock ------------------------
-  // PluginsLockedError bubbles to the Commander action where exitCodeForError
-  // maps it. Keep this module free of process.exit so callers stay testable.
+  // LockBusyError / LockCrossVersionError bubble to the Commander action where
+  // exitCodeForError maps them. Keep this module free of process.exit so
+  // callers stay testable.
   const lock: LockHandle = options.dryRun ? NOOP_LOCK : await acquireKuzoLock("install");
 
   try {

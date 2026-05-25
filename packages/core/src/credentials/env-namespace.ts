@@ -63,6 +63,7 @@ export const RESERVED_SYSTEM_ENVS: readonly RegExp[] = [
   /^NODE_ENV$/, /^NODE_OPTIONS$/, /^DEBUG$/,
   /^NODE_.*/, /^NPM_.*/, /^npm_.*/, /^XDG_.*/,
   /^DBUS_.*/, /^WAYLAND_.*/, /^SSH_.*/,
+  /^LD_.*/, /^DYLD_.*/, // dynamic-linker injection family (round-1 Security advisory)
   /^KUZO_.*/, // catches KUZO_PASSPHRASE, KUZO_HOME, KUZO_NO_ENV_SCRUB, etc.
 ];
 

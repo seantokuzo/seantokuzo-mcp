@@ -65,7 +65,16 @@ test("format: accepts a well-formed env name", () => {
 // ─── §A.12.3 check 2 — reserved-system denylist ──────────────────────────────
 
 test("system denylist: rejects PATH and KUZO_PASSPHRASE (passphrase-capture vector)", () => {
-  for (const bad of ["PATH", "HOME", "NODE_OPTIONS", "KUZO_PASSPHRASE", "NPM_TOKEN"]) {
+  for (const bad of [
+    "PATH",
+    "HOME",
+    "NODE_OPTIONS",
+    "KUZO_PASSPHRASE",
+    "NPM_TOKEN",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+  ]) {
     expectCode(
       () => validateEnvNames({ packageName: "@x/foo", envNames: [bad], registry: EMPTY }),
       "E_RESERVED_SYSTEM_ENV",
