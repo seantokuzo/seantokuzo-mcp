@@ -16,6 +16,7 @@ import {
   isKuzoMcpEntry,
 } from "./migrate-discovery.js";
 import {
+  keptDotenvKeysLost,
   redactDotenv,
   redactSettingsJson,
   verifyDotenvRedaction,
@@ -84,6 +85,16 @@ test("dotenv: verify catches an orphaned value fragment a name-only check would 
   assert.equal(parseDotenv(buggy).GITHUB_TOKEN, undefined, "name not parseable in buggy output");
   const leaks = verifyDotenvRedaction(buggy, dropped);
   assert.ok(leaks.some((l) => l.kind === "fragment" && l.name === "GITHUB_TOKEN"));
+});
+
+test("dotenv: keptDotenvKeysLost flags a kept entry the redaction would drop, passes when intact", () => {
+  const original = "GITHUB_TOKEN=ghp_x\nLOG_LEVEL=info\nKEEP_ME=yes\n";
+  // A correct redaction keeps LOG_LEVEL + KEEP_ME.
+  const good = redactDotenv(original, new Set(["GITHUB_TOKEN"]));
+  assert.deepEqual(keptDotenvKeysLost(original, good, new Set(["GITHUB_TOKEN"])), []);
+  // A hypothetical buggy rewrite that also ate KEEP_ME is caught.
+  const buggy = "LOG_LEVEL=info\n";
+  assert.deepEqual(keptDotenvKeysLost(original, buggy, new Set(["GITHUB_TOKEN"])), ["KEEP_ME"]);
 });
 
 test("dotenv: single-quoted and escaped-quote values keep correct extents", () => {

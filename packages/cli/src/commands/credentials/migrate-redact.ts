@@ -122,6 +122,30 @@ export function verifyDotenvRedaction(
   return leaks;
 }
 
+/**
+ * Kept `.env` keys that did NOT survive redaction (gone, or value changed).
+ *
+ * The dropped-name/fragment verify only proves the removed credentials are gone;
+ * it can't catch the inverse failure where a quote-extent miscalculation
+ * over-consumes and silently swallows an ADJACENT kept entry. Run this on the
+ * in-memory rewrite BEFORE writing, so a buggy redaction aborts without
+ * clobbering the user's non-credential config.
+ */
+export function keptDotenvKeysLost(
+  original: string,
+  rewritten: string,
+  dropKeys: ReadonlySet<string>,
+): string[] {
+  const before = parseDotenv(original);
+  const after = parseDotenv(rewritten);
+  const lost: string[] = [];
+  for (const [name, value] of Object.entries(before)) {
+    if (dropKeys.has(name)) continue;
+    if (after[name] !== value) lost.push(name);
+  }
+  return lost;
+}
+
 // ─── settings.json ───────────────────────────────────────────────────────────
 
 /** Rewrite settings.json with `dropKeys` removed from every kuzo entry's env. */

@@ -120,7 +120,7 @@ export function atomicRewriteSource(path: string, content: string): void {
 }
 
 /** Best-effort `fsync` of a directory fd so a rename within it hits disk. */
-function fsyncDirectory(dir: string): void {
+export function fsyncDirectory(dir: string): void {
   let fd: number;
   try {
     fd = openSync(dir, constants.O_RDONLY);

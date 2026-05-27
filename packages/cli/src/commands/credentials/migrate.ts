@@ -33,6 +33,7 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
+import { dirname } from "node:path";
 
 import { type AuditLogger } from "@kuzo-mcp/core/audit";
 import { KDF_KEYCHAIN, type KeyProvider } from "@kuzo-mcp/core/credentials";
@@ -50,9 +51,18 @@ import {
 import {
   assertSourceUnchanged,
   atomicRewriteSource,
+  fsyncDirectory,
   safeReadSource,
 } from "./migrate-fs.js";
 import {
+  defaultConfirm,
+  defaultForceConfirm,
+  printDryRun,
+  printPartialSuccess,
+  printPlan,
+} from "./migrate-output.js";
+import {
+  keptDotenvKeysLost,
   redactDotenv,
   redactSettingsJson,
   verifyDotenvRedaction,
@@ -107,7 +117,7 @@ const AUDIT_SOURCE: Record<MigrateSourceKind, "claude-settings" | "env-file"> = 
 
 type PlanAction = "import" | "rewrite-only" | "force-import";
 
-interface NamePlan {
+export interface NamePlan {
   name: string;
   value: string;
   sourceKind: MigrateSourceKind;
@@ -338,7 +348,7 @@ function importCredentials(
 
 // ─── per-source rewrite ───────────────────────────────────────────────────────
 
-interface RewriteFailure {
+export interface RewriteFailure {
   path: string;
   code: CredentialsCliError["code"];
 }
@@ -359,6 +369,20 @@ function rewriteSources(
         source.kind === "claude"
           ? redactSettingsJson(content, dropKeys)
           : redactDotenv(content, dropKeys);
+
+      // Pre-write integrity guard (.env only): a quote-extent miscalculation
+      // could over-consume and swallow a KEPT entry. Catch it on the in-memory
+      // rewrite BEFORE clobbering the file, so the source is left untouched.
+      if (source.kind === "env-file") {
+        const lost = keptDotenvKeysLost(content, rewritten, dropKeys);
+        if (lost.length > 0) {
+          throw new CredentialsCliError(
+            "E_REDACTION_VERIFY_FAIL",
+            `Redaction of ${source.path} would also drop non-credential entries (${lost.join(", ")}) — ` +
+              `aborting before any write to avoid data loss. The credential is stored; ${source.path} is unchanged.`,
+          );
+        }
+      }
 
       // 3.b editor-collision: the source must be byte-identical to the snapshot.
       assertSourceUnchanged(source.path, snapshot);
@@ -478,6 +502,7 @@ function writeGenerationFile(path: string, generation: bigint): void {
     closeSync(fd);
   }
   renameSync(tmp, path);
+  fsyncDirectory(dirname(path));
 }
 
 function restoreBytesAtomic(path: string, bytes: Buffer): void {
@@ -491,56 +516,7 @@ function restoreBytesAtomic(path: string, bytes: Buffer): void {
   }
   renameSync(tmp, path);
   chmodSync(path, 0o600);
-}
-
-// ─── output ───────────────────────────────────────────────────────────────
-
-function printDryRun(sources: MigrateSource[], log: (line: string) => void): void {
-  log(chalk.bold("This migration would (dry-run — maximum candidate set, no equality check):"));
-  for (const source of sources) {
-    log(chalk.cyan(`  ${source.path}`));
-    for (const name of source.entries.keys()) {
-      log(`    ${name}  ${chalk.gray("(would import + redact)")}`);
-    }
-  }
-  log(chalk.gray("\nAn actual run skips values already stored identically. Re-run without --dry-run to apply."));
-}
-
-function printPlan(plans: NamePlan[], sources: MigrateSource[], log: (line: string) => void): void {
-  const imports = plans.filter((p) => p.action === "import");
-  const forces = plans.filter((p) => p.action === "force-import");
-  log(chalk.bold("This migration will:"));
-  if (imports.length > 0) {
-    log(`  IMPORT ${imports.length} credential(s) into the keychain-encrypted store:`);
-    for (const p of imports) log(`    ${p.name}`);
-  }
-  if (forces.length > 0) {
-    log(chalk.yellow(`  OVERWRITE ${forces.length} stored credential(s) with the source value (--force-source):`));
-    for (const p of forces) log(`    ${p.name}`);
-  }
-  log(`  REWRITE ${sources.length} source file(s) (the keys above are removed from each):`);
-  for (const source of sources) log(`    ${source.path}`);
-}
-
-function printPartialSuccess(
-  plans: NamePlan[],
-  sources: MigrateSource[],
-  failures: RewriteFailure[],
-  log: (line: string) => void,
-): void {
-  const failedPaths = new Set(failures.map((f) => f.path));
-  const redacted = sources.filter((s) => !failedPaths.has(s.path)).map((s) => s.path);
-  log(chalk.yellow("\nMigration partially succeeded."));
-  log(chalk.green(`  ✓ Imported into store: ${plans.map((p) => p.name).join(", ") || "(none)"}`));
-  if (redacted.length > 0) log(chalk.green(`  ✓ Redacted from: ${redacted.join(", ")}`));
-  for (const f of failures) log(chalk.red(`  ✗ Could NOT redact: ${f.path} (${f.code})`));
-  log(
-    chalk.gray(
-      "\nTo finish, open each listed file and delete the credential keys from the kuzo MCP `env` block " +
-        "(or the matching `.env` lines), then re-run `kuzo credentials migrate` (re-run is safe — already-stored values are skipped).",
-    ),
-  );
-  log(chalk.gray("Your credentials are stored securely; the listed source(s) still contain them as a fallback until you finish."));
+  fsyncDirectory(dirname(path));
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -554,26 +530,4 @@ function sourcesContaining(name: string, sources: MigrateSource[]): string {
     .filter((s) => s.entries.has(name))
     .map((s) => s.path)
     .join(", ");
-}
-
-async function defaultConfirm(message: string): Promise<boolean> {
-  const inquirer = await import("inquirer");
-  const { ok } = await inquirer.default.prompt<{ ok: boolean }>([
-    { type: "confirm", name: "ok", message, default: false },
-  ]);
-  return ok;
-}
-
-async function defaultForceConfirm(name: string, sources: string): Promise<boolean> {
-  const inquirer = await import("inquirer");
-  const { answer } = await inquirer.default.prompt<{ answer: string }>([
-    {
-      type: "input",
-      name: "answer",
-      message:
-        `You are about to OVERWRITE the stored value of ${name} with the cleartext from ${sources}. ` +
-        `The current stored value will be irrecoverable. Type 'yes' to confirm:`,
-    },
-  ]);
-  return answer.trim() === "yes";
 }
