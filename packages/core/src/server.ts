@@ -441,20 +441,21 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
     const credFile = credentialsFilePath();
     const watchDir = dirname(credFile);
     const credBasename = basename(credFile);
-    // Collapse a multi-event rotation burst (e.g. change + rename, which
-    // fs.watch can emit platform-dependently) into ONE refresh: the first
-    // qualifying event schedules the handler, events arriving while it's
-    // pending/in-flight are dropped, and the flag resets when it settles.
-    let refreshPending = false;
-    watcher = watch(watchDir, (eventType, filename) => {
-      // `filename` can be null on some platforms/events. Treat null as
-      // "unknown — reload anyway" instead of dropping it, so a revocation
-      // (rotate-because-leaked) is never missed: fail-safe, not fail-stale.
-      // The existsSync + reload guards make a spurious reload cheap.
-      if (filename !== null && filename !== credBasename) return;
-      if (eventType !== "change" && eventType !== "rename") return;
-      if (refreshPending) return;
-      refreshPending = true;
+    // Collapse a multi-event rotation burst into a single refresh while still
+    // catching a *distinct* rotation that lands mid-flight. Leading edge: the
+    // first event runs the handler immediately. Trailing edge: events arriving
+    // while it's in flight set `rerun`, so exactly ONE more refresh fires after
+    // it settles. This closes the sub-ms window where a second rotation between
+    // the reload and the flag reset would otherwise be dropped (R2 Security
+    // advisory) without re-introducing N reloads for one burst.
+    let refreshing = false;
+    let rerun = false;
+    const triggerRefresh = (): void => {
+      if (refreshing) {
+        rerun = true;
+        return;
+      }
+      refreshing = true;
       void handleCredentialFileChange()
         .catch((err: unknown) => {
           logger.error(
@@ -462,8 +463,21 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
           );
         })
         .finally(() => {
-          refreshPending = false;
+          refreshing = false;
+          if (rerun) {
+            rerun = false;
+            triggerRefresh();
+          }
         });
+    };
+    watcher = watch(watchDir, (eventType, filename) => {
+      // `filename` can be null on some platforms/events. Treat null as
+      // "unknown — reload anyway" instead of dropping it, so a revocation
+      // (rotate-because-leaked) is never missed: fail-safe, not fail-stale.
+      // The existsSync + reload guards make a spurious reload cheap.
+      if (filename !== null && filename !== credBasename) return;
+      if (eventType !== "change" && eventType !== "rename") return;
+      triggerRefresh();
     });
     // Don't let the watcher keep the event loop alive on its own.
     watcher.unref?.();
