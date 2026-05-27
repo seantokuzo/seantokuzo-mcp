@@ -12,7 +12,6 @@
 import {
   isCredentialCapability,
   isV2Plugin,
-  type CredentialCapability,
   type CrossPluginCapability,
   type KuzoPlugin,
   type LoadResult,
@@ -22,7 +21,7 @@ import {
 } from "@kuzo-mcp/types";
 import type { PluginRegistry } from "./registry.js";
 import type { ConfigManager } from "./config.js";
-import type { CredentialSource } from "./credentials/index.js";
+import type { CredentialSource, DeclaredCredentialCapabilities } from "./credentials/index.js";
 import { createPluginLogger, KuzoLogger } from "./logger.js";
 import { ConsentStore } from "./consent.js";
 import type { AuditLogger } from "./audit.js";
@@ -295,10 +294,7 @@ export class PluginLoader {
       // this plugin's creds via `extractForPlugin(proc.declaredCapabilities)`.
       let config: Map<string, string>;
       let missing: string[];
-      let declaredCaps: {
-        required: CredentialCapability[];
-        optional: CredentialCapability[];
-      };
+      let declaredCaps: DeclaredCredentialCapabilities;
 
       if (isV2Plugin(plugin)) {
         declaredCaps = {

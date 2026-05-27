@@ -8,7 +8,7 @@
 import { fork, type ChildProcess } from "child_process";
 import { fileURLToPath } from "url";
 import { IpcChannel } from "./ipc.js";
-import type { CredentialCapability } from "@kuzo-mcp/types";
+import type { DeclaredCredentialCapabilities } from "./credentials/index.js";
 import type { KuzoLogger } from "./logger.js";
 import type { PluginRegistry } from "./registry.js";
 import type { AuditEvent, AuditLogger } from "./audit.js";
@@ -148,10 +148,7 @@ export class PluginProcess {
      * watcher re-resolves creds against this split via
      * `CredentialSource.extractForPlugin(proc.declaredCapabilities)`.
      */
-    readonly declaredCapabilities: {
-      required: readonly CredentialCapability[];
-      optional: readonly CredentialCapability[];
-    },
+    readonly declaredCapabilities: DeclaredCredentialCapabilities,
     /** Cross-plugin deps. null = unrestricted (V1 legacy). Set = scoped to declared deps (V2). */
     private readonly declaredDeps: Set<string> | null,
     private readonly logger: KuzoLogger,

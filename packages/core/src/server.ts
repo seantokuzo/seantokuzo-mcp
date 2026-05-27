@@ -392,8 +392,11 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
   let watcher: FSWatcher | undefined;
 
   const handleCredentialFileChange = async (): Promise<void> => {
-    // Debounce: an atomic write fires several events per rotation; a wipe is an
-    // unlink. 250ms collapses the burst without making rotation feel laggy.
+    // Settle delay: an atomic write (tmp+rename) can fire its watch event a
+    // hair before the new file is fully in place. 250ms lets it settle before
+    // we reload, without making rotation feel laggy. Burst coalescing is done
+    // by the `refreshPending` guard in the watch callback below — this body
+    // runs at most once per rotation.
     await debounce(250);
 
     // Ignore unlink-only events (file gone, e.g. mid-wipe). The next set/rotate
@@ -438,14 +441,29 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
     const credFile = credentialsFilePath();
     const watchDir = dirname(credFile);
     const credBasename = basename(credFile);
+    // Collapse a multi-event rotation burst (e.g. change + rename, which
+    // fs.watch can emit platform-dependently) into ONE refresh: the first
+    // qualifying event schedules the handler, events arriving while it's
+    // pending/in-flight are dropped, and the flag resets when it settles.
+    let refreshPending = false;
     watcher = watch(watchDir, (eventType, filename) => {
-      if (filename !== credBasename) return;
+      // `filename` can be null on some platforms/events. Treat null as
+      // "unknown — reload anyway" instead of dropping it, so a revocation
+      // (rotate-because-leaked) is never missed: fail-safe, not fail-stale.
+      // The existsSync + reload guards make a spurious reload cheap.
+      if (filename !== null && filename !== credBasename) return;
       if (eventType !== "change" && eventType !== "rename") return;
-      void handleCredentialFileChange().catch((err: unknown) => {
-        logger.error(
-          `credential refresh failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
+      if (refreshPending) return;
+      refreshPending = true;
+      void handleCredentialFileChange()
+        .catch((err: unknown) => {
+          logger.error(
+            `credential refresh failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        })
+        .finally(() => {
+          refreshPending = false;
+        });
     });
     // Don't let the watcher keep the event loop alive on its own.
     watcher.unref?.();
