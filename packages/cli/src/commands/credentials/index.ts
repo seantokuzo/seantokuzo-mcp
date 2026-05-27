@@ -5,6 +5,7 @@
  *   rotate <name>   — set + emit credential.rotated
  *   list            — names + backend + last-updated (--json)
  *   delete <name>   — remove a credential
+ *   migrate         — import from ~/.claude/settings.json + .env, redact sources
  *   status          — backend + per-plugin availability (--json)
  *   test <name>     — verify the credential is accepted by its service
  *   wipe --confirm  — destroy ALL credentials + the master key (§A.11 recovery)
@@ -19,6 +20,7 @@ import chalk from "chalk";
 import { runDelete, type CredentialsDeleteOptions } from "./delete.js";
 import { exitCodeForCredentialsError } from "./errors.js";
 import { runList, type CredentialsListOptions } from "./list.js";
+import { runMigrate, type CredentialsMigrateOptions } from "./migrate.js";
 import { runSet, type CredentialsSetOptions } from "./set.js";
 import { runStatus, type CredentialsStatusOptions } from "./status.js";
 import { runTest } from "./test.js";
@@ -63,6 +65,43 @@ export function registerCredentialsCommands(program: Command): void {
     .action((name: string, options: CredentialsDeleteOptions) =>
       run(() => runDelete(name, options)),
     );
+
+  creds
+    .command("migrate")
+    .description("Import credentials from ~/.claude/settings.json + .env files, then redact the sources")
+    .option("--source <claude|env-file|both>", "Sources to scan", "both")
+    .option("--dry-run", "Report candidates without modifying anything", false)
+    .option("--force-source", "On a stored-vs-source conflict, overwrite the store (loud confirm)", false)
+    .option("-y, --yes", "Skip the per-source confirmation (NOT the --force-source confirm)", false)
+    .addHelpText(
+      "after",
+      `
+Examples:
+  Dry-run scan, show what would change:
+    $ kuzo credentials migrate --dry-run
+
+  Only scan ~/.claude/settings.json (skip project .env files):
+    $ kuzo credentials migrate --source claude
+
+  Re-run after a previous partial failure (idempotent):
+    $ kuzo credentials migrate
+
+  Resolve a conflict by overwriting the stored value:
+    $ kuzo credentials migrate --force-source
+
+Exit codes:
+   0  success
+  60  read-back verification failed (encryption round-trip mismatch — file an issue)
+  61  post-redact parser still finds the credential in the source file
+  62  rollback of the encrypted store failed (check \`kuzo credentials list\` + audit log)
+  63  mutually-exclusive flags (--force-source with --yes)
+  74  source file is a symlink
+  75  source path is not a regular file
+  76  source file was modified during migration (close your editor and retry)
+  77  source value differs from stored (use --force-source or set manually)
+`,
+    )
+    .action((options: CredentialsMigrateOptions) => run(() => runMigrate(options)));
 
   creds
     .command("status")
