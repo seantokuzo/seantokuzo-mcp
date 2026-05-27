@@ -50,6 +50,10 @@ export const AUDIT_ACTION_PARTITION: Record<AuditAction, "parent-only" | "child-
   // Produced only by the `kuzo plugins install/update/uninstall` CLI surface.
   "credential.namespace_validated": "parent-only",
 
+  // parent-only: Theme 9 rotation cache invalidation (spec §C.11). The
+  // directory-watch + IPC refresh runs only in the parent's runServer().
+  "credential.refreshed_in_flight": "parent-only",
+
   // parent-only: 2.5e Part D plugin lifecycle + 2.5c consent events
   "plugin.loaded":                "parent-only",
   "plugin.skipped":               "parent-only",

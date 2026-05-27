@@ -139,8 +139,19 @@ export class PluginProcess {
     private readonly pluginName: string,
     /** file:// URL of the plugin's module entry — resolved by plugin-resolver */
     private readonly pluginEntryUrl: string,
-    private readonly scopedEnv: Record<string, string>,
-    private readonly capabilities: CredentialCapability[],
+    /** Scoped credential env (cred names → values). Mutable: `refreshCredentials`
+     *  swaps it on rotation so lazy/respawn forks use fresh values (§C.11). */
+    private scopedEnv: Record<string, string>,
+    /**
+     * Declared credential capabilities split required-vs-optional (spec §C.11).
+     * The flat list the child broker consumes is derived at spawn; the parent
+     * watcher re-resolves creds against this split via
+     * `CredentialSource.extractForPlugin(proc.declaredCapabilities)`.
+     */
+    readonly declaredCapabilities: {
+      required: readonly CredentialCapability[];
+      optional: readonly CredentialCapability[];
+    },
     /** Cross-plugin deps. null = unrestricted (V1 legacy). Set = scoped to declared deps (V2). */
     private readonly declaredDeps: Set<string> | null,
     private readonly logger: KuzoLogger,
@@ -323,7 +334,10 @@ export class PluginProcess {
           pluginName: this.pluginName,
           pluginEntryUrl: this.pluginEntryUrl,
           env,
-          capabilities: this.capabilities,
+          capabilities: [
+            ...this.declaredCapabilities.required,
+            ...this.declaredCapabilities.optional,
+          ],
         },
         INIT_TIMEOUT_MS,
       );
@@ -379,6 +393,35 @@ export class PluginProcess {
     }
 
     return this.channel.request<string>("readResource", { uri }, TOOL_CALL_TIMEOUT_MS);
+  }
+
+  // -------------------------------------------------------------------------
+  // Credential refresh (spec §C.11 — rotation cache invalidation)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Replace this plugin's scoped credentials after an on-disk rotation.
+   *
+   * Two halves:
+   *   1. Update the stored `scopedEnv` so a not-yet-spawned (lazy) child and
+   *      any future crash-respawn boot with the rotated values. `config` is
+   *      credentials only; `spawn()` re-merges `getSystemEnv()` on each fork.
+   *   2. If the child is live (`ready`), push the new Map over IPC so the
+   *      running broker swaps its config + clears its client cache without a
+   *      restart (fire-and-forget — `plugin-host` handles `credential.refresh`).
+   *
+   * The scopedEnv update is the parent-side half the spec's notify-only
+   * snippet omits — without it an idle plugin would spawn stale after a
+   * rotation. Limitation per §C.11/§F.4: a plugin that stashed a client in
+   * its own state (not via `getClient` each call) keeps the old token until
+   * its client is rebuilt; first-party plugins go through `getClient` so they
+   * pick up the rotation on the next tool call.
+   */
+  refreshCredentials(config: Map<string, string>): void {
+    this.scopedEnv = Object.fromEntries(config);
+    if (this.channel && this.state === "ready") {
+      this.channel.notify("credential.refresh", { config: this.scopedEnv });
+    }
   }
 
   // -------------------------------------------------------------------------

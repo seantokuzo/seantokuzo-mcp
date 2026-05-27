@@ -23,6 +23,8 @@
  *   13. shutdown hooks (loader → registry → credentialStore.close → server.close)
  */
 
+import { existsSync, watch, type FSWatcher } from "node:fs";
+import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -45,12 +47,14 @@ import {
   collectEnvOverrides,
   scrubProcessEnv,
 } from "./credentials/index.js";
+import { debounce } from "./credentials/debounce.js";
 import { chooseKeyProvider } from "./key-provider-choice.js";
 import { PluginLoader } from "./loader.js";
 import { KuzoLogger } from "./logger.js";
 import { collectDeclaredCredentialEnvNames } from "./manifest-env-names.js";
 import { credentialsFilePath } from "./paths.js";
 import { PluginRegistry } from "./registry.js";
+import { buildServeSummary } from "./serve-summary.js";
 
 /** Convert a Zod schema to MCP-compatible JSON Schema */
 function zodToMcpInputSchema(
@@ -377,12 +381,84 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
     logger.error("No plugins loaded and some failed — check your configuration");
   }
 
+  // 11b. Rotation cache invalidation (spec §C.11). Watch the credentials
+  //      file's PARENT DIRECTORY — NOT the file (round-4 B14): `fs.watch` on
+  //      the file watches an inode that the store's atomic tmp+rename rotation
+  //      orphans, so rotation #2+ would silently stop firing. Watching the
+  //      stable dir inode and filtering on the basename survives the rename.
+  //      Only install when the store actually unlocked at boot — in
+  //      env-override-only / NullKeyProvider mode the store stays cold and
+  //      "rotation" means "restart with a new env var".
+  let watcher: FSWatcher | undefined;
+
+  const handleCredentialFileChange = async (): Promise<void> => {
+    // Debounce: an atomic write fires several events per rotation; a wipe is an
+    // unlink. 250ms collapses the burst without making rotation feel laggy.
+    await debounce(250);
+
+    // Ignore unlink-only events (file gone, e.g. mid-wipe). The next set/rotate
+    // re-creates the file and fires another rename event, which sees the file
+    // present and proceeds to reload.
+    if (!existsSync(credentialsFilePath())) return;
+
+    try {
+      credentialStore.reload(); // re-decrypts; throws on corruption/tamper
+    } catch (err) {
+      // Never crash the server on a bad in-flight reload — log + audit and
+      // keep the prior cache. The user's next `kuzo credentials status`
+      // surfaces the broken state.
+      auditLogger.log({
+        plugin: "kuzo",
+        action: "credential.refreshed_in_flight",
+        outcome: "error",
+        source: "parent",
+        details: { error: err instanceof Error ? err.message : String(err) },
+      });
+      return;
+    }
+
+    // Re-resolve each plugin's scoped creds and push the refresh. For live
+    // children this updates the running broker over IPC; for idle ones it
+    // updates the stored env so they spawn fresh (see refreshCredentials).
+    const procs = loader.runningProcesses();
+    for (const proc of procs) {
+      const { config } = credentialSource.extractForPlugin(proc.declaredCapabilities);
+      proc.refreshCredentials(config);
+    }
+    auditLogger.log({
+      plugin: "kuzo",
+      action: "credential.refreshed_in_flight",
+      outcome: "allowed",
+      source: "parent",
+      details: { count_refreshed: procs.length },
+    });
+  };
+
+  if (credentialStore.isUnlocked()) {
+    const credFile = credentialsFilePath();
+    const watchDir = dirname(credFile);
+    const credBasename = basename(credFile);
+    watcher = watch(watchDir, (eventType, filename) => {
+      if (filename !== credBasename) return;
+      if (eventType !== "change" && eventType !== "rename") return;
+      void handleCredentialFileChange().catch((err: unknown) => {
+        logger.error(
+          `credential refresh failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    });
+    // Don't let the watcher keep the event loop alive on its own.
+    watcher.unref?.();
+    logger.info(`Watching ${watchDir} for credential rotations (${credBasename})`);
+  }
+
   // 12. Build + connect MCP server over stdio
   const server = buildMcpServer(registry, logger);
 
   // 13. Shutdown hooks. credentialStore.close() must run AFTER
   //     loader.shutdownAll() per invariant 4 (file-watch + IPC race).
   attachShutdownHandlers(logger, async () => {
+    watcher?.close(); // stop the rotation watch before tearing down the store
     await loader.shutdownAll();
     await registry.shutdownAll();
     credentialStore.close();
@@ -393,6 +469,21 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
   await server.connect(transport);
 
   logger.info("Kuzo MCP Server running on stdio");
+
+  // §D.3 first-run UX. Stderr only — stdout is the MCP transport. Surfaces the
+  // loaded/skipped roster, a hint for missing creds, and the R35 migrate nudge
+  // when unencrypted env creds are present but the store is empty.
+  const summaryLines = buildServeSummary({
+    loadResult,
+    envOverrideNames: Object.keys(envOverrides),
+    storeSize: credentialStore.size,
+    suppressMigrateNudge: ["1", "true"].includes(
+      process.env["KUZO_NO_MIGRATE_NUDGE"] ?? "",
+    ),
+  });
+  for (const line of summaryLines) {
+    process.stderr.write(`${line}\n`);
+  }
 }
 
 // ---------------------------------------------------------------------------

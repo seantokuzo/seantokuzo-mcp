@@ -16,7 +16,7 @@
     "test": "pnpm run test:parity && pnpm run test:provenance && pnpm run test:credentials && pnpm run test:audit && pnpm run test:cli",
     "test:parity": "node scripts/test-install-parity.mjs",
     "test:provenance": "pnpm -s build && node scripts/smoke-provenance.mjs",
-    "test:credentials": "KUZO_TEST=1 node --import tsx --test packages/core/src/credentials/cipher.test.ts packages/core/src/credentials/key-provider.test.ts packages/core/src/credentials/store.test.ts packages/core/src/credentials/source.test.ts packages/core/src/credentials/env-overrides.test.ts packages/core/src/credentials/env-namespace.test.ts packages/core/src/credentials.test.ts",
+    "test:credentials": "KUZO_TEST=1 node --import tsx --test packages/core/src/credentials/cipher.test.ts packages/core/src/credentials/key-provider.test.ts packages/core/src/credentials/store.test.ts packages/core/src/credentials/source.test.ts packages/core/src/credentials/env-overrides.test.ts packages/core/src/credentials/env-namespace.test.ts packages/core/src/credentials/debounce.test.ts packages/core/src/credentials.test.ts packages/core/src/serve-summary.test.ts",
     "test:audit": "KUZO_TEST=1 node --import tsx --test packages/core/src/audit-ipc.test.ts",
     "test:cli": "pnpm -s build && KUZO_TEST=1 node --import tsx --test packages/cli/src/lock.test.ts packages/cli/src/commands/credentials/errors.test.ts packages/cli/src/commands/credentials/migrate-redact.test.ts packages/cli/src/commands/credentials/migrate-fs.test.ts packages/cli/src/commands/credentials/migrate-discovery.test.ts packages/cli/src/commands/credentials/migrate.test.ts",
     "changeset": "changeset",

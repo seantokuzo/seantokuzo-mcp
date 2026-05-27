@@ -77,6 +77,12 @@ export type AuditAction =
   // env-name validation completes. Parent-only — the CLI install surface is
   // the only producer; a child can never trigger a namespace validation.
   | "credential.namespace_validated"
+  // Phase 2.6 Theme 9 — `kuzo serve` rotation cache invalidation (spec §C.11).
+  // Emitted by the parent's credentials directory-watch in `runServer()` after
+  // a reload+propagate (outcome "allowed" with a refresh count) or a failed
+  // in-flight reload (outcome "error"). Parent-only — the watcher lives only
+  // in the parent process.
+  | "credential.refreshed_in_flight"
   | "plugin.loaded"
   | "plugin.skipped"
   | "plugin.failed"

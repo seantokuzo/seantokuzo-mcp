@@ -108,7 +108,9 @@ export interface CredentialBrokerOptions {
 
 export class DefaultCredentialBroker implements CredentialBroker {
   private readonly pluginName: string;
-  private readonly config: Map<string, string>;
+  /** Scoped config map. Swapped wholesale by `replaceConfigAtomically` on a
+   *  parent-pushed credential refresh (§C.11) — not `readonly`. */
+  private config: Map<string, string>;
   private readonly capabilities: CredentialCapability[];
   private readonly logger: PluginLogger;
   private readonly auditLogger: AuditLogger | undefined;
@@ -329,6 +331,24 @@ export class DefaultCredentialBroker implements CredentialBroker {
 
   hasCredential(key: string): boolean {
     return this.config.has(key);
+  }
+
+  /**
+   * Swap the scoped config map after a parent-pushed credential refresh
+   * (spec §C.11 — rotation cache invalidation). The parent's directory-watch
+   * re-resolves this plugin's credentials and sends the new Map over IPC;
+   * `plugin-host.ts` calls this. Clearing `clientCache` forces the next
+   * `getClient(...)` to rebuild its client with the rotated value.
+   *
+   * Already-constructed clients that a plugin stashed in its OWN state (not
+   * going through `getClient` on each call) are NOT reached — this is the
+   * partial mitigation documented in §C.11/§F.4. First-party plugins go
+   * through `getClient` per tool-call, so their clients DO pick up the
+   * rotation on the next call.
+   */
+  replaceConfigAtomically(newConfig: Map<string, string>): void {
+    this.config = newConfig;
+    this.clientCache.clear();
   }
 
   /**

@@ -132,6 +132,23 @@ async function main(): Promise<void> {
     }
   });
 
+  // ── Notifications from parent ──
+  //
+  // Spec §C.11 — rotation cache invalidation. When a credential is rotated
+  // on disk, the parent's directory-watch re-resolves this plugin's scoped
+  // config and pushes the fresh Map here. Fire-and-forget: the broker swaps
+  // its config + clears its client cache, so the next `getClient(...)` builds
+  // a client with the rotated value. No restart required.
+  channel.onNotification((method, params) => {
+    if (method !== "credential.refresh") return;
+    const config = (params as { config?: unknown } | null)?.config;
+    if (config === null || typeof config !== "object" || !credentialBroker) return;
+    credentialBroker.replaceConfigAtomically(
+      new Map(Object.entries(config as Record<string, string>)),
+    );
+    pluginContext?.logger.info("credentials refreshed from parent");
+  });
+
   // ── Initialize ──
 
   async function handleInitialize(initParams: InitParams, ch: IpcChannel): Promise<{ ok: true }> {

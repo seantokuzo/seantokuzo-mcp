@@ -42,6 +42,7 @@ import {
 } from "./commands/consent.js";
 import { registerPluginsCommands } from "./commands/plugins/index.js";
 import { registerCredentialsCommands } from "./commands/credentials/index.js";
+import { serveCommand } from "./commands/serve.js";
 import { showBanner, showGoodbye, showError } from "./ui/display.js";
 
 /** Inline replacement for the deleted `utils/config.ts` helper. */
@@ -342,6 +343,11 @@ registerPluginsCommands(program);
 // Credentials Commands
 // ============================================
 registerCredentialsCommands(program);
+
+// ============================================
+// Serve Command (MCP server entry — §D.1)
+// ============================================
+program.addCommand(serveCommand);
 
 // ============================================
 // Interactive Mode (default)
