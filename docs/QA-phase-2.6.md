@@ -137,20 +137,67 @@ Exercise via the install-parity harness or a real `runServer()` boot.
 
 ---
 
-## 7. `kuzo credentials migrate` (§B.4) ⏳ Theme 8
+## 7. `kuzo credentials migrate` (§B.4, Theme 8) ✅
 
-> The highest-risk command. QA hard once it lands. Sources: `~/.claude/settings.json` env blocks + project `.env` files. Atomic redaction with read-back-verify.
+> The highest-risk command — it **rewrites real files** (`~/.claude/settings.json` env blocks + project `.env`s), removing secrets after importing them. Atomic redaction, read-back-verify, store snapshot/rollback.
+>
+> **⚠️ Isolation is mandatory.** migrate redacts the source it finds. The claude source path is `$HOME/.claude/settings.json` (driven by `os.homedir()`, NOT `KUZO_HOME`), so to keep QA off your real config you MUST override `HOME` too:
+> ```bash
+> export QA_HOME="$(mktemp -d /tmp/kuzo-qahome.XXXXXX)"
+> export HOME="$QA_HOME"                 # isolates ~/.claude/settings.json + ~/.env
+> export KUZO_HOME="$QA_HOME/.kuzo"
+> export KUZO_PASSPHRASE="qa-pass"        # passphrase mode → no real keychain
+> mkdir -p "$QA_HOME/.claude"
+> # a project dir whose package.json declares @kuzo-mcp/* gates the .env walk:
+> export QA_PROJ="$QA_HOME/proj"; mkdir -p "$QA_PROJ"
+> echo '{"devDependencies":{"@kuzo-mcp/cli":"*"}}' > "$QA_PROJ/package.json"
+> ```
+> Teardown: `rm -rf "$QA_HOME"` and restore your real `HOME`.
+>
+> **Automated smoke pass (2026-05-26, passphrase mode, synthetic creds):** the golden path + key guards were exercised against the built CLI in an isolated temp `HOME` — all green: dry-run no-op, settings.json import+redact (+ secret absent from audit), the §F.1 multi-line `.env` fixture (clean redaction, `export`/comment verbatim, re-parses), idempotent re-run, conflict→77, `--force-source --yes`→63, symlink→74, comment-leak→61 (still stored), no `.bak`. Boxes left unchecked below for the **authoritative manual pass** — which adds what the smoke run can't: **keychain mode** (real prompts), **real GitHub/Jira tokens**, the **interactive `--force-source` "yes" prompt**, and **real `~/.claude/settings.json` wiring**.
 
-- [ ] **`--dry-run`** — reports what would import, touches nothing.
-- [ ] **`--source claude` / `env-file` / `both`** (default both) — scopes the scan correctly.
-- [ ] **Happy path** — migrates known credential names into the store, then redacts them from the source file atomically.
-- [ ] **Idempotent re-run** — running migrate twice is safe; the second run is a no-op for already-stored identical values.
-- [ ] **Conflict** — stored value differs from source → **exit 77** (`E_CONFLICT`); `--force-source` overwrites (loud confirm); `--force-source --yes` together → **exit 63** (mutually exclusive).
-- [ ] **Symlink source** → **exit 74**; non-regular file → **exit 75**; source mutated mid-migration → **exit 76**.
-- [ ] **Read-back-verify fail** → **exit 60**; post-redact parser still finds the secret → **exit 61**; rollback fail → **exit 62**.
-- [ ] **Filter** — only migrates names in the union of plugin `CredentialCapability.env`; ignores unrelated `.env` keys.
-- [ ] **settings.json schema drift** — unparseable settings.json fails closed with a clear message.
-- [ ] **Audit** — `credential.migrated` (with `source`) / `credential.migration_partial` on partial failure; never the value.
+### 7a. Discovery & dry-run
+
+- [ ] **`--dry-run` touches nothing** — write a kuzo entry into `$HOME/.claude/settings.json` with `env: {"GITHUB_TOKEN":"ghp_qa1"}`, then `kuzo credentials migrate --dry-run` → lists `GITHUB_TOKEN` as "would import + redact", **exit 0**, and `grep -c ghp_qa1 "$HOME/.claude/settings.json"` is still `1` (unchanged); no `$KUZO_HOME/credentials.enc` created.
+- [ ] **`--source` scoping** — with a cred in BOTH settings.json and `$QA_PROJ/.env`: `migrate --source claude --dry-run` lists only the settings.json one; `--source env-file --dry-run` (run from `$QA_PROJ`) lists only the `.env` one; `both` (default) lists both.
+- [ ] **Bounded `.env` walk** — a `.env` with a cred placed (a) in a dir with NO `@kuzo-mcp/*` in package.json, (b) >5 ancestors above cwd, or (c) outside `$HOME` is NOT discovered. `$HOME/.env` IS always considered.
+- [ ] **Filter** — an unrelated key (`LOG_LEVEL=info`) in a scanned source is never listed/imported/redacted.
+
+### 7b. Happy path + the multi-line fixture
+
+- [ ] **settings.json happy path** — settings.json kuzo entry with `GITHUB_TOKEN=ghp_qa1`, run `migrate` (confirm `y`) → `✓ Migrated 1 …`; `kuzo credentials list` shows `GITHUB_TOKEN`; `grep -c ghp_qa1 "$HOME/.claude/settings.json"` → `0` (redacted); the JSON still parses and other entries/keys are intact.
+- [ ] **§F.1 multi-line `.env` fixture** — create `$QA_PROJ/.env`:
+  ```
+  # leading comment, preserved
+  GITHUB_TOKEN="ghp_qa1
+  trailing-part-of-the-value"
+  LOG_LEVEL=info
+  export OPENAI_API_KEY=sk-keepme
+  ```
+  Run `migrate --source env-file` from `$QA_PROJ`. After: the file contains ONLY the comment, `LOG_LEVEL=info`, and `export OPENAI_API_KEY=sk-keepme` (verbatim — `export` kept); `grep -c "trailing-part-of-the-value\|ghp_qa1" .env` → `0` (no orphan fragment); `node -e 'require("dotenv").config()'` still parses cleanly.
+- [ ] **No `.bak`** — after any migrate, `ls -a` the source dirs → no `.bak` / leftover `.tmp` files.
+
+### 7c. Re-run, conflict, force
+
+- [ ] **Idempotent re-run** — run the same migrate twice. Second run: already-stored identical value → no re-import (no new `credential.migrated`), still redacts any remaining source copy, **exit 0**.
+- [ ] **Conflict** — store `GITHUB_TOKEN=stored` via `set`, then a source with `GITHUB_TOKEN=different` → `migrate` → **exit 77** (`E_CONFLICT`); store + source both unchanged.
+- [ ] **`--force-source`** — same conflict + `--force-source` → loud "type 'yes'" prompt → overwrites store with the source value, redacts source; audit shows `credential.set` with `reason: "migrate --force-source"`.
+- [ ] **Mutually exclusive** — `migrate --force-source --yes` → **exit 63** (`E_INVALID_FLAG_COMBO`), before any work.
+- [ ] **Cross-source divergence** — same cred name in settings.json AND a `.env` with DIFFERENT values → **exit 77** even under `--force-source` (can't disambiguate).
+
+### 7d. Safety guards
+
+- [ ] **Symlink source** — `ln -s real.env "$QA_PROJ/.env"` → `migrate` → **exit 74** (`E_SYMLINK_REFUSE`); nothing imported/redacted.
+- [ ] **Non-regular file** — point discovery at a directory/FIFO named `.env` → **exit 75** (`E_NOT_REGULAR_FILE`).
+- [ ] **Source mutated mid-run** — (hard to hit by hand; covered by `migrate-fs.test.ts`) editing the source between snapshot and rename → **exit 76** (`E_SOURCE_MUTATED`), other sources still complete.
+- [ ] **Kept-entry integrity** — a `.env` where the secret value ALSO appears in a comment → after redacting the assignment, the post-write verify finds the fragment → **exit 61** (`E_REDACTION_VERIFY_FAIL`), partial-success block printed; the credential IS stored (re-run safe). Confirms a botched redaction never silently "succeeds".
+- [ ] **CRLF caveat (known, non-blocking)** — a Windows CRLF (`\r\n`) `.env` with a multi-line quoted value may report **exit 61** partial rather than redacting cleanly (the secret is stored; the source still holds it — NOT a silent leak). Tracked as the Theme-8 follow-up (split on `/\r?\n/`).
+
+### 7e. Failure modes + audit
+
+- [ ] **settings.json schema drift** — an unparseable `$HOME/.claude/settings.json` is skipped (fails closed); migrate doesn't crash and doesn't rewrite it.
+- [ ] **Read-back / rollback** — `E_READBACK_FAIL` (60) and `E_ROLLBACK_FAIL` (62) are encryption-round-trip failures (not reproducible by hand; covered by `migrate.test.ts`). On 60 the store is rolled back to its pre-migrate state.
+- [ ] **Audit** — `grep credential.migrated "$KUZO_HOME/audit.log"` shows `{credentialKey, source}` (source = `claude-settings` | `env-file`); partial failures log `credential.migration_partial`; **grep the whole log for your test secret (`ghp_qa1`) → 0 hits**.
 
 ---
 
