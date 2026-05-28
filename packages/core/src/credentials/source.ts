@@ -19,6 +19,17 @@
 import type { CredentialCapability } from "@kuzo-mcp/types";
 import type { CredentialStore } from "./store.js";
 
+/**
+ * A plugin's declared credential capabilities, split required-vs-optional.
+ * The single named shape threaded loader → `PluginProcess.declaredCapabilities`
+ * → `CredentialSource.extractForPlugin` (also re-resolved by the §C.11 rotation
+ * watcher). Centralized here to prevent drift across those call sites.
+ */
+export interface DeclaredCredentialCapabilities {
+  required: readonly CredentialCapability[];
+  optional: readonly CredentialCapability[];
+}
+
 export class CredentialSource {
   constructor(
     private readonly store: CredentialStore,
@@ -64,10 +75,9 @@ export class CredentialSource {
    * Calling shape mirrors `ConfigManager.extractPluginConfig(required, optional)`
    * so the Theme 4 loader switchover is mechanical.
    */
-  extractForPlugin(args: {
-    required: readonly CredentialCapability[];
-    optional: readonly CredentialCapability[];
-  }): { config: Map<string, string>; missing: string[] } {
+  extractForPlugin(
+    args: DeclaredCredentialCapabilities,
+  ): { config: Map<string, string>; missing: string[] } {
     const config = new Map<string, string>();
     const missing: string[] = [];
 

@@ -283,3 +283,36 @@ test("shutdown() does not emit an audit event itself", (_t: TestContext) => {
   broker.shutdown();
   assert.equal(auditLogger.events.length, 0);
 });
+
+// ─── §C.11 — replaceConfigAtomically (rotation cache invalidation) ───────────
+
+test("replaceConfigAtomically swaps the config so the next getClient sees the new value", (_t: TestContext) => {
+  const config = new Map<string, string>([["APPLETV_PAIRING_TOKEN", "old-token"]]);
+  const { broker } = makeBroker({ config });
+  broker.registerClientFactory("appletv", (cfg) => ({
+    token: cfg.get("APPLETV_PAIRING_TOKEN"),
+  }));
+
+  // First build caches a client constructed from the OLD token.
+  assert.deepEqual(broker.getClient("appletv"), { token: "old-token" });
+
+  // Parent pushes a rotation: clear the cache + swap the config.
+  broker.replaceConfigAtomically(
+    new Map([["APPLETV_PAIRING_TOKEN", "new-token"]]),
+  );
+
+  // The cached client was invalidated — the next getClient rebuilds with the
+  // rotated value rather than returning the stale cached instance.
+  assert.deepEqual(broker.getClient("appletv"), { token: "new-token" });
+  assert.equal(broker.hasCredential("APPLETV_PAIRING_TOKEN"), true);
+});
+
+test("replaceConfigAtomically drops a credential that was removed from the new config", (_t: TestContext) => {
+  const config = new Map<string, string>([["APPLETV_PAIRING_TOKEN", "tok"]]);
+  const { broker } = makeBroker({ config });
+  assert.equal(broker.hasCredential("APPLETV_PAIRING_TOKEN"), true);
+
+  // Rotation that deletes the credential (e.g. `kuzo credentials delete`).
+  broker.replaceConfigAtomically(new Map());
+  assert.equal(broker.hasCredential("APPLETV_PAIRING_TOKEN"), false);
+});

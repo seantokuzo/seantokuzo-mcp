@@ -23,6 +23,8 @@
  *   13. shutdown hooks (loader → registry → credentialStore.close → server.close)
  */
 
+import { statSync, watch, type FSWatcher } from "node:fs";
+import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -45,12 +47,14 @@ import {
   collectEnvOverrides,
   scrubProcessEnv,
 } from "./credentials/index.js";
+import { debounce } from "./credentials/debounce.js";
 import { chooseKeyProvider } from "./key-provider-choice.js";
 import { PluginLoader } from "./loader.js";
 import { KuzoLogger } from "./logger.js";
 import { collectDeclaredCredentialEnvNames } from "./manifest-env-names.js";
 import { credentialsFilePath } from "./paths.js";
 import { PluginRegistry } from "./registry.js";
+import { buildServeSummary } from "./serve-summary.js";
 
 /** Convert a Zod schema to MCP-compatible JSON Schema */
 function zodToMcpInputSchema(
@@ -377,12 +381,140 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
     logger.error("No plugins loaded and some failed — check your configuration");
   }
 
+  // 11b. Rotation cache invalidation (spec §C.11). Watch the credentials
+  //      file's PARENT DIRECTORY — NOT the file (round-4 B14): `fs.watch` on
+  //      the file watches an inode that the store's atomic tmp+rename rotation
+  //      orphans, so rotation #2+ would silently stop firing. Watching the
+  //      stable dir inode and filtering on the basename survives the rename.
+  //      Only install when the store actually unlocked at boot — in
+  //      env-override-only / NullKeyProvider mode the store stays cold and
+  //      "rotation" means "restart with a new env var".
+  let watcher: FSWatcher | undefined;
+
+  // Last-seen credentials.enc stat ("mtimeMs:size"). We watch the whole kuzo
+  // home DIR, so our OWN audit.log write (credential.refreshed_in_flight) is a
+  // sibling-file change in the watched dir. On null-`filename` platforms that
+  // event isn't attributable to a file, so the handler would run, write
+  // audit.log again, and re-trigger itself — a permanent reload loop (R3
+  // Security). Stat-guarding on credentials.enc makes a run a cheap no-op
+  // unless the credential file ITSELF changed, which breaks the loop and also
+  // collapses redundant events for the same content.
+  let lastCredStat: string | undefined;
+
+  const credFileSig = (): string | undefined => {
+    try {
+      const s = statSync(credentialsFilePath());
+      return `${s.mtimeMs}:${s.size}`;
+    } catch {
+      // Gone (e.g. mid-wipe) or unreadable. Skip — the next set/rotate event
+      // re-creates the file and re-triggers us.
+      return undefined;
+    }
+  };
+
+  const handleCredentialFileChange = async (): Promise<void> => {
+    // Settle delay: an atomic write (tmp+rename) can fire its watch event a
+    // hair before the new file is fully in place. 250ms lets it settle before
+    // we reload. Burst coalescing is handled by the refreshing/rerun guard in
+    // the watch callback plus the stat check below, so this body does real
+    // work at most once per actual credential change.
+    await debounce(250);
+
+    const sig = credFileSig();
+    if (sig === undefined) return; // file gone (mid-wipe) — skip
+    if (sig === lastCredStat) return; // unchanged (e.g. our own audit write) — no-op
+    lastCredStat = sig;
+
+    try {
+      credentialStore.reload(); // re-decrypts; throws on corruption/tamper
+    } catch (err) {
+      // Never crash the server on a bad in-flight reload — log + audit and
+      // keep the prior cache. The user's next `kuzo credentials status`
+      // surfaces the broken state.
+      auditLogger.log({
+        plugin: "kuzo",
+        action: "credential.refreshed_in_flight",
+        outcome: "error",
+        source: "parent",
+        details: { error: err instanceof Error ? err.message : String(err) },
+      });
+      return;
+    }
+
+    // Re-resolve each plugin's scoped creds and push the refresh. For live
+    // children this updates the running broker over IPC; for idle ones it
+    // updates the stored env so they spawn fresh (see refreshCredentials).
+    const procs = loader.runningProcesses();
+    for (const proc of procs) {
+      const { config } = credentialSource.extractForPlugin(proc.declaredCapabilities);
+      proc.refreshCredentials(config);
+    }
+    auditLogger.log({
+      plugin: "kuzo",
+      action: "credential.refreshed_in_flight",
+      outcome: "allowed",
+      source: "parent",
+      details: { count_refreshed: procs.length },
+    });
+  };
+
+  if (credentialStore.isUnlocked()) {
+    const credFile = credentialsFilePath();
+    const watchDir = dirname(credFile);
+    const credBasename = basename(credFile);
+    // Collapse a multi-event rotation burst into a single refresh while still
+    // catching a *distinct* rotation that lands mid-flight. Leading edge: the
+    // first event runs the handler immediately. Trailing edge: events arriving
+    // while it's in flight set `rerun`, so exactly ONE more refresh fires after
+    // it settles. This closes the sub-ms window where a second rotation between
+    // the reload and the flag reset would otherwise be dropped (R2 Security
+    // advisory) without re-introducing N reloads for one burst.
+    let refreshing = false;
+    let rerun = false;
+    const triggerRefresh = (): void => {
+      if (refreshing) {
+        rerun = true;
+        return;
+      }
+      refreshing = true;
+      void handleCredentialFileChange()
+        .catch((err: unknown) => {
+          logger.error(
+            `credential refresh failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        })
+        .finally(() => {
+          refreshing = false;
+          if (rerun) {
+            rerun = false;
+            triggerRefresh();
+          }
+        });
+    };
+    // Seed the last-seen stat so an unrelated first dir event is a no-op.
+    lastCredStat = credFileSig();
+    watcher = watch(watchDir, (eventType, filename) => {
+      // `filename` can be null on some platforms/events. Treat null as
+      // "unknown — reload anyway" instead of dropping it, so a revocation
+      // (rotate-because-leaked) is never missed: fail-safe, not fail-stale.
+      // The handler's stat-guard keeps a spurious reload a cheap no-op and
+      // prevents an audit-write feedback loop on null-filename platforms.
+      if (filename !== null && filename !== credBasename) return;
+      if (eventType !== "change" && eventType !== "rename") return;
+      triggerRefresh();
+    });
+    // Don't let the watcher keep the event loop alive on its own.
+    watcher.unref?.();
+    logger.info(`Watching ${watchDir} for credential rotations (${credBasename})`);
+  }
+
   // 12. Build + connect MCP server over stdio
   const server = buildMcpServer(registry, logger);
 
   // 13. Shutdown hooks. credentialStore.close() must run AFTER
   //     loader.shutdownAll() per invariant 4 (file-watch + IPC race).
   attachShutdownHandlers(logger, async () => {
+    watcher?.close(); // stop the rotation watch before tearing down the store
     await loader.shutdownAll();
     await registry.shutdownAll();
     credentialStore.close();
@@ -393,6 +525,21 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
   await server.connect(transport);
 
   logger.info("Kuzo MCP Server running on stdio");
+
+  // §D.3 first-run UX. Stderr only — stdout is the MCP transport. Surfaces the
+  // loaded/skipped roster, a hint for missing creds, and the R35 migrate nudge
+  // when unencrypted env creds are present but the store is empty.
+  const summaryLines = buildServeSummary({
+    loadResult,
+    envOverrideNames: Object.keys(envOverrides),
+    storeSize: credentialStore.size,
+    suppressMigrateNudge: ["1", "true"].includes(
+      process.env["KUZO_NO_MIGRATE_NUDGE"] ?? "",
+    ),
+  });
+  for (const line of summaryLines) {
+    process.stderr.write(`${line}\n`);
+  }
 }
 
 // ---------------------------------------------------------------------------

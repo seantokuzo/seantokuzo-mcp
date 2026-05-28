@@ -12,7 +12,6 @@
 import {
   isCredentialCapability,
   isV2Plugin,
-  type CredentialCapability,
   type CrossPluginCapability,
   type KuzoPlugin,
   type LoadResult,
@@ -22,7 +21,7 @@ import {
 } from "@kuzo-mcp/types";
 import type { PluginRegistry } from "./registry.js";
 import type { ConfigManager } from "./config.js";
-import type { CredentialSource } from "./credentials/index.js";
+import type { CredentialSource, DeclaredCredentialCapabilities } from "./credentials/index.js";
 import { createPluginLogger, KuzoLogger } from "./logger.js";
 import { ConsentStore } from "./consent.js";
 import type { AuditLogger } from "./audit.js";
@@ -106,6 +105,18 @@ export class PluginLoader {
     );
     await Promise.all(shutdowns);
     this.pluginProcesses.clear();
+  }
+
+  /**
+   * All loaded `PluginProcess` handles (spec §C.11). The credentials
+   * directory-watch in `runServer()` iterates these and calls
+   * `refreshCredentials()` on each. Returns every loaded process — spawned
+   * AND lazy-idle — so that `refreshCredentials` can update an idle process's
+   * stored env (it spawns fresh on next tool call) and notify a live one.
+   * Returns a fresh array each call; callers must not mutate it.
+   */
+  runningProcesses(): readonly PluginProcess[] {
+    return [...this.pluginProcesses.values()];
   }
 
   // -------------------------------------------------------------------------
@@ -194,17 +205,6 @@ export class PluginLoader {
   }
 
   // -------------------------------------------------------------------------
-  // Capability extraction
-  // -------------------------------------------------------------------------
-
-  /** Extract credential capabilities from a V2 plugin's manifest */
-  private extractCredentialCapabilities(plugin: KuzoPlugin): CredentialCapability[] {
-    if (!isV2Plugin(plugin)) return [];
-    const allCaps = [...plugin.capabilities, ...(plugin.optionalCapabilities ?? [])];
-    return allCaps.filter(isCredentialCapability);
-  }
-
-  // -------------------------------------------------------------------------
   // Plugin load
   // -------------------------------------------------------------------------
 
@@ -288,19 +288,25 @@ export class PluginLoader {
         return result;
       }
 
-      // Extract config — V2 derives from capabilities, V1 gets nothing
+      // Extract config — V2 derives from capabilities, V1 gets nothing.
+      // Keep the required-vs-optional split: PluginProcess stores it as
+      // `declaredCapabilities` so the §C.11 rotation watcher can re-resolve
+      // this plugin's creds via `extractForPlugin(proc.declaredCapabilities)`.
       let config: Map<string, string>;
       let missing: string[];
+      let declaredCaps: DeclaredCredentialCapabilities;
 
       if (isV2Plugin(plugin)) {
-        ({ config, missing } = this.credentialSource.extractForPlugin({
+        declaredCaps = {
           required: plugin.capabilities.filter(isCredentialCapability),
           optional: (plugin.optionalCapabilities ?? []).filter(isCredentialCapability),
-        }));
+        };
+        ({ config, missing } = this.credentialSource.extractForPlugin(declaredCaps));
       } else {
         // V1 plugins (behind KUZO_TRUST_LEGACY) get an empty config — no config declarations
         config = new Map();
         missing = [];
+        declaredCaps = { required: [], optional: [] };
       }
 
       if (missing.length > 0) {
@@ -310,10 +316,9 @@ export class PluginLoader {
         return result;
       }
 
-      // Extract deps and capabilities for the child process.
+      // Extract deps for the child process.
       // V1 plugins get null deps (unrestricted callTool). V2 gets scoped set.
       const deps = isV2Plugin(plugin) ? this.extractCrossPluginDeps(plugin) : null;
-      const capabilities = this.extractCredentialCapabilities(plugin);
       const pluginLogger = createPluginLogger(plugin.name);
 
       // Create PluginProcess — lazy, doesn't spawn until first tool call
@@ -321,7 +326,7 @@ export class PluginLoader {
         plugin.name,
         pluginEntryUrl,
         Object.fromEntries(config),
-        capabilities,
+        declaredCaps,
         deps,
         new KuzoLogger(plugin.name),
         this.registry,

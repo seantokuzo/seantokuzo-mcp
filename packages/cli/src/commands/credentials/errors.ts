@@ -34,6 +34,7 @@ export const CRED_EXIT = {
   E_CONFLICT: 77, // migrate (Theme 8)
   E_CRED_INVALID: 78,
   E_TEST_UNAVAILABLE: 79,
+  E_SERVER_BOOT_FAILED: 80, // kuzo serve (Theme 9) — moved from 70 per R44
 } as const;
 
 export type CredentialsErrorCode = keyof typeof CRED_EXIT;
