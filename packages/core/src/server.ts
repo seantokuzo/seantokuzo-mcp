@@ -23,7 +23,7 @@
  *   13. shutdown hooks (loader → registry → credentialStore.close → server.close)
  */
 
-import { existsSync, watch, type FSWatcher } from "node:fs";
+import { statSync, watch, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -391,18 +391,39 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
   //      "rotation" means "restart with a new env var".
   let watcher: FSWatcher | undefined;
 
+  // Last-seen credentials.enc stat ("mtimeMs:size"). We watch the whole kuzo
+  // home DIR, so our OWN audit.log write (credential.refreshed_in_flight) is a
+  // sibling-file change in the watched dir. On null-`filename` platforms that
+  // event isn't attributable to a file, so the handler would run, write
+  // audit.log again, and re-trigger itself — a permanent reload loop (R3
+  // Security). Stat-guarding on credentials.enc makes a run a cheap no-op
+  // unless the credential file ITSELF changed, which breaks the loop and also
+  // collapses redundant events for the same content.
+  let lastCredStat: string | undefined;
+
+  const credFileSig = (): string | undefined => {
+    try {
+      const s = statSync(credentialsFilePath());
+      return `${s.mtimeMs}:${s.size}`;
+    } catch {
+      // Gone (e.g. mid-wipe) or unreadable. Skip — the next set/rotate event
+      // re-creates the file and re-triggers us.
+      return undefined;
+    }
+  };
+
   const handleCredentialFileChange = async (): Promise<void> => {
     // Settle delay: an atomic write (tmp+rename) can fire its watch event a
     // hair before the new file is fully in place. 250ms lets it settle before
-    // we reload, without making rotation feel laggy. Burst coalescing is done
-    // by the `refreshPending` guard in the watch callback below — this body
-    // runs at most once per rotation.
+    // we reload. Burst coalescing is handled by the refreshing/rerun guard in
+    // the watch callback plus the stat check below, so this body does real
+    // work at most once per actual credential change.
     await debounce(250);
 
-    // Ignore unlink-only events (file gone, e.g. mid-wipe). The next set/rotate
-    // re-creates the file and fires another rename event, which sees the file
-    // present and proceeds to reload.
-    if (!existsSync(credentialsFilePath())) return;
+    const sig = credFileSig();
+    if (sig === undefined) return; // file gone (mid-wipe) — skip
+    if (sig === lastCredStat) return; // unchanged (e.g. our own audit write) — no-op
+    lastCredStat = sig;
 
     try {
       credentialStore.reload(); // re-decrypts; throws on corruption/tamper
@@ -470,11 +491,14 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
           }
         });
     };
+    // Seed the last-seen stat so an unrelated first dir event is a no-op.
+    lastCredStat = credFileSig();
     watcher = watch(watchDir, (eventType, filename) => {
       // `filename` can be null on some platforms/events. Treat null as
       // "unknown — reload anyway" instead of dropping it, so a revocation
       // (rotate-because-leaked) is never missed: fail-safe, not fail-stale.
-      // The existsSync + reload guards make a spurious reload cheap.
+      // The handler's stat-guard keeps a spurious reload a cheap no-op and
+      // prevents an audit-write feedback loop on null-filename platforms.
       if (filename !== null && filename !== credBasename) return;
       if (eventType !== "change" && eventType !== "rename") return;
       triggerRefresh();
