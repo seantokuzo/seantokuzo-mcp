@@ -344,6 +344,8 @@ Existing Phase 2 plugins continue working during the migration period. Each is m
 
 ## 6. Credential Broker
 
+> **Status: shipped.** The hybrid broker landed in Phase 2.5b–c (`packages/core/src/credentials.ts`). The encrypted at-rest store + `kuzo serve` boot path landed in Phase 2.6 (`packages/core/src/credentials/` + `packages/cli/src/commands/credentials/`). The §6.4 "phased storage" plan below is now realized — see the **Phase 2.6 shipped** subsection. Design origins are preserved in this file's git history.
+
 ### Decision: Hybrid Broker (Pre-Auth Clients + Scoped Fetch + Raw Escape Hatch)
 
 **Why not a single approach:**
@@ -422,12 +424,22 @@ For `getClient<T>()` to work, the broker needs to know how to create clients. Th
 
 ### Credential Storage (Phased)
 
-| Phase | Storage Backend | When |
+| Phase | Storage Backend | Status |
 |-------|----------------|------|
-| **2.5b** | Env vars (`.env` via dotenv) — same as today | Now — the value is the API contract, not the storage |
-| **2.5d+** | `@napi-rs/keyring` for desktop, encrypted file fallback for headless/CI | When open-sourcing |
+| **2.5b** | Env vars (`.env` via dotenv) — the value is the API contract, not the storage | Shipped |
+| **2.6** | AES-256-GCM file store keyed by `@napi-rs/keyring` (desktop) or a passphrase-derived key (headless/CI) | **Shipped** |
 
-`@napi-rs/keyring` (v1.2.0, 77k weekly npm downloads, Rust binding via napi-rs, keytar-compatible API, no libsecret dependency on Linux) replaces the archived `keytar`. macOS headless caveat: login keychain must be unlocked (typically auto-unlocked on desktop login; SSH requires `security unlock-keychain`).
+`@napi-rs/keyring` (exact-pinned `1.3.0`, Rust binding via napi-rs, keytar-compatible API, no libsecret dependency on Linux) replaces the archived `keytar`. macOS headless caveat: login keychain must be unlocked (typically auto-unlocked on desktop login; SSH requires `security unlock-keychain`) — or skip the keychain entirely with `KUZO_PASSPHRASE`.
+
+### Phase 2.6 shipped — encrypted store + `kuzo serve`
+
+The "value is the API contract, not the storage" promise from 2.5b held: the broker interface is unchanged, only the at-rest backend moved from plaintext env to an encrypted store.
+
+- **At-rest store** (`packages/core/src/credentials/`): AES-256-GCM, one record per env-name, written atomically with `0600` perms. The master key comes from a `KeyProvider` chosen at boot by §A.5 precedence — `KeychainKeyProvider` (OS keychain) by default; `PassphraseKeyProvider` when `KUZO_PASSPHRASE` is set; a null provider when `KUZO_DISABLE_KEYCHAIN` is set without a passphrase. A file/key state machine (`E_KEY_LOST` / `E_FILE_CORRUPTED`) refuses to silently re-init over an existing store.
+- **Boot path** (`kuzo serve`): the **parent** process eager-decrypts the store at load time and builds a per-plugin credential Map, which ships to plugin children over IPC. Children hold no `KeyProvider` and never see the master key. Before forking, `kuzo serve` **scrubs** the resolved secret env-names from `process.env` so a compromised child cannot read another plugin's token out of the inherited environment. The parent's `KUZO_PASSPHRASE` (master-key material) and the `KUZO_NO_ENV_SCRUB` kill-switch are both in the unconditional `ALWAYS_SCRUB` set (`packages/core/src/credentials/env-overrides.ts`) — removed from every child even when `--no-scrub` is set — so the passphrase you place in the *server* env never reaches a plugin. `--no-scrub` itself is gated behind `KUZO_DEV`.
+- **Rotation propagation** (§C.11): `kuzo credentials rotate` invalidates the running server's in-process decrypt cache via a watch on the store's *directory* (not the file — atomic-rename detaches a file watch), so first-party plugins pick up a new token on the next tool call without a restart.
+- **Strict env-name reservation** (§A.12): first-party env-names are frozen and validated at plugin install/update time before any state mutation, closing capability-env-naming collisions.
+- **Migration** (`kuzo credentials migrate`): imports secrets from `~/.claude/settings.json` env blocks and project `.env` files, then atomically redacts the sources (store-then-redact with read-back-verify + snapshot rollback; symlink-safe; parse-don't-line-strip so kept entries survive verbatim).
 
 ### Migration Path
 

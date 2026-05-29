@@ -31,6 +31,7 @@ Under the hood: process-isolated plugins, capability-based permissions, a creden
 - 🛡️ **Process isolation** — each plugin runs in its own Node child process, crash-recovered with exponential backoff, heartbeat-monitored, memory-capped.
 - 🔑 **Capability-based permissions** — plugins declare exactly what they need (credentials, network domains, filesystem paths, cross-plugin calls, OS exec). The loader enforces it.
 - 🪪 **Credential broker** — plugins get pre-authenticated clients or URL-scoped fetch wrappers. Raw token access is an audited escape hatch.
+- 🔐 **Encrypted credential store** — secrets live in an AES-256-GCM store keyed by the OS keychain (or a passphrase in headless mode), not in plaintext env blocks. Managed via `kuzo credentials set/list/rotate/delete/migrate`. `kuzo serve` decrypts at boot and scrubs secrets from the environment before forking plugin children.
 - ✅ **Consent flow** — stored per-plugin in `~/.kuzo/consent.json` with stale-detection on version or capability changes. Interactive review via `kuzo consent`.
 - 📋 **Structured audit log** — JSON-lines audit trail at `~/.kuzo/audit.log` covers plugin lifecycle, credential access, and consent decisions. Queryable via `kuzo audit`.
 
@@ -57,15 +58,22 @@ Kuzo is a pnpm workspace. Node.js 20+ and pnpm 10+ required.
 pnpm install
 pnpm build
 
-# Configure (pick the plugins you want to use)
-cp .env.example .env
-# edit .env — GITHUB_TOKEN, JIRA_HOST/EMAIL/API_TOKEN, etc.
+# Provision credentials into the encrypted store (keyed to your OS keychain)
+pnpm cli credentials set GITHUB_TOKEN
+pnpm cli credentials set JIRA_API_TOKEN
+# ...non-secret config (JIRA_HOST, JIRA_EMAIL, GITHUB_USERNAME) can stay in .env
 
 # Boot the MCP server (stdio)
-pnpm start:mcp
+pnpm cli serve
 
 # OR use the CLI directly
 pnpm cli
+```
+
+Already have secrets in a `.env` or a `~/.claude/settings.json` env block? Pull them into the encrypted store in one shot:
+
+```bash
+pnpm cli credentials migrate   # imports + atomically redacts the sources
 ```
 
 First run, you'll need to grant consent for each plugin:
@@ -84,27 +92,25 @@ KUZO_TRUST_ALL=true pnpm start:mcp
 
 ## 🧠 Wiring Kuzo into Claude
 
-**Claude Desktop** — edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Install the CLI (`npm install -g @kuzo-mcp/cli`), provision your secrets once with `kuzo credentials set`, then point your client at `kuzo serve`. The config block no longer carries any secrets — `kuzo serve` decrypts them from the store at boot:
+
+**Claude Desktop / Claude Code** — edit `~/Library/Application Support/Claude/claude_desktop_config.json` (or `~/.claude/settings.json`):
 
 ```json
 {
   "mcpServers": {
     "kuzo": {
-      "command": "node",
-      "args": ["/absolute/path/to/seantokuzo-mcp/packages/core/dist/server.js"],
-      "env": {
-        "GITHUB_TOKEN": "ghp_...",
-        "GITHUB_USERNAME": "your-username",
-        "JIRA_HOST": "yourco.atlassian.net",
-        "JIRA_EMAIL": "you@yourco.com",
-        "JIRA_API_TOKEN": "..."
-      }
+      "command": "kuzo",
+      "args": ["serve"],
+      "env": {}
     }
   }
 }
 ```
 
-**VS Code (Continue / Copilot MCP)** — same shape in `.vscode/mcp.json`. Each plugin is skipped gracefully if its required env vars aren't set, so you only need to provide credentials for what you actually want to use.
+**VS Code (Continue / Copilot MCP)** — same shape in `.vscode/mcp.json`. Each plugin is skipped gracefully if its credentials aren't provisioned, so you only need to `kuzo credentials set` what you actually want to use.
+
+**Headless / no desktop keychain** (CI, remote box): set `KUZO_PASSPHRASE` in the server's environment so `kuzo serve` can unlock the store without a keychain prompt. Non-secret config (`JIRA_HOST`, `JIRA_EMAIL`, `GITHUB_USERNAME`) can still come from the `env` block or a `.env` file.
 
 ---
 
@@ -151,7 +157,8 @@ seantokuzo-mcp/
 ├── docs/
 │   ├── PLANNING.md         # architecture spec
 │   ├── SECURITY.md         # security model + threat model
-│   ├── 2.5e-spec.md        # active phase spec (monorepo + supply chain)
+│   ├── 2.5e-spec.md        # supply-chain spec (shipped)
+│   ├── credentials-spec.md # encrypted credentials + kuzo serve spec (shipped)
 │   └── STATE.md            # session state + fresh-session handoff
 └── pnpm-workspace.yaml
 ```
@@ -162,13 +169,17 @@ Tech stack: TypeScript 5.5+ (strict), Node 20+, ESM, Zod for tool-input validati
 
 ## ⚙️ Environment variables
 
+Secrets (`GITHUB_TOKEN`, `JIRA_API_TOKEN`) belong in the encrypted store via `kuzo credentials set` — the table below documents the env-var names the store provisions, plus core/CLI knobs. A matching env var still works as an override for local dev, but `kuzo serve` scrubs them from the environment before forking plugin children.
+
 | Variable | Plugin | Required | Description |
 |---|---|---|---|
-| `GITHUB_TOKEN` | github | for github | GitHub Personal Access Token |
+| `GITHUB_TOKEN` | github | for github | GitHub Personal Access Token (store via `kuzo credentials set`) |
 | `GITHUB_USERNAME` | github | optional | Default owner for short repo names |
 | `JIRA_HOST` | jira | for jira | Jira Cloud hostname (`yourco.atlassian.net`) |
 | `JIRA_EMAIL` | jira | for jira | Email for Basic auth |
-| `JIRA_API_TOKEN` | jira | for jira | Atlassian API token |
+| `JIRA_API_TOKEN` | jira | for jira | Atlassian API token (store via `kuzo credentials set`) |
+| `KUZO_PASSPHRASE` | core | headless | Unlocks the credential store without an OS keychain |
+| `KUZO_DISABLE_KEYCHAIN` | core | optional | Force passphrase/null key provider instead of the OS keychain |
 | `CLI_PERSONALITY` | cli | optional | `chaotic` (default), `professional`, `zen` |
 | `KUZO_TRUST_ALL` | core | optional | `true` bypasses consent (dev only) |
 | `KUZO_TRUST_PLUGINS` | core | optional | CSV of plugin names to trust without consent |
@@ -195,20 +206,29 @@ Before every commit: `pnpm typecheck && pnpm lint && pnpm build`.
 
 ## 🗺️ Roadmap
 
-**Phase 2.5e — supply chain** (in progress)
+**Phase 2.5e — supply chain** (shipped)
 
 - [x] Monorepo restructure (pnpm workspaces, scoped `@kuzo-mcp/*` packages)
 - [x] Loader rewrite — package-name resolution with dev/installed dual-mode
-- [ ] Dev-to-install parity test + CI no-cross-plugin lint rule
-- [ ] Trusted publishing to npm via GitHub OIDC (tokenless)
-- [ ] Pre-install provenance verification (sigstore + pacote)
-- [ ] `kuzo plugins install/update/rollback` CLI
+- [x] Dev-to-install parity test + CI no-cross-plugin lint rule
+- [x] Trusted publishing to npm via GitHub OIDC (tokenless) + Sigstore provenance
+- [x] Pre-install provenance verification (sigstore + pacote)
+- [x] `kuzo plugins install/update/rollback` CLI
 
-**Phase 3+ — more plugins**
+**Phase 2.6 — encrypted credentials + `kuzo serve`** (shipped)
 
-- [ ] Apple TV plugin (Node.js control API research in progress)
+- [x] AES-256-GCM credential store keyed by OS keychain / passphrase
+- [x] `kuzo credentials set/list/delete/rotate/status/test/wipe/migrate`
+- [x] `kuzo serve` — parent-eager decrypt + env scrub before fork
+- [x] Live rotation propagation (directory-watch cache invalidation)
+- [x] Strict per-plugin env-name reservation + broker write-side audit
+
+**Next — real-life QA, then more plugins**
+
+- [ ] Bake-time: run the published `@kuzo-mcp/cli` as a daily-driver MCP server, file what surfaces
+- [ ] Apple TV plugin (Node.js control API research)
+- [ ] Hosted deployment + Claude.ai custom connector (SSE/HTTP transport)
 - [ ] Calendar, SMS, Confluence, and whatever else turns out to be worth the squeeze
-- [ ] Third-party plugin ecosystem once the install flow + provenance verification land
 
 ---
 

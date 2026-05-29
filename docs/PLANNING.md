@@ -491,7 +491,7 @@ Phase 1-2 build the plugin architecture under a **trusted plugin** assumption (a
 | **2.5b** | Credential broker | **Complete** (PR #12) | 2.5a |
 | **2.5c** | Consent flow + audit | **Complete** (PR #13) | 2.5b |
 | **2.5d** | Process isolation | **Complete** | 2.5a |
-| **2.5e** | Supply chain (npm publish + provenance) | Next up | 2.5d |
+| **2.5e** | Supply chain (npm publish + provenance) | **Complete** (all 6 `@kuzo-mcp/*` packages on npm with Sigstore provenance) | 2.5d |
 
 **2.5a — Manifest + Hardening** (complete)
 
@@ -549,14 +549,14 @@ packages/
 
 #### Success Criteria
 
-- [ ] A malicious third-party plugin cannot access other plugins' credentials
-- [ ] A malicious plugin cannot make unauthorized API calls on behalf of other plugins
-- [ ] Plugins cannot escape their declared filesystem/network sandbox
-- [ ] Users have visibility into every capability each plugin requests before installing
-- [ ] Plugin authors have a clear, documented path for declaring required permissions
-- [ ] Existing Phase 2 plugins are migrated without functionality loss
-- [ ] First-party plugins published as standalone npm packages with Sigstore provenance
-- [ ] Threat model doc is public and reviewable
+- [x] A malicious third-party plugin cannot access other plugins' credentials
+- [x] A malicious plugin cannot make unauthorized API calls on behalf of other plugins
+- [x] Plugins cannot escape their declared filesystem/network sandbox
+- [x] Users have visibility into every capability each plugin requests before installing
+- [x] Plugin authors have a clear, documented path for declaring required permissions
+- [x] Existing Phase 2 plugins are migrated without functionality loss
+- [x] First-party plugins published as standalone npm packages with Sigstore provenance
+- [x] Threat model doc is public and reviewable
 
 #### Decisions Made
 
@@ -571,11 +571,29 @@ packages/
 
 ---
 
-### Phase 2.6: Distribution & Packaging
+### Phase 2.6: Encrypted Credentials & `kuzo serve`
+
+**Goal:** Get secrets out of plaintext env blocks. Store credentials in an encrypted at-rest store, decrypt them in the parent at boot, and scrub them from the environment before forking plugin children — so a compromised plugin can't read another plugin's token out of the inherited env.
+
+**Status:** **Complete.** Spec: [`docs/credentials-spec.md`](./credentials-spec.md). Shipped as a 9-theme build (Themes 0–9, PRs #43–#57), closed with a coordinated patch-bump release of all 6 packages.
+
+**What shipped:**
+
+- **Encrypted store** (`packages/core/src/credentials/`) — AES-256-GCM, one record per env-name, atomic `0600` writes. Master key from a boot-selected `KeyProvider`: OS keychain (`@napi-rs/keyring`) by default, passphrase (`KUZO_PASSPHRASE`) for headless, null when `KUZO_DISABLE_KEYCHAIN` is set without a passphrase. File/key state machine refuses silent re-init (`E_KEY_LOST` / `E_FILE_CORRUPTED`).
+- **`kuzo credentials` command tree** — `set` / `list` / `delete` / `rotate` / `status` / `test` / `wipe` / `migrate`. Secrets are never passed as args/flags (TTY echo-off prompt or `--stdin`). `migrate` imports from `~/.claude/settings.json` env blocks + project `.env` files and atomically redacts the sources.
+- **`kuzo serve`** — friendly stdio MCP entry that wraps `runServer()`. Parent-eager decrypt at boot, per-plugin credential Map shipped to children over IPC (children hold no key), env scrub before fork, first-run summary on stderr.
+- **Live rotation propagation** (§C.11) — `rotate` invalidates the running server's decrypt cache via a directory-watch (atomic-rename-safe); plugins pick up the new token on the next tool call, no restart.
+- **Strict per-plugin env-name reservation** (§A.12) validated at install/update time; broker write-side audit events; audit IPC rate-limit + log rotation.
+
+**Versioning:** patch bumps per the pre-1.0 cadence — `0.0.3` across all 6 packages (`@kuzo-mcp/types` `0.0.1 → 0.0.3` via its linked group with `@kuzo-mcp/core`). `0.1.0` is reserved for the post-QA "trusted for daily use" milestone.
+
+---
+
+### Phase 2.7: Distribution & Packaging
 
 **Goal:** Make Kuzo MCP installable and configurable for non-author users across all major MCP clients. Ship the `kuzo setup` command that makes first-time setup a 3-command experience.
 
-**Status:** Planned. Depends on Phase 2.5e (supply chain) for npm packaging.
+**Status:** Planned (deferred — the original "2.6" slot in this doc; credentials took 2.6). Depends on Phase 2.5e (supply chain) for npm packaging.
 
 #### Distribution Tiers
 
