@@ -1,6 +1,6 @@
 {
   "name": "@kuzo-mcp/plugin-git-context",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Git context plugin for Kuzo MCP — detects repo, branch, and working tree state.",
   "type": "module",
   "license": "MIT",
@@ -35,7 +35,7 @@
     "zod": "^3.25.76"
   },
   "peerDependencies": {
-    "@kuzo-mcp/types": "^0.0.1"
+    "@kuzo-mcp/types": "^0.0.3"
   },
   "devDependencies": {
     "@kuzo-mcp/types": "workspace:^"

@@ -1,6 +1,6 @@
 {
   "name": "@kuzo-mcp/types",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "description": "Shared TypeScript types and zod-based tool helpers for Kuzo MCP plugins.",
   "type": "module",
   "license": "MIT",

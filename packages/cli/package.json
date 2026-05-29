@@ -1,6 +1,6 @@
 {
   "name": "@kuzo-mcp/cli",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Interactive CLI for Kuzo MCP — PR automation, code review, Jira, consent, audit.",
   "type": "module",
   "license": "MIT",
