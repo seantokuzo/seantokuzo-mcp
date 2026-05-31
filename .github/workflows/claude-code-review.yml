@@ -1,22 +1,20 @@
 name: Claude Auto Review
 
-# Tier 2: multi-specialist auto-review on PR open / draft -> ready.
+# Tier 2: multi-specialist review, DISPATCH-ONLY (no auto-fire on PR open).
 # Three concurrent specialists (Security / Architecture / Correctness) each
-# Opus 4.7 + --effort xhigh, then a synthesizer job (also Opus 4.7) reads
-# their JSON sentinels, posts a verdict sticky, and auto-applies the
-# `claude-deep-review` label when escalation criteria are met.
+# Opus 4.7 + --effort xhigh, then a deterministic `verdict` step
+# (.github/scripts/aggregate-verdict.mjs — plain Node, NO LLM) reads their
+# line-format sentinels and posts a verdict sticky. Escalation to deep review
+# is a RECOMMENDATION in the sticky; Tier 3 is dispatched manually.
 #
-# Round 1 fires automatically on PR open / ready_for_review. Subsequent
-# rounds are MANUAL via workflow_dispatch — Claude Code (the assistant)
-# judges whether the fix-push warrants another review (e.g. behavioural
-# changes, new code paths) instead of auto-spawning style-nit loops on
-# every push. Dispatch can request all specialists or just one (security /
-# architecture / correctness), useful for re-checking a single lane after
-# targeted fixes. Single-specialist runs skip the verdict synthesizer
-# (it needs all 3 sentinels to compute the aggregate verdict).
+# Every run is workflow_dispatch — Claude Code (the orchestrator) decides per
+# PR whether a review is warranted and which lanes to run. Dispatch can request
+# all specialists or just one (security / architecture / correctness), useful
+# for re-checking a single lane after targeted fixes. Single-specialist runs
+# skip the verdict step (it needs all 3 sentinels to aggregate).
 #
-# Tools: READ-ONLY. Write tools (Edit/Write/NotebookEdit) disallowed.
-# The verdict job is the only one allowed to apply the deep-review label.
+# Specialists are READ-ONLY (Edit/Write/NotebookEdit disallowed). The verdict
+# step is plain Node and applies no labels.
 #
 # UPSTREAM: this workflow was forked from the get-sean-done template.
 # Re-sync from `../get-sean-done/.github/workflows/claude-code-review.yml`
@@ -24,12 +22,12 @@ name: Claude Auto Review
 # rules below if the template gets meaningful updates.
 
 on:
-  pull_request:
-    # Only auto-fire round 1 (PR open / draft -> ready). Subsequent rounds
-    # are MANUAL via workflow_dispatch — Claude Code judges whether the
-    # fix-push warrants another review (e.g. behavioural changes, new code
-    # paths) instead of auto-spawning style-nit loops on every push.
-    types: [opened, ready_for_review]
+  # DISPATCH-ONLY: no auto-fire on PR open. Claude Code (the orchestrator)
+  # decides per PR whether to run none / normal (this) / deep review and
+  # dispatches it, so trivial PRs (docs, config, state files) cost zero Opus.
+  # Policy: functional code changes get a normal review by default; skip only
+  # non-functional changes. Run with:
+  #   gh workflow run claude-code-review.yml -f pr_number=<N> [-f specialist=all]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -157,21 +155,27 @@ jobs:
             1. `gh pr diff ${{ needs.preflight.outputs.pr_number }}` (read full diff)
             2. `gh pr view ${{ needs.preflight.outputs.pr_number }} --json title,body,additions,deletions,files`
             3. For each finding, post inline via mcp__github_inline_comment__create_inline_comment
-            4. Post ONE top-level summary comment. CRITICAL — the body contains
-               `|`, `>`, backticks, and apostrophes. NEVER pass it as a shell-quoted
-               argument (`--body '...'`); the review sandbox breaks the quoting and
-               you burn the turn budget on permission denials. ALWAYS pipe it through
-               a QUOTED heredoc to stdin so every byte is literal (one Bash call):
+            4. Emit the machine-readable verdict as a DEDICATED comment that
+               contains ONLY the line-format sentinel shown below — no other text
+               in that comment. It is LINE FORMAT (no JSON, no `{`, no `"`): the
+               sandbox Bash validator blocks `{` adjacent to `"`, so a JSON body
+               cannot post, but bare `key: value` lines always can. One Bash call:
                ```
                gh pr comment ${{ needs.preflight.outputs.pr_number }} --body-file - <<'KUZOEOF'
-               <BODY HERE — the JSON sentinel FIRST on its own lines, then the section>
+               <the sentinel block below, VERBATIM — nothing else in this comment>
                KUZOEOF
                ```
-               The body must be EXACTLY this (sentinel on its own lines so the
-               deterministic aggregator can parse it):
+            5. Post your human-readable findings as a SEPARATE top-level comment
+               (best-effort — if the sandbox blocks it because your prose contains
+               `{` next to `"`, rephrase or rely on your inline comments).
 
-            <!-- KUZO-REVIEW-JSON-SECURITY
-            {"verdict":"ship|fix-then-ship|rethink","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":true|false,"top_issues":[{"file":"path","line":N,"severity":"blocking|advisory","summary":"..."}],"rationale":"..."}
+            Sentinel block (post as its own comment) + summary section:
+
+            <!-- KUZO-REVIEW-SECURITY
+            verdict: ship | fix-then-ship | rethink
+            blocking: <N>
+            advisory: <N>
+            sensitive: true | false
             -->
 
             ## 🔒 Security Review
@@ -183,7 +187,7 @@ jobs:
 
             ---
 
-            sensitive_paths_touched should be `true` if the diff includes any of:
+            Set `sensitive: true` in the sentinel if the diff includes any of:
             - packages/core/src/loader/
             - packages/core/src/install/
             - packages/cli/src/install*
@@ -288,21 +292,27 @@ jobs:
             1. `gh pr diff ${{ needs.preflight.outputs.pr_number }}`
             2. `gh pr view ${{ needs.preflight.outputs.pr_number }} --json files`
             3. Inline-comment each finding via mcp__github_inline_comment__create_inline_comment
-            4. Post ONE top-level summary comment. CRITICAL — the body contains
-               `|`, `>`, backticks, and apostrophes. NEVER pass it as a shell-quoted
-               argument (`--body '...'`); the review sandbox breaks the quoting and
-               you burn the turn budget on permission denials. ALWAYS pipe it through
-               a QUOTED heredoc to stdin so every byte is literal (one Bash call):
+            4. Emit the machine-readable verdict as a DEDICATED comment that
+               contains ONLY the line-format sentinel shown below — no other text
+               in that comment. It is LINE FORMAT (no JSON, no `{`, no `"`): the
+               sandbox Bash validator blocks `{` adjacent to `"`, so a JSON body
+               cannot post, but bare `key: value` lines always can. One Bash call:
                ```
                gh pr comment ${{ needs.preflight.outputs.pr_number }} --body-file - <<'KUZOEOF'
-               <BODY HERE — the JSON sentinel FIRST on its own lines, then the section>
+               <the sentinel block below, VERBATIM — nothing else in this comment>
                KUZOEOF
                ```
-               The body must be EXACTLY this (sentinel on its own lines so the
-               deterministic aggregator can parse it):
+            5. Post your human-readable findings as a SEPARATE top-level comment
+               (best-effort — if the sandbox blocks it because your prose contains
+               `{` next to `"`, rephrase or rely on your inline comments).
 
-            <!-- KUZO-REVIEW-JSON-ARCHITECTURE
-            {"verdict":"ship|fix-then-ship|rethink","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":true|false,"top_issues":[{"file":"path","line":N,"severity":"blocking|advisory","summary":"..."}],"rationale":"..."}
+            Sentinel block (post as its own comment) + summary section:
+
+            <!-- KUZO-REVIEW-ARCHITECTURE
+            verdict: ship | fix-then-ship | rethink
+            blocking: <N>
+            advisory: <N>
+            sensitive: true | false
             -->
 
             ## 🏗️ Architecture Review
@@ -314,7 +324,7 @@ jobs:
 
             ---
 
-            sensitive_paths_touched should be `true` if the diff includes any of:
+            Set `sensitive: true` in the sentinel if the diff includes any of:
             - packages/core/src/loader/
             - packages/core/src/registry/
             - packages/types/src/
@@ -417,21 +427,28 @@ jobs:
             1. `gh pr diff ${{ needs.preflight.outputs.pr_number }}`
             2. If CI is red, fetch the failing job logs via mcp__github_ci__download_job_log
             3. Inline-comment each finding via mcp__github_inline_comment__create_inline_comment
-            4. Post ONE top-level summary comment. CRITICAL — the body contains
-               `|`, `>`, backticks, and apostrophes. NEVER pass it as a shell-quoted
-               argument (`--body '...'`); the review sandbox breaks the quoting and
-               you burn the turn budget on permission denials. ALWAYS pipe it through
-               a QUOTED heredoc to stdin so every byte is literal (one Bash call):
+            4. Emit the machine-readable verdict as a DEDICATED comment that
+               contains ONLY the line-format sentinel shown below — no other text
+               in that comment. It is LINE FORMAT (no JSON, no `{`, no `"`): the
+               sandbox Bash validator blocks `{` adjacent to `"`, so a JSON body
+               cannot post, but bare `key: value` lines always can. One Bash call:
                ```
                gh pr comment ${{ needs.preflight.outputs.pr_number }} --body-file - <<'KUZOEOF'
-               <BODY HERE — the JSON sentinel FIRST on its own lines, then the section>
+               <the sentinel block below, VERBATIM — nothing else in this comment>
                KUZOEOF
                ```
-               The body must be EXACTLY this (sentinel on its own lines so the
-               deterministic aggregator can parse it):
+            5. Post your human-readable findings as a SEPARATE top-level comment
+               (best-effort — if the sandbox blocks it because your prose contains
+               `{` next to `"`, rephrase or rely on your inline comments).
 
-            <!-- KUZO-REVIEW-JSON-CORRECTNESS
-            {"verdict":"ship|fix-then-ship|rethink","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":false,"ci_failing":true|false,"top_issues":[{"file":"path","line":N,"severity":"blocking|advisory","summary":"..."}],"rationale":"..."}
+            Sentinel block (post as its own comment) + summary section:
+
+            <!-- KUZO-REVIEW-CORRECTNESS
+            verdict: ship | fix-then-ship | rethink
+            blocking: <N>
+            advisory: <N>
+            sensitive: false
+            ci_failing: true | false
             -->
 
             ## ✅ Correctness Review

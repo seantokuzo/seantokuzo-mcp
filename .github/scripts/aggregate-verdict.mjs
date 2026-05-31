@@ -4,50 +4,47 @@
  *
  * Deterministic replacement for the LLM "verdict synthesizer" job in the
  * Tier 2 (claude-code-review.yml) and Tier 3 (claude-deep-review.yml)
- * auto-review pipelines.
+ * auto-review pipelines. Runs in a normal (unsandboxed) GitHub Actions `run:`
+ * step — no LLM, no Opus cost, no turn budget. Posts the verdict sticky via
+ * `gh api --input -` with the body as a JSON value on stdin, so no shell ever
+ * parses the body's special bytes.
  *
- * WHY: the old synthesizer was an Opus job running inside
- * anthropics/claude-code-action's SANDBOXED Bash tool, where pipes /
- * redirection / command-substitution / brace-adjacent quotes are blocked —
- * exactly the shell features needed to write the verdict sticky, whose body
- * contains `|`, `>`, backticks, and apostrophes. It repeatedly crashed with
- * error_max_turns fighting the quoting, despite doing only deterministic
- * arithmetic (sum counts, compare thresholds, increment a round number,
- * template a body). This script does that arithmetic in plain Node, runs in
- * a NORMAL (unsandboxed) GitHub Actions `run:` step, and writes the sticky
- * via `gh api --input -` with the body delivered as a JSON value on stdin —
- * argv + JSON-stdin means no shell ever sees the body's special bytes, so the
- * crash class is gone by construction. It also kills the Opus cost and the
- * hallucinated "auto-escalated to deep review" failure mode.
+ * SENTINEL FORMAT (line-based, NOT JSON). Specialists emit:
+ *   <!-- KUZO-REVIEW-<LANE>
+ *   verdict: ship | fix-then-ship | rethink
+ *   blocking: <N>
+ *   advisory: <N>
+ *   sensitive: true | false
+ *   ci_failing: true | false      (correctness lane)
+ *   tier: deep                    (deep review only)
+ *   threat: <S|T|R|I|D|E> | <summary>   (threat-model lane, repeatable)
+ *   -->
+ * WHY line format: claude-code-action's in-sandbox Bash validator hard-blocks
+ * any `gh pr comment` whose body contains `{` adjacent to `"` ("expansion
+ * obfuscation"), which is exactly the shape of a JSON sentinel — so specialists
+ * could not reliably post a JSON sentinel (observed on PR #61). A `key: value`
+ * block has no braces or quotes, so it always passes. Specialists post the
+ * sentinel as a DEDICATED comment (no free text → can never reintroduce `{"`).
+ *
+ * The aggregator scans BOTH issue comments and inline (pulls) review comments,
+ * so a sentinel posted via the validator-immune MCP inline tool is still found.
+ *
+ * TRUST MODEL: sentinels are matched by marker only, no comment-author check,
+ * most-recent-per-lane wins. On a public repo a non-bot commenter could forge a
+ * sentinel. Accepted: workflows trigger on dispatch / pull_request (never
+ * pull_request_target), preflight gates the repo, the verdict is advisory
+ * bookkeeping (the impartial judge + human merge are the real gate), and an
+ * author filter on `user.login` was rejected as too brittle (a renamed bot login
+ * would blank every lane). The self-poisoning guard (skip comments carrying a
+ * sticky marker) prevents the bot's own sticky from being re-parsed.
  *
  * Two entry points:
- *   - aggregate({ comments, prMeta, laneResults, tier }) — PURE function, no
- *     I/O. Returns the computed verdict + the exact sticky body. Unit-tested
- *     in aggregate-verdict.test.mjs.
- *   - main() — CLI wrapper. Reads env, fetches PR comments + metadata via gh,
- *     calls aggregate(), then creates/updates the sticky comment and (Tier 2
- *     only) applies the `claude-deep-review` escalation label.
+ *   - aggregate({ comments, prMeta, laneResults, tier }) — PURE, no I/O.
+ *   - main() — CLI: fetch comments + PR meta via gh, aggregate, post the sticky.
  *
- * Invoked from a workflow `run:` step as: node .github/scripts/aggregate-verdict.mjs
  * Env: PR_NUMBER, GITHUB_REPOSITORY, GH_TOKEN, TIER (standard|deep),
- *      SECURITY_RESULT, ARCHITECTURE_RESULT, CORRECTNESS_RESULT,
- *      THREATMODEL_RESULT (each = the GitHub Actions `needs.<job>.result`).
- *
+ *      SECURITY_RESULT, ARCHITECTURE_RESULT, CORRECTNESS_RESULT, THREATMODEL_RESULT.
  * No product dependencies — pure Node so the workflow step needs no install.
- *
- * TRUST MODEL: sentinels are matched by marker only, with no comment-author
- * check, and most-recent-per-lane wins. On a public repo a non-bot commenter
- * could post a forged `<!-- KUZO-REVIEW-JSON-<LANE> ... -->` block and override
- * a genuine specialist verdict. This is accepted: the workflows trigger on
- * `pull_request` (not `pull_request_target`) and preflight gates the repo, so a
- * fork PR runs token-scoped with no secrets; the verdict is advisory bookkeeping
- * (the impartial judge + human merge are the real gate), not a merge gate; and
- * the old LLM synth read the same comment set with no author check either — so
- * this is a documented limitation, not a regression. An author filter on
- * `user.login` was considered and rejected as too brittle (a renamed bot login
- * would silently blank every lane). The self-poisoning guard below (skip any
- * comment carrying a sticky marker) prevents the bot's own sticky from being
- * re-parsed as a sentinel.
  */
 
 import { execFileSync } from "node:child_process";
@@ -68,7 +65,6 @@ const TIER_LANES = {
 };
 
 const STICKY_MARKERS = ["KUZO-DEEP-VERDICT-STICKY", "KUZO-VERDICT-STICKY"];
-const ESCALATION_LABEL = "claude-deep-review";
 const VALID_VERDICTS = new Set(["ship", "fix-then-ship", "rethink"]);
 
 // --- small helpers --------------------------------------------------------
@@ -87,26 +83,46 @@ function isStickyComment(body) {
 // --- sentinel + sticky extraction (pure) ----------------------------------
 
 /**
- * Pull the relevant JSON sentinel for one lane out of the comment list.
- *
- * Specialist sentinels look like `<!-- KUZO-REVIEW-JSON-<LANE>\n{json}\n-->`.
- * Real-world data shows the JSON appears compact, spaced, AND multi-line
- * pretty-printed, so we capture everything between the marker and the first
- * `-->` (non-greedy) and JSON.parse it — never a line-based assumption.
- *
- * Rules:
+ * Parse a line-format sentinel body into a field map. Returns null if no
+ * `key: value` line is present. `threat:` lines accumulate into `threats`.
+ */
+function parseSentinelLines(text) {
+  const map = {};
+  const threats = [];
+  let sawKey = false;
+  for (const raw of String(text).split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const idx = line.indexOf(":");
+    if (idx < 1) continue;
+    const key = line.slice(0, idx).trim().toLowerCase();
+    const val = line.slice(idx + 1).trim();
+    if (!key) continue;
+    if (key === "threat") {
+      if (val) threats.push(val);
+      sawKey = true;
+      continue;
+    }
+    map[key] = val;
+    sawKey = true;
+  }
+  if (!sawKey) return null;
+  if (threats.length) map.threats = threats;
+  return map;
+}
+
+/**
+ * Pull the relevant sentinel for one lane out of the comment list.
  *   - comments must be chronological-ascending (aggregate() sorts them).
- *   - skip sticky comments entirely (self-poisoning guard).
- *   - parse every block; a malformed block is ignored, never thrown.
+ *   - skip sticky comments (self-poisoning guard).
  *   - "most recent instance wins" across rounds.
- *   - tier "deep": prefer a sentinel carrying `"tier":"deep"` even if a
- *     Tier-2 sentinel is chronologically newer; fall back to most-recent.
+ *   - tier "deep": prefer a sentinel carrying `tier: deep` even if a Tier-2
+ *     sentinel is chronologically newer; else most-recent.
  */
 export function extractSentinel(comments, laneKey, tier) {
-  const re = new RegExp(
-    "<!--\\s*KUZO-REVIEW-JSON-" + laneKey + "\\s*([\\s\\S]*?)-->",
-    "g",
-  );
+  // \b after the lane key prevents KUZO-REVIEW-SECURITY matching e.g. a
+  // mistyped KUZO-REVIEW-SECURITYEXTRA marker.
+  const re = new RegExp("<!--\\s*KUZO-REVIEW-" + laneKey + "\\b\\s*([\\s\\S]*?)-->", "g");
   let mostRecent = null;
   let mostRecentDeep = null;
   let sawUnparseable = false;
@@ -116,14 +132,8 @@ export function extractSentinel(comments, laneKey, tier) {
     re.lastIndex = 0;
     let m;
     while ((m = re.exec(body)) !== null) {
-      let parsed;
-      try {
-        parsed = JSON.parse(m[1].trim());
-      } catch {
-        sawUnparseable = true;
-        continue;
-      }
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      const parsed = parseSentinelLines(m[1]);
+      if (!parsed) {
         sawUnparseable = true;
         continue;
       }
@@ -137,9 +147,8 @@ export function extractSentinel(comments, laneKey, tier) {
 
 /**
  * Find the existing verdict sticky (last one wins) and compute THIS round's
- * number from its `VERDICT_ROUND:` / `DEEP_VERDICT_ROUND:` marker + 1.
- * No sticky → round 1. Sticky present but round unparseable → round 2 (a
- * sticky existing implies at least one prior round happened).
+ * number from its round marker + 1. No sticky → round 1. Sticky present but
+ * round unparseable → round 2 (a sticky implies a prior round happened).
  */
 export function findExistingSticky(comments, tier) {
   const marker = tier === "deep" ? "KUZO-DEEP-VERDICT-STICKY" : "KUZO-VERDICT-STICKY";
@@ -160,10 +169,9 @@ function buildLane(comments, laneId, tier, jobResult) {
   const meta = LANES[laneId];
   const { sentinel, sawUnparseable } = extractSentinel(comments, meta.key, tier);
   const jobOk = jobResult === undefined || jobResult === "" || jobResult === "success";
-  // A sentinel is only USABLE if it carries a recognized verdict. A parseable
-  // JSON object without a valid verdict is treated as a degraded lane (not
-  // "present") — never trust the LLM to have produced a usable opinion, so a
-  // verdict-less sentinel can never let the aggregate report "ship".
+  // A sentinel is USABLE only if it carries a recognized verdict. A sentinel
+  // without a valid verdict is a degraded lane (never "present"), so it can
+  // never let the aggregate report "ship".
   if (sentinel && VALID_VERDICTS.has(sentinel.verdict)) {
     return {
       id: laneId,
@@ -171,11 +179,10 @@ function buildLane(comments, laneId, tier, jobResult) {
       label: meta.label,
       present: true,
       verdict: sentinel.verdict,
-      blocking: num(sentinel.blocking_count),
-      advisory: num(sentinel.advisory_count),
-      sensitive: sentinel.sensitive_paths_touched === true,
-      ciFailing: typeof sentinel.ci_failing === "boolean" ? sentinel.ci_failing : null,
-      topIssues: Array.isArray(sentinel.top_issues) ? sentinel.top_issues : [],
+      blocking: num(sentinel.blocking),
+      advisory: num(sentinel.advisory),
+      sensitive: sentinel.sensitive === "true",
+      ciFailing: sentinel.ci_failing === "true" ? true : sentinel.ci_failing === "false" ? false : null,
       threats: Array.isArray(sentinel.threats) ? sentinel.threats : [],
       jobResult: jobResult ?? null,
       jobOk,
@@ -185,7 +192,7 @@ function buildLane(comments, laneId, tier, jobResult) {
   const reason = !jobOk
     ? "job-failed"
     : sentinel
-      ? "no-verdict" // parseable sentinel but verdict not in the {ship,fix-then-ship,rethink} enum
+      ? "no-verdict" // a sentinel was parsed but its verdict is not in the enum
       : sawUnparseable
         ? "malformed-sentinel"
         : "no-sentinel";
@@ -199,7 +206,6 @@ function buildLane(comments, laneId, tier, jobResult) {
     advisory: 0,
     sensitive: false,
     ciFailing: null,
-    topIssues: [],
     threats: [],
     jobResult: jobResult ?? null,
     jobOk,
@@ -220,31 +226,15 @@ function laneLine(l) {
   );
 }
 
-function collectActionItems(lanes, max) {
-  const out = [];
-  for (const sev of ["blocking", "advisory"]) {
-    for (const l of lanes) {
-      for (const iss of l.topIssues) {
-        const severity = typeof iss?.severity === "string" ? iss.severity : "advisory";
-        if (severity !== sev) continue;
-        const file = typeof iss?.file === "string" ? iss.file : "?";
-        const line = iss?.line != null && iss.line !== "" ? ":" + iss.line : "";
-        const summary = typeof iss?.summary === "string" ? iss.summary : "(no summary)";
-        out.push("- [ ] " + summary + " — `" + file + line + "`");
-        if (out.length >= max) return out;
-      }
-    }
-  }
-  return out;
-}
-
 function collectThreats(lanes, max) {
   const tm = lanes.find((l) => l.id === "threatmodel");
   if (!tm || !tm.present) return [];
   return tm.threats.slice(0, max).map((t) => {
-    const cat = typeof t?.category === "string" ? t.category : "?";
-    const sum = typeof t?.summary === "string" ? t.summary : "(no summary)";
-    return "- " + cat + ": " + sum;
+    // threat line is "<category> | <summary>"; tolerate a missing pipe.
+    const bar = t.indexOf("|");
+    const cat = bar >= 0 ? t.slice(0, bar).trim() : "?";
+    const sum = bar >= 0 ? t.slice(bar + 1).trim() : t.trim();
+    return "- " + (cat || "?") + ": " + (sum || "(no summary)");
   });
 }
 
@@ -254,7 +244,6 @@ function renderSticky(a) {
   const roundLabel = isDeep ? "DEEP_VERDICT_ROUND" : "VERDICT_ROUND";
   const title = isDeep ? "Deep Review Verdict" : "Auto-Review Verdict";
   const specialistsHeader = isDeep ? "### Specialists (deep mode)" : "### Specialists";
-  const maxItems = isDeep ? 7 : 5;
 
   const L = [];
   L.push("<!-- " + marker + " -->");
@@ -279,24 +268,21 @@ function renderSticky(a) {
   L.push(specialistsHeader);
   for (const l of a.lanes) L.push(laneLine(l));
   L.push("");
-  L.push("### Top action items");
-  const items = collectActionItems(a.lanes, maxItems);
-  if (items.length === 0) L.push("- _none_");
-  else for (const it of items) L.push(it);
   if (isDeep) {
-    L.push("");
     L.push("### Top threats (from threat model)");
-    const threats = collectThreats(a.lanes, maxItems);
+    const threats = collectThreats(a.lanes, 7);
     if (threats.length === 0) L.push("- _none_");
     else for (const t of threats) L.push(t);
+    L.push("");
   }
+  L.push("_Line-level findings are in the specialist comments + inline review threads above._");
   L.push("");
   L.push("---");
   L.push("");
   if (!isDeep && a.escalate) {
-    L.push("> 🚨 Escalation criteria met — label `" + ESCALATION_LABEL + "` applied (reason: " + a.escalateReason + ").");
+    L.push("> 🚨 Escalation criteria met (reason: " + a.escalateReason + ").");
     L.push(
-      "> ⚠️ The bot-applied label does NOT auto-trigger Tier 3 — GitHub suppresses workflow events from the default token. Dispatch it manually: `gh workflow run claude-deep-review.yml -f pr_number=<N>`.",
+      "> Consider a deep review: `gh workflow run claude-deep-review.yml -f pr_number=" + (a.prNumber || "<N>") + "`.",
     );
     L.push("");
   }
@@ -316,18 +302,15 @@ function renderSticky(a) {
 
 /**
  * Compute the aggregate verdict + sticky body from PR comments + metadata.
- * Pure — no network, no env, no process exit. Inputs:
- *   comments    : array of { id, body, created_at } (gh issue comments)
- *   prMeta      : { additions, deletions, labels, headRefOid }
- *   laneResults : { security, architecture, correctness, threatmodel } —
- *                 each the GitHub Actions `needs.<job>.result` string.
- *   tier        : "standard" | "deep"
+ * Pure — no network, no env, no process exit. `comments` should include both
+ * issue comments and inline (pulls) review comments. Escalation is computed as
+ * a RECOMMENDATION only (dispatch-only model — no label is applied, since the
+ * deep tier is triggered manually via workflow_dispatch).
  */
 export function aggregate({ comments = [], prMeta = {}, laneResults = {}, tier = "standard" } = {}) {
   const t = tier === "deep" ? "deep" : "standard";
   const laneIds = TIER_LANES[t];
 
-  // Order-independence: sort chronologically; ISO-8601 strings compare lexically.
   const ordered = [...comments].sort((a, b) =>
     String(a?.created_at ?? "").localeCompare(String(b?.created_at ?? "")),
   );
@@ -342,26 +325,21 @@ export function aggregate({ comments = [], prMeta = {}, laneResults = {}, tier =
   const correctness = lanes.find((l) => l.id === "correctness");
   const ciFailing = correctness && correctness.present ? correctness.ciFailing : null;
 
-  // Verdict ladder: rethink > fix-then-ship > ship.
   let verdict;
   if (present.some((l) => l.verdict === "rethink")) verdict = "rethink";
   else if (totalBlocking > 0) verdict = "fix-then-ship";
   else verdict = "ship";
-  // Never report "ship" when a lane is missing — an unknown lane is not a clean lane.
   if (degraded && verdict === "ship") verdict = "fix-then-ship";
 
   const { comment: existingSticky, round } = findExistingSticky(ordered, t);
 
-  // 4-round cap (faithful to the original LLM prose + global "max 4 rounds"):
-  //   - round >= 4 is the FINAL allowed round → show the human-decides banner
-  //     and suppress auto-escalation (the next step is a human, not more bot).
-  //   - round > 4 means the loop ran past the cap unresolved → force "rethink".
-  // A clean round-4 ship therefore stays "ship" (you CAN merge a clean final
-  // round); only an over-cap round flips the verdict.
+  // 4-round cap: round >= 4 is the final allowed round (banner + escalation
+  // suppressed); round > 4 forces "rethink". A clean round-4 ship stays ship.
   const capReached = round >= 4;
   if (round > 4) verdict = "rethink";
 
-  // Escalation: Tier 2 only, never at the cap.
+  // Escalation RECOMMENDATION (standard tier, not at the cap). No label is
+  // applied — Tier 3 is dispatched manually under the dispatch-only model.
   const diffTotal = num(prMeta.additions) + num(prMeta.deletions);
   let escalate = false;
   let escalateReason = null;
@@ -381,12 +359,6 @@ export function aggregate({ comments = [], prMeta = {}, laneResults = {}, tier =
     }
   }
 
-  const labelNames = Array.isArray(prMeta.labels)
-    ? prMeta.labels.map((l) => (typeof l === "string" ? l : l?.name)).filter(Boolean)
-    : [];
-  const labelAlreadyPresent = labelNames.includes(ESCALATION_LABEL);
-  const applyLabel = escalate && !labelAlreadyPresent;
-
   const headSha = typeof prMeta.headRefOid === "string" && /^[0-9a-f]{7,64}$/.test(prMeta.headRefOid)
     ? prMeta.headRefOid
     : null;
@@ -404,6 +376,7 @@ export function aggregate({ comments = [], prMeta = {}, laneResults = {}, tier =
     capReached,
     degraded,
     headSha,
+    prNumber: prMeta.number ?? null,
   };
   const stickyBody = renderSticky(view);
 
@@ -411,8 +384,6 @@ export function aggregate({ comments = [], prMeta = {}, laneResults = {}, tier =
     ...view,
     sensitivePaths,
     diffTotal,
-    applyLabel,
-    labelAlreadyPresent,
     existingStickyId: existingSticky ? existingSticky.id : null,
     stickyBody,
   };
@@ -424,8 +395,13 @@ function gh(args, opts = {}) {
   return execFileSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...opts });
 }
 
-function ghJson(args) {
-  return JSON.parse(gh(args));
+function ghJsonSafe(args, fallback) {
+  try {
+    return JSON.parse(gh(args));
+  } catch (err) {
+    console.error("⚠️ gh " + args.join(" ") + " failed: " + (err instanceof Error ? err.message : String(err)));
+    return fallback;
+  }
 }
 
 function required(name) {
@@ -448,16 +424,16 @@ function main() {
     threatmodel: process.env.THREATMODEL_RESULT,
   };
 
-  const comments = ghJson(["api", "--paginate", "repos/" + repo + "/issues/" + pr + "/comments"]);
-  const prMeta = ghJson([
-    "pr",
-    "view",
-    pr,
-    "--repo",
-    repo,
-    "--json",
-    "additions,deletions,labels,headRefOid",
-  ]);
+  // Sentinels may land as a top-level issue comment OR (validator-immune
+  // fallback) an inline review comment — scan both endpoints.
+  const issueComments = ghJsonSafe(["api", "--paginate", "repos/" + repo + "/issues/" + pr + "/comments"], []);
+  const inlineComments = ghJsonSafe(["api", "--paginate", "repos/" + repo + "/pulls/" + pr + "/comments"], []);
+  const comments = [...issueComments, ...inlineComments];
+
+  const prMeta = ghJsonSafe(
+    ["pr", "view", pr, "--repo", repo, "--json", "additions,deletions,headRefOid,number"],
+    {},
+  );
 
   const result = aggregate({ comments, prMeta, laneResults, tier });
 
@@ -474,26 +450,6 @@ function main() {
       input: payload,
     });
     console.log("✓ created sticky comment");
-  }
-
-  if (result.applyLabel) {
-    try {
-      gh([
-        "label",
-        "create",
-        ESCALATION_LABEL,
-        "--repo",
-        repo,
-        "--color",
-        "B60205",
-        "--description",
-        "Trigger deep multi-specialist review",
-      ]);
-    } catch {
-      // label already exists — fine
-    }
-    gh(["pr", "edit", pr, "--repo", repo, "--add-label", ESCALATION_LABEL]);
-    console.log("✓ applied escalation label (" + result.escalateReason + ")");
   }
 
   console.log(
