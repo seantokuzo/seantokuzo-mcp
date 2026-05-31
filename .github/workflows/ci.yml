@@ -147,6 +147,24 @@ jobs:
       - name: Run provenance smoke (real npm + Sigstore TUF + Rekor)
         run: pnpm run test:provenance
 
+  verdict-aggregator:
+    name: Verdict aggregator tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "^22.9.0"
+
+      # Pure Node, zero deps — no pnpm install. Guards the script that computes
+      # every PR's review verdict (.github/scripts/aggregate-verdict.mjs), which
+      # replaced the flaky LLM synthesizer. It is the only test of that logic,
+      # so it gates ci-success.
+      - name: Run aggregator unit tests
+        run: node --test .github/scripts/*.test.mjs
+
   # ==========================================================================
   # Tests — uncomment once vitest is set up
   # ==========================================================================
@@ -180,7 +198,7 @@ jobs:
   label-pr:
     name: Label PR
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, build, parity, provenance]
+    needs: [lint, typecheck, build, parity, provenance, verdict-aggregator]
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Add CI Pass label
@@ -189,7 +207,8 @@ jobs:
           needs.typecheck.result == 'success' &&
           needs.build.result == 'success' &&
           needs.parity.result == 'success' &&
-          needs.provenance.result == 'success'
+          needs.provenance.result == 'success' &&
+          needs.verdict-aggregator.result == 'success'
         uses: actions/github-script@v7
         with:
           script: |
@@ -204,7 +223,8 @@ jobs:
           needs.typecheck.result == 'failure' ||
           needs.build.result == 'failure' ||
           needs.parity.result == 'failure' ||
-          needs.provenance.result == 'failure'
+          needs.provenance.result == 'failure' ||
+          needs.verdict-aggregator.result == 'failure'
         uses: actions/github-script@v7
         with:
           script: |
@@ -219,7 +239,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, build, parity, provenance]
+    needs: [lint, typecheck, build, parity, provenance, verdict-aggregator]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -228,7 +248,8 @@ jobs:
              [[ "${{ needs.typecheck.result }}" != "success" ]] || \
              [[ "${{ needs.build.result }}" != "success" ]] || \
              [[ "${{ needs.parity.result }}" != "success" ]] || \
-             [[ "${{ needs.provenance.result }}" != "success" ]]; then
+             [[ "${{ needs.provenance.result }}" != "success" ]] || \
+             [[ "${{ needs.verdict-aggregator.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
           fi

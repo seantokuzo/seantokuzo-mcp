@@ -157,7 +157,18 @@ jobs:
             1. `gh pr diff ${{ needs.preflight.outputs.pr_number }}` (read full diff)
             2. `gh pr view ${{ needs.preflight.outputs.pr_number }} --json title,body,additions,deletions,files`
             3. For each finding, post inline via mcp__github_inline_comment__create_inline_comment
-            4. Post ONE top-level summary via `gh pr comment` with this exact structure:
+            4. Post ONE top-level summary comment. CRITICAL — the body contains
+               `|`, `>`, backticks, and apostrophes. NEVER pass it as a shell-quoted
+               argument (`--body '...'`); the review sandbox breaks the quoting and
+               you burn the turn budget on permission denials. ALWAYS pipe it through
+               a QUOTED heredoc to stdin so every byte is literal (one Bash call):
+               ```
+               gh pr comment ${{ needs.preflight.outputs.pr_number }} --body-file - <<'KUZOEOF'
+               <BODY HERE — the JSON sentinel FIRST on its own lines, then the section>
+               KUZOEOF
+               ```
+               The body must be EXACTLY this (sentinel on its own lines so the
+               deterministic aggregator can parse it):
 
             <!-- KUZO-REVIEW-JSON-SECURITY
             {"verdict":"ship|fix-then-ship|rethink","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":true|false,"top_issues":[{"file":"path","line":N,"severity":"blocking|advisory","summary":"..."}],"rationale":"..."}
@@ -277,7 +288,18 @@ jobs:
             1. `gh pr diff ${{ needs.preflight.outputs.pr_number }}`
             2. `gh pr view ${{ needs.preflight.outputs.pr_number }} --json files`
             3. Inline-comment each finding via mcp__github_inline_comment__create_inline_comment
-            4. Post ONE top-level summary via `gh pr comment` with this exact structure:
+            4. Post ONE top-level summary comment. CRITICAL — the body contains
+               `|`, `>`, backticks, and apostrophes. NEVER pass it as a shell-quoted
+               argument (`--body '...'`); the review sandbox breaks the quoting and
+               you burn the turn budget on permission denials. ALWAYS pipe it through
+               a QUOTED heredoc to stdin so every byte is literal (one Bash call):
+               ```
+               gh pr comment ${{ needs.preflight.outputs.pr_number }} --body-file - <<'KUZOEOF'
+               <BODY HERE — the JSON sentinel FIRST on its own lines, then the section>
+               KUZOEOF
+               ```
+               The body must be EXACTLY this (sentinel on its own lines so the
+               deterministic aggregator can parse it):
 
             <!-- KUZO-REVIEW-JSON-ARCHITECTURE
             {"verdict":"ship|fix-then-ship|rethink","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":true|false,"top_issues":[{"file":"path","line":N,"severity":"blocking|advisory","summary":"..."}],"rationale":"..."}
@@ -395,7 +417,18 @@ jobs:
             1. `gh pr diff ${{ needs.preflight.outputs.pr_number }}`
             2. If CI is red, fetch the failing job logs via mcp__github_ci__download_job_log
             3. Inline-comment each finding via mcp__github_inline_comment__create_inline_comment
-            4. Post ONE top-level summary via `gh pr comment` with this exact structure:
+            4. Post ONE top-level summary comment. CRITICAL — the body contains
+               `|`, `>`, backticks, and apostrophes. NEVER pass it as a shell-quoted
+               argument (`--body '...'`); the review sandbox breaks the quoting and
+               you burn the turn budget on permission denials. ALWAYS pipe it through
+               a QUOTED heredoc to stdin so every byte is literal (one Bash call):
+               ```
+               gh pr comment ${{ needs.preflight.outputs.pr_number }} --body-file - <<'KUZOEOF'
+               <BODY HERE — the JSON sentinel FIRST on its own lines, then the section>
+               KUZOEOF
+               ```
+               The body must be EXACTLY this (sentinel on its own lines so the
+               deterministic aggregator can parse it):
 
             <!-- KUZO-REVIEW-JSON-CORRECTNESS
             {"verdict":"ship|fix-then-ship|rethink","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":false,"ci_failing":true|false,"top_issues":[{"file":"path","line":N,"severity":"blocking|advisory","summary":"..."}],"rationale":"..."}
@@ -417,145 +450,38 @@ jobs:
 
   verdict:
     needs: [preflight, security-review, architecture-review, correctness-review]
-    name: 📋 Verdict synthesizer
+    name: 📋 Verdict aggregator
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    # Skip on single-specialist re-reviews — synthesizer needs all 3
+    timeout-minutes: 5
+    # Skip on single-specialist re-reviews — the aggregator needs all 3
     # sentinels to compute the aggregate verdict; a single-specialist run
     # would mix new + stale specialist results.
     if: |
       always() && needs.preflight.result == 'success' &&
       (github.event_name != 'workflow_dispatch' || inputs.specialist == 'all')
+    # DETERMINISTIC — replaces the old Opus "synthesizer" that ran inside
+    # claude-code-action's sandboxed Bash tool and repeatedly crashed
+    # (error_max_turns) fighting the shell quoting needed to write the sticky
+    # body (which contains `|`, `>`, backticks, apostrophes). This is a plain
+    # unsandboxed `run:` step: the body travels to `gh api` as a JSON value on
+    # stdin, so no shell ever parses its special bytes. No LLM, no OAuth /
+    # anthropic key, no id-token. See .github/scripts/aggregate-verdict.mjs.
     permissions:
       contents: read
       pull-requests: write
       issues: write
-      id-token: write
-      actions: read
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          fetch-depth: 0
-      - uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt: |
-            You are the VERDICT SYNTHESIZER for the Kuzo MCP auto-review pipeline.
-
-            PR: #${{ needs.preflight.outputs.pr_number }} in ${{ github.repository }}
-
-            Specialist job results (some may have failed — handle gracefully):
-            - Security: ${{ needs.security-review.result }}
-            - Architecture: ${{ needs.architecture-review.result }}
-            - Correctness: ${{ needs.correctness-review.result }}
-
-            EFFICIENCY: prefer parallel tool calls in a single assistant turn.
-            Multiple Bash invocations in one assistant message cost ONE turn total.
-            Fetch comments once at the start — that single response gives you BOTH
-            the specialist sentinels AND the existing verdict sticky id (if any).
-
-            STEPS:
-
-            1. Fetch PR comments (one turn):
-               `gh api "repos/${{ github.repository }}/issues/${{ needs.preflight.outputs.pr_number }}/comments?per_page=100"`
-
-            2. From step 1, extract every JSON sentinel AND the existing
-               <!-- KUZO-VERDICT-STICKY --> id (if any):
-               - `<!-- KUZO-REVIEW-JSON-SECURITY ... -->`
-               - `<!-- KUZO-REVIEW-JSON-ARCHITECTURE ... -->`
-               - `<!-- KUZO-REVIEW-JSON-CORRECTNESS ... -->`
-               (Take the MOST RECENT instance of each — earlier rounds are stale.
-               Use `jq` to parse: `jq '.[] | select(.body | contains("KUZO-REVIEW-JSON-SECURITY"))'`.)
-
-            3. Compute aggregate verdict:
-               - "rethink" if any specialist verdict is "rethink"
-               - "fix-then-ship" if any blocking_count > 0
-               - "ship" otherwise
-               - total_blocking = sum of blocking_count across specialists
-               - total_advisory = sum of advisory_count across specialists
-               - sensitive_paths_touched = OR of all specialists' flags
-               - ci_failing = correctness specialist's ci_failing (or unknown)
-
-            4. Compute round number:
-               - Find existing <!-- KUZO-VERDICT-STICKY --> comment via the step-1 fetch
-               - If exists, parse `VERDICT_ROUND: N` from its body and increment to N+1
-               - If not, round = 1
-               - HARD CAP: if round would exceed 4, set verdict to "rethink" and add a
-                 "🚨 4-round cap reached — escalating to human" line in the action plan.
-
-            5. Compute escalation (auto-apply `claude-deep-review` label if true):
-               escalate = (verdict == "rethink") OR
-                          (sensitive_paths_touched AND total_blocking > 0) OR
-                          (total_blocking > 5) OR
-                          (PR additions+deletions > 500 — get via `gh pr view --json additions,deletions`)
-               If `claude-deep-review` label already present, do not re-apply.
-
-            6. Post or update the sticky body. CRITICAL — the body contains `|`,
-               `>`, backticks, and apostrophes. NEVER inline it as a shell-quoted
-               argument (`-f body='...'` / `--body '...'`); those special chars
-               break the quoting, the command gets re-tried in shapes that miss
-               the allowlist, and you burn the whole turn budget on permission
-               denials. ALWAYS feed the body through a QUOTED heredoc piped to
-               stdin — a quoted delimiter (`<<'KUZOSTICKY'`) makes every byte
-               literal, so no body content can break it. One Bash call each.
-
-               If a sticky already exists (you parsed its <comment_id> in step 2),
-               PATCH it (reads body from stdin via `-F 'body=@-'`):
-               ```
-               gh api -X PATCH "repos/${{ github.repository }}/issues/comments/<comment_id>" -F 'body=@-' <<'KUZOSTICKY'
-               <NEW_BODY>
-               KUZOSTICKY
-               ```
-               If no sticky exists yet, create one (reads body from stdin via
-               `--body-file -`):
-               ```
-               gh pr comment ${{ needs.preflight.outputs.pr_number }} --body-file - <<'KUZOSTICKY'
-               <NEW_BODY>
-               KUZOSTICKY
-               ```
-
-            7. If escalating and label not present:
-               `gh pr edit ${{ needs.preflight.outputs.pr_number }} --add-label claude-deep-review`
-               (Create the label first if it doesn't exist:
-                `gh label create claude-deep-review --color B60205 --description "Trigger deep multi-specialist review" || true`)
-
-            STICKY BODY FORMAT (use this exactly — round number, verdict, counts substituted):
-
-            <!-- KUZO-VERDICT-STICKY -->
-            <!-- VERDICT_ROUND: N -->
-
-            ## 📋 Auto-Review Verdict — Round N
-
-            **Verdict**: <ship | fix-then-ship | rethink>
-            **Blocking**: <N> | **Advisory**: <M>
-            **CI**: <green | red — root cause>
-
-            ### Specialists
-            - 🔒 Security: <verdict> (B blocking, A advisory)
-            - 🏗️ Architecture: <verdict> (B blocking, A advisory)
-            - ✅ Correctness: <verdict> (B blocking, A advisory)
-
-            ### Top action items
-            - [ ] item 1 — `file:line`
-            - [ ] item 2 — `file:line`
-            - ... up to 5
-
-            ---
-
-            <IF ESCALATED>
-            > 🚨 Auto-escalated to deep review — label `claude-deep-review` applied.
-            > Trigger reason: <reason: rethink-verdict | sensitive-paths-with-blocking | >5-blocking | large-diff>
-            </IF>
-
-            <IF ROUND >= 4>
-            > 🚨 4-round cap reached. Human decision required to merge or close.
-            </IF>
-
-            🤖 _Synthesized by Claude Opus 4.7 from Security + Architecture + Correctness specialists._
-          claude_args: |
-            --model claude-opus-4-7
-            --effort high
-            --max-turns 50
-            --disallowedTools "Edit,Write,NotebookEdit"
-            --allowedTools "Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(gh api:*),Bash(gh label create:*),Bash(gh label list:*),Bash(jq:*)"
+          node-version: "^22.9.0"
+      - name: Aggregate specialist verdicts → sticky
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ needs.preflight.outputs.pr_number }}
+          TIER: standard
+          SECURITY_RESULT: ${{ needs.security-review.result }}
+          ARCHITECTURE_RESULT: ${{ needs.architecture-review.result }}
+          CORRECTNESS_RESULT: ${{ needs.correctness-review.result }}
+        run: node .github/scripts/aggregate-verdict.mjs
