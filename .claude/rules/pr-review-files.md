@@ -14,16 +14,33 @@ When you're touching review workflows or instructions, remember the surface.
 | Tier | Workflow | Trigger | Model | Effort |
 |------|----------|---------|-------|--------|
 | 1 | `claude.yml` | `@claude` mentions, `workflow_dispatch` | Opus 4.6 | `max` |
-| 2 | `claude-code-review.yml` | PR open/sync/ready, `workflow_dispatch` | Opus 4.7 | `xhigh` |
-| 3 | `claude-deep-review.yml` | label `claude-deep-review`, `workflow_dispatch` | Opus 4.7 | `max`, 150 turns |
+| 2 | `claude-code-review.yml` | **`workflow_dispatch` only** (no auto-fire) | Opus 4.7 | `xhigh` |
+| 3 | `claude-deep-review.yml` | **`workflow_dispatch` only** (no auto-fire) | Opus 4.7 | `max`, 150 turns |
 
-## Sentinels (HTML-commented JSON in specialist comments)
+**DISPATCH-ONLY model:** neither tier auto-fires. Claude Code (the orchestrator) decides per PR which review to run and dispatches it, so trivial PRs cost zero Opus. **Policy: functional code changes get a `normal` (Tier 2) review by default; skip (`none`) only for non-functional changes (docs, state files, config).** Dispatch:
+- normal: `gh workflow run claude-code-review.yml -f pr_number=<N> [-f specialist=all|security|architecture|correctness]`
+- deep: `gh workflow run claude-deep-review.yml -f pr_number=<N>`
+
+## Sentinels (LINE format — NOT JSON)
+
+Specialists emit a brace/quote-free sentinel as a **dedicated** comment (the
+sandbox Bash validator blocks `{` adjacent to `"`, so JSON cannot post):
 
 ```html
-<!-- KUZO-REVIEW-JSON-{SECURITY|ARCHITECTURE|CORRECTNESS|THREATMODEL}
-{"verdict":"...","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":bool,"top_issues":[...],"rationale":"..."}
+<!-- KUZO-REVIEW-{SECURITY|ARCHITECTURE|CORRECTNESS|THREATMODEL}
+verdict: ship | fix-then-ship | rethink
+blocking: <N>
+advisory: <N>
+sensitive: true | false
+ci_failing: true | false        (correctness only)
+tier: deep                      (deep review only)
+threat: <S|T|R|I|D|E> | <summary>   (threat-model only, repeatable)
 -->
 ```
+
+The aggregator scans both issue comments and inline (pulls) review comments, so
+a sentinel posted via the validator-immune MCP inline tool is still found. Why
+line format: memory `feedback_sentinel_emission_brace_quote`.
 
 ## Verdict (deterministic, not an LLM)
 
@@ -39,7 +56,7 @@ The sticky's `VERDICT_HEAD_SHA` matching the PR head is the round-completion sig
 ## Hard rules
 
 - **4 rounds max** per PR (round ≥4 = "human decides" banner + escalation suppressed; round >4 forces `rethink`)
-- **Auto-escalation** to Tier 3 (Tier 2 only) fires when: verdict = `rethink`, OR `sensitive_paths_touched` AND blocking>0, OR total blocking > 5, OR PR diff > 500 lines. NB: a bot-applied `claude-deep-review` label does NOT auto-trigger Tier 3 (default-token recursion suppression) — dispatch it manually
+- **Escalation to Tier 3 is a RECOMMENDATION** (Tier 2 verdict only — no label, no auto-trigger): the sticky recommends a deep review when verdict = `rethink`, OR `sensitive_paths_touched` AND blocking>0, OR total blocking > 5, OR PR diff > 500 lines. Claude Code dispatches Tier 3 manually if it agrees
 - **A PR that modifies these workflow files can't be auto-reviewed** — `claude-code-action` 401s on workflow-content mismatch vs `main`, so specialists fail at startup until merge (the deterministic verdict job still runs + posts a degraded sticky). Judge on standard CI + impartial judge. See memory `feedback_review_workflow_validation_gate`
 - **CI must be green** before merge unless `expected-ci-fail` label is set
 - **Never manually add `claude[bot]` as a reviewer** — it auto-runs from the workflow

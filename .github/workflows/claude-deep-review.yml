@@ -3,8 +3,10 @@ name: Claude Deep Review
 # Tier 3: opt-in heavy review for security-sensitive or large PRs.
 # Same 3 specialists as Tier 2 BUT at --effort max + --max-turns 150,
 # PLUS a 4th THREAT-MODEL specialist that does STRIDE-style deep analysis.
-# Auto-fires when the Tier 2 verdict applies the `claude-deep-review` label.
-# Manually fires via label add or workflow_dispatch.
+# DISPATCH-ONLY — Claude Code dispatches it when a diff warrants deep eyes:
+#   gh workflow run claude-deep-review.yml -f pr_number=<N>
+# The Tier 2 verdict sticky recommends it; there is no auto-trigger (a
+# bot-applied label would not fire it anyway — default-token recursion).
 #
 # Tools: still READ-ONLY. The depth comes from effort + turns + an extra
 # specialist, not from write access.
@@ -15,8 +17,6 @@ name: Claude Deep Review
 # boundaries below if the template gets meaningful updates.
 
 on:
-  pull_request:
-    types: [labeled]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -129,18 +129,24 @@ jobs:
             2. Inspect each touched file in full (not just the hunk)
             3. Use mcp__github_ci__* tools to inspect any failing CI logs
             4. Inline-comment findings; pushback explicitly if a finding is wrong
-            5. Post your top-level summary via a QUOTED heredoc to stdin — the body
-               has `|`, `>`, backticks, apostrophes, which a shell-quoted `--body`
-               breaks in the review sandbox (and burns your turn budget). One call:
+            5. Emit your verdict as a DEDICATED comment containing ONLY the
+               line-format sentinel below — no other text (line format: no JSON,
+               no `{`, no `"`; the sandbox Bash validator blocks `{` next to `"`,
+               so a JSON body cannot post). Post your human-readable findings as
+               a SEPARATE comment. One call for the sentinel:
                ```
                gh pr comment ${{ needs.preflight.outputs.pr_number }} --body-file - <<'KUZOEOF'
-               <BODY — the JSON sentinel FIRST on its own lines, then the section>
+               <the sentinel block below, VERBATIM — nothing else in this comment>
                KUZOEOF
                ```
-               Body, EXACTLY (sentinel on its own lines so the aggregator parses it):
+               Sentinel block (its own comment) + summary section:
 
-            <!-- KUZO-REVIEW-JSON-SECURITY
-            {"verdict":"...","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":bool,"top_issues":[...],"rationale":"...","tier":"deep"}
+            <!-- KUZO-REVIEW-SECURITY
+            verdict: ship | fix-then-ship | rethink
+            blocking: <N>
+            advisory: <N>
+            sensitive: true | false
+            tier: deep
             -->
 
             ## 🔒 Security Review (Deep)
@@ -232,18 +238,24 @@ jobs:
             - Do NOT re-litigate the plugin architecture — locked in docs/PLANNING.md
 
             STEPS: same as Tier 2 + read every imported file's exports section.
-            Post your top-level summary via a QUOTED heredoc to stdin — the body
-            has `|`, `>`, backticks, apostrophes, which a shell-quoted `--body`
-            breaks in the review sandbox (and burns your turn budget). One call:
+            Emit your verdict as a DEDICATED comment containing ONLY the
+            line-format sentinel below — no other text (line format: no JSON, no
+            `{`, no `"`; the sandbox Bash validator blocks `{` next to `"`, so a
+            JSON body cannot post). Post your human-readable findings as a
+            SEPARATE comment. One call for the sentinel:
             ```
             gh pr comment ${{ needs.preflight.outputs.pr_number }} --body-file - <<'KUZOEOF'
-            <BODY — the JSON sentinel FIRST on its own lines, then the section>
+            <the sentinel block below, VERBATIM — nothing else in this comment>
             KUZOEOF
             ```
-            Body, EXACTLY (sentinel on its own lines so the aggregator parses it):
+            Sentinel block (its own comment) + summary section:
 
-            <!-- KUZO-REVIEW-JSON-ARCHITECTURE
-            {"verdict":"...","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":bool,"top_issues":[...],"rationale":"...","tier":"deep"}
+            <!-- KUZO-REVIEW-ARCHITECTURE
+            verdict: ship | fix-then-ship | rethink
+            blocking: <N>
+            advisory: <N>
+            sensitive: true | false
+            tier: deep
             -->
 
             ## 🏗️ Architecture Review (Deep)
@@ -323,18 +335,25 @@ jobs:
             mcp__github_ci__*; audit the diff with build output context.
             - Do NOT suggest "add tests" — vitest is not wired in CI yet
 
-            Post your top-level summary via a QUOTED heredoc to stdin — the body
-            has `|`, `>`, backticks, apostrophes, which a shell-quoted `--body`
-            breaks in the review sandbox (and burns your turn budget). One call:
+            Emit your verdict as a DEDICATED comment containing ONLY the
+            line-format sentinel below — no other text (line format: no JSON, no
+            `{`, no `"`; the sandbox Bash validator blocks `{` next to `"`, so a
+            JSON body cannot post). Post your human-readable findings as a
+            SEPARATE comment. One call for the sentinel:
             ```
             gh pr comment ${{ needs.preflight.outputs.pr_number }} --body-file - <<'KUZOEOF'
-            <BODY — the JSON sentinel FIRST on its own lines, then the section>
+            <the sentinel block below, VERBATIM — nothing else in this comment>
             KUZOEOF
             ```
-            Body, EXACTLY (sentinel on its own lines so the aggregator parses it):
+            Sentinel block (its own comment) + summary section:
 
-            <!-- KUZO-REVIEW-JSON-CORRECTNESS
-            {"verdict":"...","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":false,"ci_failing":bool,"top_issues":[...],"rationale":"...","tier":"deep"}
+            <!-- KUZO-REVIEW-CORRECTNESS
+            verdict: ship | fix-then-ship | rethink
+            blocking: <N>
+            advisory: <N>
+            sensitive: false
+            ci_failing: true | false
+            tier: deep
             -->
 
             ## ✅ Correctness Review (Deep)
@@ -425,18 +444,25 @@ jobs:
 
             DO NOT enumerate impossible threats — be honest about likelihood.
 
-            Post your top-level summary via a QUOTED heredoc to stdin — the body
-            has `|`, `>`, backticks, apostrophes, which a shell-quoted `--body`
-            breaks in the review sandbox (and burns your turn budget). One call:
+            Emit your verdict as a DEDICATED comment containing ONLY the
+            line-format sentinel below — no other text (line format: no JSON, no
+            `{`, no `"`; the sandbox Bash validator blocks `{` next to `"`, so a
+            JSON body cannot post). Post your human-readable findings as a
+            SEPARATE comment. One call for the sentinel:
             ```
             gh pr comment ${{ needs.preflight.outputs.pr_number }} --body-file - <<'KUZOEOF'
-            <BODY — the JSON sentinel FIRST on its own lines, then the section>
+            <the sentinel block below, VERBATIM — nothing else in this comment>
             KUZOEOF
             ```
-            Body, EXACTLY (sentinel on its own lines so the aggregator parses it):
+            Sentinel block (its own comment) + summary section:
 
-            <!-- KUZO-REVIEW-JSON-THREATMODEL
-            {"verdict":"...","blocking_count":N,"advisory_count":N,"sensitive_paths_touched":bool,"threats":[{"category":"S|T|R|I|D|E","severity":"...","summary":"..."}],"rationale":"...","tier":"deep"}
+            <!-- KUZO-REVIEW-THREATMODEL
+            verdict: ship | fix-then-ship | rethink
+            blocking: <N>
+            advisory: <N>
+            sensitive: true | false
+            tier: deep
+            threat: S|T|R|I|D|E | <one-line summary>   (repeat per threat)
             -->
 
             ## 🎯 Threat Model Review (Deep)
