@@ -1,10 +1,16 @@
 /**
  * MCP Server — Phase 2.6 §C.1 boot sequence.
  *
- * Top-level entry is `runServer(options?)` (exported). The CLI's future
- * `kuzo serve` (Theme 9) and the 2.5e parity test both reach the server
- * through `runServer`; the self-invocation guard at the bottom only fires
- * when this file is the process entry point.
+ * Two entry points:
+ *   - `bootKuzo(options?)` — runs the one-shot boot sequence below exactly
+ *     once and returns a shared { registry, logger, shutdown, summaryLines }
+ *     handle. Every transport builds on it: stdio (`runServer`, below) and the
+ *     opt-in `@kuzo-mcp/server-http` (Phase 4a) both call `bootKuzo` then
+ *     `buildMcpServer(registry, logger)` per session.
+ *   - `runServer(options?)` — boots + serves a single stdio session (the
+ *     shipped default). `kuzo serve` and the 2.5e install-parity test reach
+ *     the server through it; the self-invocation guard at the bottom only
+ *     fires when this file is the process entry point.
  *
  * Boot order (pinned by §C.1 — see invariants comment near `runServer`):
  *   1.  installExitGuard               (before anything that spawns children)
@@ -115,7 +121,7 @@ function freezePrototypes(logger: KuzoLogger): void {
 // MCP request handlers
 // ---------------------------------------------------------------------------
 
-function buildMcpServer(registry: PluginRegistry, logger: KuzoLogger): Server {
+export function buildMcpServer(registry: PluginRegistry, logger: KuzoLogger): Server {
   const server = new Server(
     { name: "kuzo-mcp", version: "1.0.0" },
     { capabilities: { tools: {}, resources: {} } },
@@ -199,7 +205,7 @@ function buildMcpServer(registry: PluginRegistry, logger: KuzoLogger): Server {
 
 const FORCE_EXIT_MS = 10_000;
 
-function attachShutdownHandlers(
+export function attachShutdownHandlers(
   logger: KuzoLogger,
   cleanup: () => Promise<void>,
 ): void {
@@ -235,7 +241,7 @@ function attachShutdownHandlers(
 }
 
 // ---------------------------------------------------------------------------
-// runServer — the top-level boot orchestrator
+// bootKuzo — one-shot boot orchestrator (shared by every transport)
 // ---------------------------------------------------------------------------
 
 export interface RunServerOptions {
@@ -251,6 +257,26 @@ export interface RunServerOptions {
 }
 
 /**
+ * Shared handle returned by {@link bootKuzo}. `registry` + `logger` are the
+ * live singletons; `shutdown` tears down shared boot resources (rotation
+ * watcher, loader children, registry, credential store) but NOT any per-session
+ * MCP `Server` — the transport owner closes its own. `summaryLines` is the
+ * §D.3 first-run UX, emitted to stderr by the transport owner after it connects.
+ */
+export interface BootHandle {
+  registry: PluginRegistry;
+  logger: KuzoLogger;
+  /** Tear down shared boot resources. Idempotent — safe to call more than once. */
+  shutdown: () => Promise<void>;
+  summaryLines: string[];
+}
+
+/**
+ * Runs the one-shot boot sequence (steps 1–11b) exactly once per process and
+ * returns the shared {@link BootHandle}. `freezePrototypes` + `scrubProcessEnv`
+ * are irreversible — call once, share the handle across sessions (stdio's
+ * `runServer` and `@kuzo-mcp/server-http` both do exactly this).
+ *
  * Spec-pinned invariants (§C.1, also referenced by the §C.9 ESLint rule):
  *   1. `collectEnvOverrides()` must run BEFORE `scrubProcessEnv()`.
  *   2. `scrubProcessEnv()` must run BEFORE `loader.loadAll()`.
@@ -263,7 +289,7 @@ export interface RunServerOptions {
  *      static `package.json#kuzoPlugin` only.
  *   7. `KUZO_PASSPHRASE` and `KUZO_NO_ENV_SCRUB` are scrubbed unconditionally.
  */
-export async function runServer(options: RunServerOptions = {}): Promise<void> {
+export async function bootKuzo(options: RunServerOptions = {}): Promise<BootHandle> {
   const doScrub = options.scrub !== false;
   const logger = new KuzoLogger("server");
   logger.info("Starting Kuzo MCP Server...");
@@ -508,27 +534,10 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
     logger.info(`Watching ${watchDir} for credential rotations (${credBasename})`);
   }
 
-  // 12. Build + connect MCP server over stdio
-  const server = buildMcpServer(registry, logger);
-
-  // 13. Shutdown hooks. credentialStore.close() must run AFTER
-  //     loader.shutdownAll() per invariant 4 (file-watch + IPC race).
-  attachShutdownHandlers(logger, async () => {
-    watcher?.close(); // stop the rotation watch before tearing down the store
-    await loader.shutdownAll();
-    await registry.shutdownAll();
-    credentialStore.close();
-    await server.close();
-  });
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-
-  logger.info("Kuzo MCP Server running on stdio");
-
-  // §D.3 first-run UX. Stderr only — stdout is the MCP transport. Surfaces the
-  // loaded/skipped roster, a hint for missing creds, and the R35 migrate nudge
-  // when unencrypted env creds are present but the store is empty.
+  // 12. §D.3 first-run UX lines. Computed here — loadResult, envOverrides, and
+  //     credentialStore.size are all settled post-loadAll and the parent makes
+  //     no further store mutations before the transport owner emits these. The
+  //     owner writes them to STDERR (stdout is the MCP transport) after connect.
   const summaryLines = buildServeSummary({
     loadResult,
     envOverrideNames: Object.keys(envOverrides),
@@ -537,7 +546,58 @@ export async function runServer(options: RunServerOptions = {}): Promise<void> {
       process.env["KUZO_NO_MIGRATE_NUDGE"] ?? "",
     ),
   });
-  for (const line of summaryLines) {
+
+  // 13. Shared-resource teardown. Order is pinned by invariant 4: watcher first
+  //     (stop the rotation watch before the store goes away), then loader
+  //     children, then registry, then credentialStore.close() LAST. Does NOT
+  //     close any per-session MCP `Server` — each transport owner closes its
+  //     own (stdio: runServer below; HTTP: @kuzo-mcp/server-http per session).
+  //     Idempotent: the stdio path calls this exactly once (attachShutdownHandlers
+  //     gates re-entry on its own `shuttingDown` flag), but an external transport
+  //     (@kuzo-mcp/server-http) may invoke it directly on a fatal-error path. The
+  //     closure-scoped guard makes a double call a no-op so the watcher/store
+  //     can't double-close (PR #64 round-1 Architecture advisory A1).
+  let shutdownStarted = false;
+  const shutdown = async (): Promise<void> => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    watcher?.close();
+    await loader.shutdownAll();
+    await registry.shutdownAll();
+    credentialStore.close();
+  };
+
+  return { registry, logger, shutdown, summaryLines };
+}
+
+// ---------------------------------------------------------------------------
+// runServer — stdio entry (boot once, serve one stdio session)
+// ---------------------------------------------------------------------------
+
+/**
+ * Boots Kuzo and serves a single MCP session over stdio — the shipped default
+ * transport. Thin wrapper over `bootKuzo()` + `buildMcpServer()`: behaviorally
+ * identical to the pre-seam monolithic `runServer` (Phase 4a §4.1), proven by
+ * the 2.5e install-parity test which boots this path directly.
+ */
+export async function runServer(options: RunServerOptions = {}): Promise<void> {
+  const handle = await bootKuzo(options);
+  const server = buildMcpServer(handle.registry, handle.logger);
+
+  // Tear down shared boot resources, then this session's server. Inside
+  // handle.shutdown, credentialStore.close() runs AFTER loader.shutdownAll()
+  // (invariant 4); server.close() runs last — exactly as the pre-seam path did.
+  attachShutdownHandlers(handle.logger, async () => {
+    await handle.shutdown();
+    await server.close();
+  });
+
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+
+  handle.logger.info("Kuzo MCP Server running on stdio");
+
+  for (const line of handle.summaryLines) {
     process.stderr.write(`${line}\n`);
   }
 }
