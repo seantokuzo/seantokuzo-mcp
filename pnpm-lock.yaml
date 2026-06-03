@@ -81,6 +81,9 @@ importers:
         specifier: ^4.1.0
         version: 4.1.0
     devDependencies:
+      '@kuzo-mcp/server-http':
+        specifier: workspace:^
+        version: link:../server-http
       '@types/figlet':
         specifier: ^1.5.8
         version: 1.7.0
@@ -169,6 +172,15 @@ importers:
       '@kuzo-mcp/types':
         specifier: workspace:^
         version: link:../types
+
+  packages/server-http:
+    dependencies:
+      '@kuzo-mcp/core':
+        specifier: workspace:^
+        version: link:../core
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.25.3
+        version: 1.25.3(zod@3.25.76)
 
   packages/types:
     dependencies:

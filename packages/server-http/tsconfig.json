@@ -7,10 +7,6 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../types" },
-    { "path": "../core" },
-    { "path": "../server-http" },
-    { "path": "../plugin-github" },
-    { "path": "../plugin-jira" }
+    { "path": "../core" }
   ]
 }

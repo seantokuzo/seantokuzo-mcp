@@ -3,6 +3,7 @@
   "references": [
     { "path": "./packages/types" },
     { "path": "./packages/core" },
+    { "path": "./packages/server-http" },
     { "path": "./packages/plugin-git-context" },
     { "path": "./packages/plugin-github" },
     { "path": "./packages/plugin-jira" },

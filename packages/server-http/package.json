@@ -1,0 +1,46 @@
+{
+  "name": "@kuzo-mcp/server-http",
+  "version": "0.0.3",
+  "description": "Opt-in Streamable HTTP transport for Kuzo MCP — turns kuzo into a remote MCP connector. NOT installed by default; `kuzo serve --http` loads it dynamically so the stdio CLI stays zero-HTTP-dep.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": "^20.17.0 || >=22.9.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seantokuzo/seantokuzo-mcp.git",
+    "directory": "packages/server-http"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.js.map",
+    "dist/**/*.d.ts.map",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.d.ts",
+    "!dist/**/*.test.js.map",
+    "!dist/**/*.test.d.ts.map"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@kuzo-mcp/core": "workspace:^",
+    "@modelcontextprotocol/sdk": "^1.25.3"
+  },
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
