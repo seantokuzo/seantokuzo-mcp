@@ -224,7 +224,14 @@ export async function serveHttp(options: ServeHttpOptions = {}): Promise<void> {
     });
 
     httpServer.on("error", (err: unknown) => {
-      reject(err instanceof Error ? err : new Error(String(err)));
+      const error = err instanceof Error ? err : new Error(String(err));
+      // Bind failed before we served anything (e.g. EADDRINUSE). Tear down the
+      // boot resources we already created — close the encrypted store + wipe the
+      // master-key buffer — before propagating, since the CLI exits via
+      // process.exit and Node finalizers won't run (Correctness A1, PR #65 r3).
+      // handle.shutdown is idempotent (core PR #64 A1), so this never collides
+      // with the success-path teardown above.
+      void handle.shutdown().finally(() => reject(error));
     });
   });
 }
