@@ -60,11 +60,26 @@ export interface ServeHttpOptions extends RunServerOptions {
 /** express.json() populates `body` on the incoming request at runtime. */
 type McpHttpRequest = IncomingMessage & { body?: unknown };
 
+// Loopback aliases permitted for --no-auth binds. The literal IPs are
+// guaranteed loopback; `localhost` is included for dev ergonomics but is
+// resolved by the OS at bind time, so its loopback guarantee comes from the
+// resolver (and the SDK's Host-header check), not this list (Security A1,
+// PR #65). KUZO_DEV-gated either way.
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
 function sendJsonRpcError(res: ServerResponse, status: number, code: number, message: string): void {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }));
+}
+
+/**
+ * Read the single-valued Mcp-Session-Id header. Node returns `string[]` if a
+ * client sends the header more than once; treat anything non-string as "no
+ * session" rather than casting the array away (Correctness A1, PR #65).
+ */
+function sessionIdHeader(req: McpHttpRequest): string | undefined {
+  const raw = req.headers["mcp-session-id"];
+  return typeof raw === "string" ? raw : undefined;
 }
 
 /**
@@ -98,14 +113,18 @@ export async function serveHttp(options: ServeHttpOptions = {}): Promise<void> {
   // Per-session transports keyed by the Mcp-Session-Id header.
   const transports = new Map<string, StreamableHTTPServerTransport>();
 
-  // express() + express.json() + loopback host-header (DNS-rebinding) validation.
+  // express() + express.json() + Host-header validation. NOTE (Security A2):
+  // DNS-rebinding protection here depends ENTIRELY on createMcpExpressApp
+  // auto-enabling Host-header validation for loopback hosts — confirmed at
+  // @modelcontextprotocol/sdk 1.25.3. It is the ONLY rebinding mitigation in
+  // this package; a future SDK major bump MUST re-verify this contract.
   const app = createMcpExpressApp({ host });
 
   // POST /mcp — reuse the named session's transport, or create one on an
   // initialize request. A fresh low-level Server is built per session and
   // connected to that session's transport; all sessions share the global registry.
   app.post("/mcp", async (req: McpHttpRequest, res: ServerResponse) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    const sessionId = sessionIdHeader(req);
     const existing = sessionId !== undefined ? transports.get(sessionId) : undefined;
 
     if (existing !== undefined) {
@@ -153,7 +172,7 @@ export async function serveHttp(options: ServeHttpOptions = {}): Promise<void> {
   // GET (SSE stream) + DELETE (terminate) both require an existing session.
   // Inlined rather than shared so each stays a small, self-contained handler.
   app.get("/mcp", async (req: McpHttpRequest, res: ServerResponse) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    const sessionId = sessionIdHeader(req);
     const transport = sessionId !== undefined ? transports.get(sessionId) : undefined;
     if (transport === undefined) {
       sendJsonRpcError(res, 404, -32001, "Unknown or expired session");
@@ -163,7 +182,7 @@ export async function serveHttp(options: ServeHttpOptions = {}): Promise<void> {
   });
 
   app.delete("/mcp", async (req: McpHttpRequest, res: ServerResponse) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    const sessionId = sessionIdHeader(req);
     const transport = sessionId !== undefined ? transports.get(sessionId) : undefined;
     if (transport === undefined) {
       sendJsonRpcError(res, 404, -32001, "Unknown or expired session");
@@ -180,25 +199,29 @@ export async function serveHttp(options: ServeHttpOptions = {}): Promise<void> {
       for (const line of handle.summaryLines) {
         process.stderr.write(`${line}\n`);
       }
+
+      // Attach shutdown handlers ONLY after a successful bind (Correctness A2):
+      // a failed bind rejects via the 'error' handler below and the CLI exits
+      // with the right code — without a SIGINT racing an already-rejected boot
+      // and forcing realExit(0). Teardown closes session transports, stops the
+      // listener, then tears down shared boot resources (handle.shutdown is
+      // idempotent — core PR #64 A1).
+      attachShutdownHandlers(logger, async () => {
+        for (const transport of transports.values()) {
+          try {
+            await transport.close();
+          } catch {
+            // best-effort — keep tearing down the rest
+          }
+        }
+        await new Promise<void>((closed) => httpServer.close(() => closed()));
+        await handle.shutdown();
+        resolve();
+      });
     });
 
     httpServer.on("error", (err: unknown) => {
       reject(err instanceof Error ? err : new Error(String(err)));
-    });
-
-    // Teardown: close session transports, stop the listener, then tear down the
-    // shared boot resources. handle.shutdown is idempotent (core PR #64 A1).
-    attachShutdownHandlers(logger, async () => {
-      for (const transport of transports.values()) {
-        try {
-          await transport.close();
-        } catch {
-          // best-effort — keep tearing down the rest
-        }
-      }
-      await new Promise<void>((closed) => httpServer.close(() => closed()));
-      await handle.shutdown();
-      resolve();
     });
   });
 }
