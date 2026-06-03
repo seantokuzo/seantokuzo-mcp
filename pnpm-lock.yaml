@@ -179,7 +179,7 @@ importers:
         specifier: workspace:^
         version: link:../core
       '@modelcontextprotocol/sdk':
-        specifier: ^1.0.0
+        specifier: ^1.25.3
         version: 1.25.3(zod@3.25.76)
 
   packages/types:

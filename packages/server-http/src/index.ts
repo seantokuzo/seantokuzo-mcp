@@ -151,11 +151,14 @@ export async function serveHttp(options: ServeHttpOptions = {}): Promise<void> {
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sid) => {
         transports.set(sid, transport);
-        logger.info(`HTTP MCP session opened: ${sid}`);
+        // Log a short prefix, not the full UUID — the SID is the session's
+        // routing key (Security A2, PR #65). 8 chars is enough to correlate
+        // open/close locally without disclosing the whole key.
+        logger.info(`HTTP MCP session opened: ${sid.slice(0, 8)}…`);
       },
       onsessionclosed: (sid) => {
         transports.delete(sid);
-        logger.info(`HTTP MCP session closed: ${sid}`);
+        logger.info(`HTTP MCP session closed: ${sid.slice(0, 8)}…`);
       },
     });
     transport.onclose = () => {
