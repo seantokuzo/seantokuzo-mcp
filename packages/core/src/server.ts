@@ -266,6 +266,7 @@ export interface RunServerOptions {
 export interface BootHandle {
   registry: PluginRegistry;
   logger: KuzoLogger;
+  /** Tear down shared boot resources. Idempotent — safe to call more than once. */
   shutdown: () => Promise<void>;
   summaryLines: string[];
 }
@@ -551,7 +552,15 @@ export async function bootKuzo(options: RunServerOptions = {}): Promise<BootHand
   //     children, then registry, then credentialStore.close() LAST. Does NOT
   //     close any per-session MCP `Server` — each transport owner closes its
   //     own (stdio: runServer below; HTTP: @kuzo-mcp/server-http per session).
+  //     Idempotent: the stdio path calls this exactly once (attachShutdownHandlers
+  //     gates re-entry on its own `shuttingDown` flag), but an external transport
+  //     (@kuzo-mcp/server-http) may invoke it directly on a fatal-error path. The
+  //     closure-scoped guard makes a double call a no-op so the watcher/store
+  //     can't double-close (PR #64 round-1 Architecture advisory A1).
+  let shutdownStarted = false;
   const shutdown = async (): Promise<void> => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     watcher?.close();
     await loader.shutdownAll();
     await registry.shutdownAll();
