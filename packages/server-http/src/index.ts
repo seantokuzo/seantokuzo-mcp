@@ -1,5 +1,6 @@
 /**
- * @kuzo-mcp/server-http — opt-in Streamable HTTP transport (Phase 4a §4.2).
+ * @kuzo-mcp/server-http — opt-in Streamable HTTP transport (Phase 4a §4.2) with
+ * an OAuth Resource Server (Phase 4b §4.3/§6.3).
  *
  * Turns kuzo into a remote MCP server reachable over HTTP. This package is NOT
  * a default dependency: `kuzo serve --http` dynamic-imports it, so the stdio
@@ -13,15 +14,25 @@
  * process-global singletons; sessions differ only in transport + Server wiring.
  * The tool list is therefore identical across sessions (no per-session scoping).
  *
- * 4a scope: loopback + `--no-auth` ONLY. The OAuth Resource Server lands in 4b;
- * until then this refuses to serve unauthenticated traffic off loopback. The
- * CLI is the primary gate (KUZO_DEV + loopback host); the checks here are
- * defense-in-depth.
+ * Auth model (§4.3): kuzo is an OAuth 2.1 *Resource Server* — it VERIFIES bearer
+ * tokens against an external Authorization Server's JWKS; it is NOT the AS. The
+ * default mode mounts `mcpAuthMetadataRouter` (RFC 9728 protected-resource
+ * metadata + re-advertised RFC 8414 AS metadata) and protects `/mcp` with
+ * `requireBearerAuth` + our `verifyAccessToken` (signature + issuer + RFC 8707
+ * audience). `noAuth` is the loopback-only dev path, hard-gated behind KUZO_DEV
+ * by the CLI; the host check here is defense-in-depth.
+ *
+ * Scope (Phase 4b first step): the Resource Server is live and proven on
+ * loopback against MCP Inspector with a locally-signed stub token. PUBLIC
+ * exposure — non-loopback bind, CORS, `allowedHosts`, session cap/TTL — lands in
+ * the next sub-step (AS pick + Cloudflare Tunnel), so this still binds loopback
+ * in BOTH modes.
  *
  * Typing note: handlers are annotated with Node's `http` types (not express's)
  * so the package needs no express type dependency — `createMcpExpressApp`
  * provides express's json + host-header middleware at runtime, and express's
- * req/res are structural subtypes of IncomingMessage/ServerResponse.
+ * req/res are structural subtypes of IncomingMessage/ServerResponse. The auth
+ * middleware/router are typed via `ReturnType<…>` for the same reason.
  *
  * Stateful caveat: session transports live in an in-memory, single-process Map.
  * A restart drops all sessions; the next client call 404s and the client
@@ -37,9 +48,22 @@ import {
   attachShutdownHandlers,
   type RunServerOptions,
 } from "@kuzo-mcp/core/server";
+import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
+import {
+  mcpAuthMetadataRouter,
+  getOAuthProtectedResourceMetadataUrl,
+} from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { createRemoteJWKSet } from "jose";
+
+import { resolveAuthConfig, type AuthOptions } from "./auth/config.js";
+import { createAccessTokenVerifier } from "./auth/verifier.js";
+
+export { resolveAuthConfig, type AuthOptions, type ResolvedAuth } from "./auth/config.js";
+export { createAccessTokenVerifier, ASYMMETRIC_ALGS } from "./auth/verifier.js";
+export type { AccessTokenVerifierConfig } from "./auth/verifier.js";
 
 export interface ServeHttpOptions extends RunServerOptions {
   /** TCP port to listen on. Default 3000. */
@@ -50,21 +74,26 @@ export interface ServeHttpOptions extends RunServerOptions {
    */
   host?: string;
   /**
-   * Run WITHOUT an OAuth Resource Server. In 4a this is the ONLY supported mode
-   * and MUST be true — the CLI gates it behind KUZO_DEV + a loopback host. 4b
-   * adds real auth and flips the default.
+   * Run WITHOUT the OAuth Resource Server. The CLI gates this behind KUZO_DEV +
+   * a loopback host. Default false → the OAuth Resource Server is mounted.
    */
   noAuth?: boolean;
+  /**
+   * OAuth Resource Server config (issuer / JWKS URL / canonical resource URL +
+   * optional AS endpoints). Falls back to `KUZO_OAUTH_*` env vars. Ignored when
+   * `noAuth` is true.
+   */
+  auth?: AuthOptions;
 }
 
 /** express.json() populates `body` on the incoming request at runtime. */
 type McpHttpRequest = IncomingMessage & { body?: unknown };
 
-// Loopback aliases permitted for --no-auth binds. The literal IPs are
+// Loopback aliases permitted for binds in this sub-step. The literal IPs are
 // guaranteed loopback; `localhost` is included for dev ergonomics but is
 // resolved by the OS at bind time, so its loopback guarantee comes from the
 // resolver (and the SDK's Host-header check), not this list (Security A1,
-// PR #65). KUZO_DEV-gated either way.
+// PR #65).
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
 function sendJsonRpcError(res: ServerResponse, status: number, code: number, message: string): void {
@@ -88,21 +117,45 @@ function sessionIdHeader(req: McpHttpRequest): string | undefined {
  * `attachShutdownHandlers`); it rejects if the listener fails to bind.
  */
 export async function serveHttp(options: ServeHttpOptions = {}): Promise<void> {
-  const { port = 3000, host = "127.0.0.1", noAuth = false, ...bootOptions } = options;
+  const { port = 3000, host = "127.0.0.1", noAuth = false, auth, ...bootOptions } = options;
 
-  // 4a guardrail (defense-in-depth; the CLI is the primary gate). No OAuth
-  // Resource Server exists until 4b, so the only safe HTTP mode is loopback +
-  // no-auth. Refuse anything else rather than expose an open, unauthenticated
-  // endpoint on a routable interface.
-  if (!noAuth) {
-    throw new Error(
-      "server-http: OAuth is not available until Phase 4b. Run with noAuth + a loopback host (the CLI enforces KUZO_DEV).",
-    );
-  }
+  // Scope guardrail (defense-in-depth; the CLI is the primary gate). Public
+  // exposure — non-loopback bind + CORS + allowedHosts + session hardening — is
+  // the NEXT 4b sub-step. Until then, bind loopback in BOTH modes; OAuth is
+  // proven locally against MCP Inspector.
   if (!LOOPBACK_HOSTS.has(host)) {
     throw new Error(
-      `server-http: --no-auth is loopback-only; refusing to bind an unauthenticated server to "${host}".`,
+      `server-http: refusing to bind to a non-loopback host ("${host}"). ` +
+        "Remote exposure (Cloudflare Tunnel + CORS + allowedHosts) lands in the next 4b sub-step.",
     );
+  }
+
+  // Build the OAuth Resource Server layer unless explicitly disabled. Resolve +
+  // validate auth config BEFORE the (expensive, irreversible) bootKuzo decrypt
+  // so a misconfig fails fast. `createRemoteJWKSet` is lazy — no network until
+  // the first token verify. The metadata router is unauthenticated discovery;
+  // `requireBearerAuth` protects the MCP routes.
+  let authMiddleware: ReturnType<typeof requireBearerAuth>[] = [];
+  let metadataRouter: ReturnType<typeof mcpAuthMetadataRouter> | undefined;
+  if (!noAuth) {
+    const resolved = resolveAuthConfig(auth);
+    const verifier = createAccessTokenVerifier({
+      keyResolver: createRemoteJWKSet(resolved.jwksUri),
+      issuer: resolved.issuer,
+      audience: resolved.resource.href,
+    });
+    authMiddleware = [
+      requireBearerAuth({
+        verifier,
+        resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resolved.resource),
+      }),
+    ];
+    metadataRouter = mcpAuthMetadataRouter({
+      oauthMetadata: resolved.oauthMetadata,
+      resourceServerUrl: resolved.resource,
+      scopesSupported: resolved.scopes,
+      resourceName: "Kuzo MCP",
+    });
   }
 
   // Boot ONCE, before the listener binds. One registry/loader/store shared
@@ -120,10 +173,16 @@ export async function serveHttp(options: ServeHttpOptions = {}): Promise<void> {
   // this package; a future SDK major bump MUST re-verify this contract.
   const app = createMcpExpressApp({ host });
 
+  // Unauthenticated OAuth discovery (RFC 9728 protected-resource + re-advertised
+  // RFC 8414 AS metadata). Mounted at root, before the protected MCP routes.
+  if (metadataRouter !== undefined) {
+    app.use(metadataRouter);
+  }
+
   // POST /mcp — reuse the named session's transport, or create one on an
   // initialize request. A fresh low-level Server is built per session and
   // connected to that session's transport; all sessions share the global registry.
-  app.post("/mcp", async (req: McpHttpRequest, res: ServerResponse) => {
+  app.post("/mcp", ...authMiddleware, async (req: McpHttpRequest, res: ServerResponse) => {
     const sessionId = sessionIdHeader(req);
     const existing = sessionId !== undefined ? transports.get(sessionId) : undefined;
 
@@ -174,7 +233,7 @@ export async function serveHttp(options: ServeHttpOptions = {}): Promise<void> {
 
   // GET (SSE stream) + DELETE (terminate) both require an existing session.
   // Inlined rather than shared so each stays a small, self-contained handler.
-  app.get("/mcp", async (req: McpHttpRequest, res: ServerResponse) => {
+  app.get("/mcp", ...authMiddleware, async (req: McpHttpRequest, res: ServerResponse) => {
     const sessionId = sessionIdHeader(req);
     const transport = sessionId !== undefined ? transports.get(sessionId) : undefined;
     if (transport === undefined) {
@@ -184,7 +243,7 @@ export async function serveHttp(options: ServeHttpOptions = {}): Promise<void> {
     await transport.handleRequest(req, res);
   });
 
-  app.delete("/mcp", async (req: McpHttpRequest, res: ServerResponse) => {
+  app.delete("/mcp", ...authMiddleware, async (req: McpHttpRequest, res: ServerResponse) => {
     const sessionId = sessionIdHeader(req);
     const transport = sessionId !== undefined ? transports.get(sessionId) : undefined;
     if (transport === undefined) {
@@ -196,9 +255,10 @@ export async function serveHttp(options: ServeHttpOptions = {}): Promise<void> {
 
   // Bind and run. serveHttp resolves only at shutdown; it rejects on a bind
   // failure (e.g. EADDRINUSE) so the CLI can surface it.
+  const authLabel = noAuth ? "no-auth" : "oauth";
   await new Promise<void>((resolve, reject) => {
     const httpServer = app.listen(port, host, () => {
-      logger.info(`Kuzo MCP HTTP server listening on http://${host}:${port}/mcp (no-auth, loopback)`);
+      logger.info(`Kuzo MCP HTTP server listening on http://${host}:${port}/mcp (${authLabel}, loopback)`);
       for (const line of handle.summaryLines) {
         process.stderr.write(`${line}\n`);
       }
