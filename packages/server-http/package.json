@@ -36,7 +36,8 @@
   },
   "dependencies": {
     "@kuzo-mcp/core": "workspace:^",
-    "@modelcontextprotocol/sdk": "^1.25.3"
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "jose": "^6.1.1"
   },
   "sideEffects": false,
   "publishConfig": {
